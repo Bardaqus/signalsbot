@@ -1,0 +1,14 @@
+{
+  "completed_signals": [
+    {
+      "symbol": "USDCHF",
+      "type": "BUY",
+      "entry": 0.7918,
+      "exit_price": 0.7916,
+      "profit_pct": -0.025258903763573884,
+      "status": "hit_sl",
+      "timestamp": "2025-10-20T16:09:11.344839+00:00",
+      "date": "2025-10-20"
+    }
+  ]
+}

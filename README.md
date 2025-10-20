@@ -54,6 +54,7 @@ python bot.py
 1. Create a bot via [@BotFather](https://t.me/BotFather)
 2. Add the bot to your channel as an admin
 3. Get your channel ID (starts with -100)
+4. **For performance reports**: Start a conversation with your bot by sending `/start` to receive daily/weekly reports
 
 ### EODHD API
 1. Sign up at [EODHD](https://eodhd.com/)
@@ -77,9 +78,35 @@ python bot.py
 ## Files
 
 - `bot.py` - Main bot logic
+- `scheduler.py` - Runs bot every minute for continuous monitoring
+- `test_reports.py` - Test performance reports
 - `requirements.txt` - Python dependencies
 - `active_signals.json` - Signal tracking (auto-generated)
+- `performance.json` - Performance data (auto-generated)
 - `.gitignore` - Git ignore rules
+
+## Running Modes
+
+### One-time Run
+```bash
+python bot.py
+```
+Generates signals once and checks for TP hits.
+
+### Continuous Monitoring
+```bash
+python scheduler.py
+```
+Runs every minute to:
+- Check for TP hits and send notifications
+- Send daily reports at 14:00 GMT
+- Send weekly reports on Fridays at 14:00 GMT
+
+### Test Performance Reports
+```bash
+python test_reports.py
+```
+Manually test the performance report functionality.
 
 ## Requirements
 

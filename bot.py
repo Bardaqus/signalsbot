@@ -36,7 +36,9 @@ DEFAULT_PAIRS = [
 ]
 
 SIGNALS_FILE = "active_signals.json"
+PERFORMANCE_FILE = "performance.json"
 MAX_SIGNALS_PER_DAY = 4
+PERFORMANCE_USER_ID = 615348532  # Telegram user ID for performance reports
 
 
 class EODHDError(Exception):
@@ -229,6 +231,51 @@ def add_signal(symbol: str, signal_type: str, entry: float, sl: float, tp: float
     save_active_signals(active_signals)
 
 
+def load_performance_data() -> Dict:
+    """Load performance tracking data"""
+    try:
+        if os.path.exists(PERFORMANCE_FILE):
+            with open(PERFORMANCE_FILE, 'r') as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {"completed_signals": []}
+
+
+def save_performance_data(data: Dict) -> None:
+    """Save performance tracking data"""
+    try:
+        with open(PERFORMANCE_FILE, 'w') as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
+
+
+def add_completed_signal(symbol: str, signal_type: str, entry: float, exit_price: float, status: str) -> None:
+    """Add completed signal to performance tracking"""
+    performance_data = load_performance_data()
+    
+    # Calculate profit percentage
+    if signal_type == "BUY":
+        profit_pct = ((exit_price - entry) / entry) * 100
+    else:  # SELL
+        profit_pct = ((entry - exit_price) / entry) * 100
+    
+    completed_signal = {
+        "symbol": symbol.replace(".FOREX", ""),  # Remove .FOREX for display
+        "type": signal_type,
+        "entry": entry,
+        "exit_price": exit_price,
+        "profit_pct": profit_pct,
+        "status": status,  # "hit_tp" or "hit_sl"
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "date": datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    }
+    
+    performance_data["completed_signals"].append(completed_signal)
+    save_performance_data(performance_data)
+
+
 def check_signal_hits() -> List[Dict]:
     """Check for SL/TP hits and return profit messages"""
     active_signals = load_active_signals()
@@ -265,15 +312,20 @@ def check_signal_hits() -> List[Dict]:
                 else:  # SELL
                     profit_pips = (entry - current_price) * 10000
                 
-                profit_msg = f"🎯 TP HIT! {signal['symbol']} {signal_type} - Profit: {profit_pips:.1f} pips"
+                profit_msg = f"🎯 TP HIT! {signal['symbol'].replace('.FOREX', '')} {signal_type} - Profit: {profit_pips:.1f} pips"
                 profit_messages.append(profit_msg)
+                
+                # Add to performance tracking
+                add_completed_signal(signal["symbol"], signal_type, entry, current_price, "hit_tp")
                 
                 signal["status"] = "hit_tp"
                 signal["exit_price"] = current_price
                 signal["profit_pips"] = profit_pips
                 
             elif hit_sl:
-                # Don't send message for SL hits as requested
+                # Add to performance tracking (no message for SL hits)
+                add_completed_signal(signal["symbol"], signal_type, entry, current_price, "hit_sl")
+                
                 signal["status"] = "hit_sl"
                 signal["exit_price"] = current_price
             
@@ -297,11 +349,86 @@ SL {format_price(symbol, sl)}
 TP {format_price(symbol, tp)}"""
 
 
+def get_performance_report(days: int = 1) -> str:
+    """Generate performance report for specified number of days"""
+    performance_data = load_performance_data()
+    now = datetime.now(timezone.utc)
+    cutoff_date = (now - timedelta(days=days)).strftime("%Y-%m-%d")
+    
+    # Filter signals for the period
+    recent_signals = [
+        s for s in performance_data["completed_signals"]
+        if s["date"] >= cutoff_date
+    ]
+    
+    if not recent_signals:
+        return f"No completed signals in the last {days} day(s)"
+    
+    # Build report
+    lines = []
+    total_signals = len(recent_signals)
+    profit_signals = [s for s in recent_signals if s["profit_pct"] > 0]
+    loss_signals = [s for s in recent_signals if s["profit_pct"] <= 0]
+    
+    # Individual signal results
+    for signal in recent_signals:
+        symbol = signal["symbol"]
+        profit_pct = signal["profit_pct"]
+        sign = "+" if profit_pct > 0 else ""
+        lines.append(f"{symbol} {sign}{profit_pct:.1f}%")
+    
+    # Summary
+    lines.append(f"\nTotal signals {total_signals}")
+    lines.append(f"In profit: {len(profit_signals)}")
+    lines.append(f"In loss: {len(loss_signals)}")
+    
+    # Calculate total profit percentage
+    if total_signals > 0:
+        total_profit = sum(s["profit_pct"] for s in recent_signals)
+        lines.append(f"Profit: {total_profit:.1f}%")
+    
+    return "\n".join(lines)
+
+
+async def send_performance_report(bot: Bot, days: int = 1) -> None:
+    """Send performance report to user"""
+    try:
+        report = get_performance_report(days)
+        period = "24h" if days == 1 else f"{days} days"
+        title = f"📊 Performance Report - {period}\n\n"
+        
+        await bot.send_message(
+            chat_id=PERFORMANCE_USER_ID,
+            text=title + report,
+            disable_web_page_preview=True
+        )
+        print(f"📊 Sent {period} performance report to user {PERFORMANCE_USER_ID}")
+    except Exception as e:
+        print(f"❌ Failed to send performance report: {e}")
+
+
+async def check_and_send_reports(bot: Bot) -> None:
+    """Check if it's time to send performance reports"""
+    now = datetime.now(timezone.utc)
+    
+    # Check if it's 14:00 GMT
+    if now.hour == 14 and now.minute == 0:
+        # Daily report (every day)
+        await send_performance_report(bot, days=1)
+        
+        # Weekly report (Fridays only)
+        if now.weekday() == 4:  # Friday
+            await send_performance_report(bot, days=7)
+
+
 async def post_signals_once(pairs: List[str]) -> None:
     print("🤖 Starting bot...")
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
     
-    # First check for TP hits
+    # Check for performance reports first
+    await check_and_send_reports(bot)
+    
+    # Then check for TP hits
     print("🔍 Checking for TP hits...")
     profit_messages = check_signal_hits()
     print(f"Found {len(profit_messages)} TP hits")
