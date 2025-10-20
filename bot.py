@@ -213,6 +213,25 @@ def get_today_signals_count() -> int:
     return sum(1 for s in active_signals if s.get("date") == today)
 
 
+def get_active_pairs() -> List[str]:
+    """Get pairs that currently have active signals"""
+    active_signals = load_active_signals()
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    
+    active_pairs = []
+    for signal in active_signals:
+        if signal.get("status") == "active" and signal.get("date") == today:
+            active_pairs.append(signal.get("symbol"))
+    
+    return active_pairs
+
+
+def get_available_pairs(all_pairs: List[str]) -> List[str]:
+    """Get pairs that don't have active signals"""
+    active_pairs = get_active_pairs()
+    return [pair for pair in all_pairs if pair not in active_pairs]
+
+
 def add_signal(symbol: str, signal_type: str, entry: float, sl: float, tp: float) -> None:
     """Add new signal to tracking"""
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -284,7 +303,7 @@ def check_signal_hits() -> List[Dict]:
     updated_signals = []
     
     for signal in active_signals:
-        if signal.get("status") != "active" or signal.get("date") != today:
+        if signal.get("status") != "active":
             updated_signals.append(signal)
             continue
             
@@ -331,7 +350,8 @@ def check_signal_hits() -> List[Dict]:
             
             updated_signals.append(signal)
             
-        except Exception:
+        except Exception as e:
+            print(f"❌ Error checking signal {signal['symbol']}: {e}")
             # Keep signal active if we can't check price
             updated_signals.append(signal)
     
@@ -445,13 +465,31 @@ async def post_signals_once(pairs: List[str]) -> None:
         return
     
     # Generate new signals
-    print(f"🎯 Generating new signals (need {MAX_SIGNALS_PER_DAY - today_count} more)...")
+    signals_needed = MAX_SIGNALS_PER_DAY - today_count
+    print(f"🎯 Generating new signals (need {signals_needed} more)...")
+    
+    if signals_needed <= 0:
+        print("✅ Already have 4 signals for today")
+        return
+    
+    # Get available pairs (no active signals)
+    available_pairs = get_available_pairs(pairs)
+    print(f"📊 Available pairs: {len(available_pairs)} (active pairs excluded)")
+    
+    if not available_pairs:
+        print("⚠️ No available pairs - all pairs have active signals")
+        return
+    
     signals_generated = 0
-    for sym in pairs:
-        if signals_generated >= (MAX_SIGNALS_PER_DAY - today_count):
-            break
-            
-        print(f"📊 Analyzing {sym}...")
+    attempts = 0
+    max_attempts = len(available_pairs) * 2  # Try each pair twice max
+    
+    while signals_generated < signals_needed and attempts < max_attempts:
+        # Cycle through available pairs
+        sym = available_pairs[attempts % len(available_pairs)]
+        attempts += 1
+        
+        print(f"📊 Analyzing {sym} (attempt {attempts})...")
         try:
             bars = fetch_intraday_bars(sym, interval="1m", limit=120)
             print(f"  Got {len(bars)} bars for {sym}")
@@ -489,6 +527,12 @@ async def post_signals_once(pairs: List[str]) -> None:
                 
                 signals_generated += 1
                 print(f"✅ Generated signal {signals_generated}: {sym} {signal_type}")
+                
+                # Remove this pair from available pairs since it now has an active signal
+                if sym in available_pairs:
+                    available_pairs.remove(sym)
+                    print(f"  Removed {sym} from available pairs (now has active signal)")
+                
             else:
                 print(f"  No signal generated for {sym}")
                 

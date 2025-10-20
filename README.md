@@ -87,13 +87,24 @@ python bot.py
 
 ## Running Modes
 
+### 🚀 **Recommended: Continuous Bot (4 Signals/Day)**
+```bash
+python start_bot.py
+```
+**Best for production use:**
+- Ensures exactly 4 signals per day
+- Prevents duplicate signals for same pair
+- Checks TP/SL hits every 5 minutes
+- Sends daily/weekly reports at 14:00 GMT
+- Automatically clears old signals daily
+
 ### One-time Run
 ```bash
 python bot.py
 ```
 Generates signals once and checks for TP hits.
 
-### Continuous Monitoring
+### Continuous Monitoring (Legacy)
 ```bash
 python scheduler.py
 ```
