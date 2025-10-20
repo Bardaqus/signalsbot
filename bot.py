@@ -118,7 +118,7 @@ def calculate_atr_proxy(bars: List[Dict], last_price: float) -> float:
     return sum(ranges) / len(ranges) if ranges else 0.0
 
 
-def generate_signal_from_bars(bars: List[Dict]) -> Tuple[str, Dict[str, float]]:
+def generate_signal_from_bars(bars: List[Dict], symbol: str = "") -> Tuple[str, Dict[str, float]]:
     closes: List[float] = []
     for b in bars:
         c = to_float_safe(b.get("close"))
@@ -166,18 +166,27 @@ def generate_signal_from_bars(bars: List[Dict]) -> Tuple[str, Dict[str, float]]:
     if signal == "NO_SIGNAL":
         return signal, {}
 
-    # Calculate ATR proxy for better SL/TP
-    atr_proxy = calculate_atr_proxy(bars, last)
+    # Use fixed pip distances based on your examples
+    # Average SL: 96 pips, Average TP: 103 pips
+    sl_pips = 96  # Average SL distance
+    tp_pips = 103  # Average TP distance
     
-    # Conservative SL/TP ratios
+    # Adjust for JPY pairs (3 decimal places)
+    if symbol.endswith("JPY.FOREX"):
+        sl_distance = sl_pips / 1000  # JPY pairs use 3 decimals
+        tp_distance = tp_pips / 1000
+    else:
+        sl_distance = sl_pips / 10000  # Other pairs use 5 decimals
+        tp_distance = tp_pips / 10000
+    
     if signal == "BUY":
         entry = last
-        sl = entry - 1.0 * atr_proxy
-        tp = entry + 2.0 * atr_proxy
+        sl = entry - sl_distance
+        tp = entry + tp_distance
     else:  # SELL
         entry = last
-        sl = entry + 1.0 * atr_proxy
-        tp = entry - 2.0 * atr_proxy
+        sl = entry + sl_distance
+        tp = entry - tp_distance
 
     return signal, {
         "entry": entry,
@@ -493,7 +502,7 @@ async def post_signals_once(pairs: List[str]) -> None:
         try:
             bars = fetch_intraday_bars(sym, interval="1m", limit=120)
             print(f"  Got {len(bars)} bars for {sym}")
-            signal_type, metrics = generate_signal_from_bars(bars)
+            signal_type, metrics = generate_signal_from_bars(bars, sym)
             print(f"  Signal: {signal_type}")
             
             if signal_type in ("BUY", "SELL") and metrics:
@@ -506,14 +515,24 @@ async def post_signals_once(pairs: List[str]) -> None:
                     print(f"  Failed to get real-time price, using historical: {e}")
                     entry = metrics["entry"]
                 
-                # Recalculate SL and TP based on real-time entry price
-                atr_proxy = calculate_atr_proxy(bars, entry)
+                # Use fixed pip distances based on your examples
+                sl_pips = 96  # Average SL distance
+                tp_pips = 103  # Average TP distance
+                
+                # Adjust for JPY pairs (3 decimal places)
+                if sym.endswith("JPY.FOREX"):
+                    sl_distance = sl_pips / 1000  # JPY pairs use 3 decimals
+                    tp_distance = tp_pips / 1000
+                else:
+                    sl_distance = sl_pips / 10000  # Other pairs use 5 decimals
+                    tp_distance = tp_pips / 10000
+                
                 if signal_type == "BUY":
-                    sl = entry - 1.0 * atr_proxy
-                    tp = entry + 2.0 * atr_proxy
+                    sl = entry - sl_distance
+                    tp = entry + tp_distance
                 else:  # SELL
-                    sl = entry + 1.0 * atr_proxy
-                    tp = entry - 2.0 * atr_proxy
+                    sl = entry + sl_distance
+                    tp = entry - tp_distance
                 
                 print(f"  Entry: {entry}, SL: {sl}, TP: {tp}")
                 
