@@ -12,7 +12,7 @@ from bot import post_signals_once, DEFAULT_PAIRS, get_today_signals_count, MAX_S
 async def run_continuous_bot():
     """Run the bot continuously to ensure 4 signals per day"""
     print("🤖 Starting continuous bot...")
-    print("📊 Target: 4 signals per day")
+    print("📊 Target: 5 signals per day")
     print("⏰ Running every 5 minutes")
     print("Press Ctrl+C to stop")
     
@@ -29,7 +29,7 @@ async def run_continuous_bot():
                 print(f"🎯 Need {MAX_SIGNALS_PER_DAY - today_count} more signals")
                 await post_signals_once(DEFAULT_PAIRS)
             else:
-                print("✅ Already have 4 signals for today")
+                print("✅ Already have 5 signals for today")
                 # Still check for TP hits even if we have 4 signals
                 from bot import check_signal_hits, Bot
                 bot = Bot(token="7734435177:AAGeoSk7TChGNvaVf63R9DW8TELWRQB_rmY")

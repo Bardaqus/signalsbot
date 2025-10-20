@@ -4,7 +4,7 @@ A Python bot that generates intraday forex trading signals and posts them to a T
 
 ## Features
 
-- 🎯 **4 Signals Per Day** - Generates up to 4 trading signals daily
+- 🎯 **5 Signals Per Day** - Generates up to 5 trading signals daily
 - 📊 **Real-Time Prices** - Uses current market prices for entry points
 - 🔄 **Signal Tracking** - Monitors TP hits and sends profit notifications
 - 📱 **Telegram Integration** - Posts formatted signals to your channel
@@ -67,13 +67,12 @@ python bot.py
 2. **Real-Time Pricing**: Fetches current market prices for accurate entry points
 3. **Risk Management**: Calculates SL/TP based on ATR (Average True Range)
 4. **Tracking**: Monitors active signals and sends profit notifications
-5. **Daily Limit**: Stops at 4 signals per day to avoid overtrading
+5. **Daily Limit**: Stops at 5 signals per day to avoid overtrading
 
 ## Supported Pairs
 
-- EURUSD, GBPUSD, USDJPY
-- AUDUSD, USDCAD, USDCHF
-- GBPCAD, GBPNZD
+- **Forex**: EURUSD, GBPUSD, USDJPY, AUDUSD, USDCAD, USDCHF, GBPCAD, GBPNZD
+- **Gold**: XAUUSD (4% TP/SL targets)
 
 ## Files
 
@@ -87,16 +86,17 @@ python bot.py
 
 ## Running Modes
 
-### 🚀 **Recommended: Continuous Bot (4 Signals/Day)**
+### 🚀 **Recommended: Continuous Bot (5 Signals/Day)**
 ```bash
 python start_bot.py
 ```
 **Best for production use:**
-- Ensures exactly 4 signals per day
+- Ensures exactly 5 signals per day
 - Prevents duplicate signals for same pair
 - Checks TP/SL hits every 5 minutes
 - Sends daily/weekly reports at 14:00 GMT
 - Automatically clears old signals daily
+- Includes XAUUSD with 4% profit targets
 
 ### One-time Run
 ```bash

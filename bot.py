@@ -33,11 +33,12 @@ DEFAULT_PAIRS = [
     "USDCHF.FOREX",
     "GBPCAD.FOREX",
     "GBPNZD.FOREX",
+    "XAUUSD.FOREX",  # Gold
 ]
 
 SIGNALS_FILE = "active_signals.json"
 PERFORMANCE_FILE = "performance.json"
-MAX_SIGNALS_PER_DAY = 4
+MAX_SIGNALS_PER_DAY = 5
 PERFORMANCE_USER_ID = 615348532  # Telegram user ID for performance reports
 
 
@@ -46,9 +47,11 @@ class EODHDError(Exception):
 
 
 def format_price(pair: str, price: float) -> str:
-    # JPY pairs often quoted with 3 decimals; others 5
+    # JPY pairs often quoted with 3 decimals; XAUUSD with 2 decimals; others 5
     if pair.endswith("JPY.FOREX"):
         return f"{price:.3f}"
+    elif pair == "XAUUSD.FOREX":
+        return f"{price:.2f}"
     return f"{price:.5f}"
 
 
@@ -166,27 +169,41 @@ def generate_signal_from_bars(bars: List[Dict], symbol: str = "") -> Tuple[str, 
     if signal == "NO_SIGNAL":
         return signal, {}
 
-    # Use fixed pip distances based on your examples
-    # Average SL: 96 pips, Average TP: 103 pips
-    sl_pips = 96  # Average SL distance
-    tp_pips = 103  # Average TP distance
-    
-    # Adjust for JPY pairs (3 decimal places)
-    if symbol.endswith("JPY.FOREX"):
-        sl_distance = sl_pips / 1000  # JPY pairs use 3 decimals
-        tp_distance = tp_pips / 1000
+    # Use different TP/SL logic for XAUUSD vs forex pairs
+    if symbol == "XAUUSD.FOREX":
+        # XAUUSD: 3-5% profit target, same for SL
+        profit_pct = 0.04  # 4% average (between 3-5%)
+        sl_pct = 0.04  # 4% SL (same as TP)
+        
+        if signal == "BUY":
+            entry = last
+            sl = entry * (1 - sl_pct)  # 4% below entry
+            tp = entry * (1 + profit_pct)  # 4% above entry
+        else:  # SELL
+            entry = last
+            sl = entry * (1 + sl_pct)  # 4% above entry
+            tp = entry * (1 - profit_pct)  # 4% below entry
     else:
-        sl_distance = sl_pips / 10000  # Other pairs use 5 decimals
-        tp_distance = tp_pips / 10000
-    
-    if signal == "BUY":
-        entry = last
-        sl = entry - sl_distance
-        tp = entry + tp_distance
-    else:  # SELL
-        entry = last
-        sl = entry + sl_distance
-        tp = entry - tp_distance
+        # Forex pairs: fixed pip distances
+        sl_pips = 96  # Average SL distance
+        tp_pips = 103  # Average TP distance
+        
+        # Adjust for JPY pairs (3 decimal places)
+        if symbol.endswith("JPY.FOREX"):
+            sl_distance = sl_pips / 1000  # JPY pairs use 3 decimals
+            tp_distance = tp_pips / 1000
+        else:
+            sl_distance = sl_pips / 10000  # Other pairs use 5 decimals
+            tp_distance = tp_pips / 10000
+        
+        if signal == "BUY":
+            entry = last
+            sl = entry - sl_distance
+            tp = entry + tp_distance
+        else:  # SELL
+            entry = last
+            sl = entry + sl_distance
+            tp = entry - tp_distance
 
     return signal, {
         "entry": entry,
@@ -515,24 +532,37 @@ async def post_signals_once(pairs: List[str]) -> None:
                     print(f"  Failed to get real-time price, using historical: {e}")
                     entry = metrics["entry"]
                 
-                # Use fixed pip distances based on your examples
-                sl_pips = 96  # Average SL distance
-                tp_pips = 103  # Average TP distance
-                
-                # Adjust for JPY pairs (3 decimal places)
-                if sym.endswith("JPY.FOREX"):
-                    sl_distance = sl_pips / 1000  # JPY pairs use 3 decimals
-                    tp_distance = tp_pips / 1000
+                # Use different TP/SL logic for XAUUSD vs forex pairs
+                if sym == "XAUUSD.FOREX":
+                    # XAUUSD: 3-5% profit target, same for SL
+                    profit_pct = 0.04  # 4% average (between 3-5%)
+                    sl_pct = 0.04  # 4% SL (same as TP)
+                    
+                    if signal_type == "BUY":
+                        sl = entry * (1 - sl_pct)  # 4% below entry
+                        tp = entry * (1 + profit_pct)  # 4% above entry
+                    else:  # SELL
+                        sl = entry * (1 + sl_pct)  # 4% above entry
+                        tp = entry * (1 - profit_pct)  # 4% below entry
                 else:
-                    sl_distance = sl_pips / 10000  # Other pairs use 5 decimals
-                    tp_distance = tp_pips / 10000
-                
-                if signal_type == "BUY":
-                    sl = entry - sl_distance
-                    tp = entry + tp_distance
-                else:  # SELL
-                    sl = entry + sl_distance
-                    tp = entry - tp_distance
+                    # Forex pairs: fixed pip distances
+                    sl_pips = 96  # Average SL distance
+                    tp_pips = 103  # Average TP distance
+                    
+                    # Adjust for JPY pairs (3 decimal places)
+                    if sym.endswith("JPY.FOREX"):
+                        sl_distance = sl_pips / 1000  # JPY pairs use 3 decimals
+                        tp_distance = tp_pips / 1000
+                    else:
+                        sl_distance = sl_pips / 10000  # Other pairs use 5 decimals
+                        tp_distance = tp_pips / 10000
+                    
+                    if signal_type == "BUY":
+                        sl = entry - sl_distance
+                        tp = entry + tp_distance
+                    else:  # SELL
+                        sl = entry + sl_distance
+                        tp = entry - tp_distance
                 
                 print(f"  Entry: {entry}, SL: {sl}, TP: {tp}")
                 
