@@ -351,13 +351,22 @@ def check_signal_hits() -> List[Dict]:
                 hit_tp = current_price <= tp
             
             if hit_tp:
-                # Calculate profit
-                if signal_type == "BUY":
-                    profit_pips = (current_price - entry) * 10000
-                else:  # SELL
-                    profit_pips = (entry - current_price) * 10000
+                # Calculate profit - adjust multiplier for JPY pairs
+                if signal["symbol"].endswith("JPY.FOREX"):
+                    # JPY pairs use 3 decimal places, so multiply by 1000
+                    multiplier = 1000
+                else:
+                    # Other pairs use 5 decimal places, so multiply by 10000
+                    multiplier = 10000
                 
-                profit_msg = f"🎯 TP HIT! {signal['symbol'].replace('.FOREX', '')} {signal_type} - Profit: {profit_pips:.1f} pips"
+                if signal_type == "BUY":
+                    profit_pips = (current_price - entry) * multiplier
+                else:  # SELL
+                    profit_pips = (entry - current_price) * multiplier
+                
+                # Build original signal message for reply
+                original_signal_msg = build_signal_message(signal["symbol"], signal_type, entry, sl, tp)
+                profit_msg = f"🎯 TP HIT! {signal['symbol'].replace('.FOREX', '')} {signal_type} - Profit: {profit_pips:.1f} pips\n\nOriginal Signal:\n{original_signal_msg}"
                 profit_messages.append(profit_msg)
                 
                 # Add to performance tracking
