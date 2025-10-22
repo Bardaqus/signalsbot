@@ -177,9 +177,9 @@ def generate_forex_signal():
         sl = round(entry * 0.98, 2) if signal_type == "BUY" else round(entry * 1.02, 2)
         tp = round(entry * 1.02, 2) if signal_type == "BUY" else round(entry * 0.98, 2)
     elif pair.endswith("JPY"):
-        # JPY pairs: 0.1 pip SL/TP
-        sl = round(entry - 0.1, 3) if signal_type == "BUY" else round(entry + 0.1, 3)
-        tp = round(entry + 0.1, 3) if signal_type == "BUY" else round(entry - 0.1, 3)
+        # JPY pairs: 0.2 pip SL/TP (2x bigger range)
+        sl = round(entry - 0.2, 3) if signal_type == "BUY" else round(entry + 0.2, 3)
+        tp = round(entry + 0.2, 3) if signal_type == "BUY" else round(entry - 0.2, 3)
     else:
         # Other pairs: 0.001 pip SL/TP
         sl = round(entry - 0.001, 5) if signal_type == "BUY" else round(entry + 0.001, 5)

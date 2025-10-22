@@ -188,10 +188,10 @@ def generate_signal_from_bars(bars: List[Dict], symbol: str = "") -> Tuple[str, 
         sl_pips = 96  # Average SL distance
         tp_pips = 103  # Average TP distance
         
-        # Adjust for JPY pairs (3 decimal places)
+        # Adjust for JPY pairs (3 decimal places) - 2x bigger range
         if symbol.endswith("JPY.FOREX"):
-            sl_distance = sl_pips / 1000  # JPY pairs use 3 decimals
-            tp_distance = tp_pips / 1000
+            sl_distance = (sl_pips * 2) / 1000  # JPY pairs use 3 decimals, 2x bigger range
+            tp_distance = (tp_pips * 2) / 1000
         else:
             sl_distance = sl_pips / 10000  # Other pairs use 5 decimals
             tp_distance = tp_pips / 10000
@@ -558,10 +558,10 @@ async def post_signals_once(pairs: List[str]) -> None:
                     sl_pips = 96  # Average SL distance
                     tp_pips = 103  # Average TP distance
                     
-                    # Adjust for JPY pairs (3 decimal places)
+                    # Adjust for JPY pairs (3 decimal places) - 2x bigger range
                     if sym.endswith("JPY.FOREX"):
-                        sl_distance = sl_pips / 1000  # JPY pairs use 3 decimals
-                        tp_distance = tp_pips / 1000
+                        sl_distance = (sl_pips * 2) / 1000  # JPY pairs use 3 decimals, 2x bigger range
+                        tp_distance = (tp_pips * 2) / 1000
                     else:
                         sl_distance = sl_pips / 10000  # Other pairs use 5 decimals
                         tp_distance = tp_pips / 10000
