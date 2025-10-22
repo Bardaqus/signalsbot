@@ -712,8 +712,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         ]
     ]
     
-    # Add special forward button only for user 501779863
-    if user_id == 501779863:
+    # Add special forward button for admin users
+    if user_id in ALLOWED_USERS:
         keyboard.append([
             InlineKeyboardButton("🔄 Forward Forex to New Channel", callback_data="forward_forex")
         ])
@@ -1088,8 +1088,8 @@ async def handle_refresh(query, context: ContextTypes.DEFAULT_TYPE) -> None:
         ]
     ]
     
-    # Add special forward button only for user 501779863
-    if user_id == 501779863:
+    # Add special forward button for admin users
+    if user_id in ALLOWED_USERS:
         keyboard.append([
             InlineKeyboardButton("🔄 Forward Forex to New Channel", callback_data="forward_forex")
         ])
@@ -1124,8 +1124,8 @@ async def handle_forward_forex(query, context: ContextTypes.DEFAULT_TYPE) -> Non
     """Handle forwarding forex signals from original channel to new channel"""
     user_id = query.from_user.id
     
-    # Only allow user 501779863 to use this feature
-    if user_id != 501779863:
+    # Only allow admin users to use this feature
+    if user_id not in ALLOWED_USERS:
         await query.edit_message_text("❌ You are not authorized to use this feature.")
         return
     
@@ -1179,7 +1179,7 @@ async def handle_forward_forex(query, context: ContextTypes.DEFAULT_TYPE) -> Non
             parse_mode='Markdown'
         )
         
-        print(f"✅ Forex signal forwarded by user {user_id}: {signal['pair']} {signal['type']} to -1001286609636")
+        print(f"✅ Forex signal forwarded by admin user {user_id}: {signal['pair']} {signal['type']} to -1001286609636")
         
     except Exception as e:
         await query.edit_message_text(
