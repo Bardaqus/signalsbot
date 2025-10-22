@@ -25,7 +25,7 @@ if __name__ == "__main__":
     print("  • Fixed all asyncio issues with threading")
     print("=" * 60)
     print("📤 Channels:")
-    print("  • Forex: -1003118256304")
+    print("  • Forex: -1001286609636")
     print("  • Crypto: -1002978318746")
     print("=" * 60)
     print("📊 Summary Reports:")

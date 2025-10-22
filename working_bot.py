@@ -15,7 +15,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 
 # Configuration
 BOT_TOKEN = "7734435177:AAGeoSk7TChGNvaVf63R9DW8TELWRQB_rmY"
-FOREX_CHANNEL = "-1003118256304"
+FOREX_CHANNEL = "-1001286609636"
 CRYPTO_CHANNEL = "-1002978318746"
 
 # Allowed user IDs for interactive features
@@ -396,7 +396,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 • All signals use REAL prices from live markets
 
 **Channels:**
-• Forex: -1003118256304
+• Forex: -1001286609636
 • Crypto: -1002978318746
 
 *Click any button to proceed*
@@ -748,7 +748,7 @@ async def handle_refresh(query, context: ContextTypes.DEFAULT_TYPE) -> None:
 • All signals use REAL prices from live markets
 
 **Channels:**
-• Forex: -1003118256304
+• Forex: -1001286609636
 • Crypto: -1002978318746
 
 *Click any button to proceed*

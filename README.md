@@ -69,7 +69,7 @@ Edit the bot token in your preferred bot file:
 
 ```python
 BOT_TOKEN = "your_telegram_bot_token"
-FOREX_CHANNEL = "-1003118256304"  # Your forex channel
+FOREX_CHANNEL = "-1001286609636"  # Your forex channel
 CRYPTO_CHANNEL = "-1002978318746"  # Your crypto channel
 ```
 
@@ -212,7 +212,7 @@ Send `/start` to your bot to access:
 📈 Forex Signals
 • Total: 5/5
 • BUY: 3, SELL: 2
-• Channel: -1003118256304
+• Channel: -1001286609636
 
 🪙 Crypto Signals
 • Total: 5/5

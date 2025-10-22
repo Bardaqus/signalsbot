@@ -20,7 +20,7 @@ import threading
 
 # Configuration
 BOT_TOKEN = "7734435177:AAGeoSk7TChGNvaVf63R9DW8TELWRQB_rmY"
-FOREX_CHANNEL = "-1003118256304"
+FOREX_CHANNEL = "-1001286609636"
 FOREX_CHANNEL_3TP = "-1001220540048"  # New forex channel with 3 TPs
 CRYPTO_CHANNEL = "-1002978318746"
 SUMMARY_USER_ID = 615348532
@@ -715,7 +715,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 • All signals use REAL prices from live markets
 
 **Channels:**
-• Forex: -1003118256304
+• Forex: -1001286609636
 • Crypto: -1002978318746
 
 *Click any button to proceed*
@@ -1080,7 +1080,7 @@ async def handle_refresh(query, context: ContextTypes.DEFAULT_TYPE) -> None:
 • All signals use REAL prices from live markets
 
 **Channels:**
-• Forex: -1003118256304
+• Forex: -1001286609636
 • Crypto: -1002978318746
 
 *Click any button to proceed*
