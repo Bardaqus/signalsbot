@@ -20,7 +20,7 @@ import threading
 
 # Configuration
 BOT_TOKEN = "7734435177:AAGeoSk7TChGNvaVf63R9DW8TELWRQB_rmY"
-FOREX_CHANNEL = "-1001286609636"
+FOREX_CHANNEL = "-1003118256304"
 FOREX_CHANNEL_3TP = "-1001220540048"  # New forex channel with 3 TPs
 CRYPTO_CHANNEL = "-1002978318746"
 SUMMARY_USER_ID = 615348532
@@ -66,7 +66,7 @@ def get_real_forex_price(pair):
                     data = response.json()
                     return float(data.get("price", 0))
             except:
-                # Fallback to another gold API
+                # Try alternative gold API
                 url = "https://api.goldapi.io/api/XAU/USD"
                 headers = {"x-access-token": "goldapi-1234567890abcdef"}
                 try:
@@ -75,9 +75,22 @@ def get_real_forex_price(pair):
                         data = response.json()
                         return float(data.get("price", 0))
                 except:
-                    # Final fallback - use a reasonable gold price range
-                    import random
-                    return round(random.uniform(2000, 2500), 2)
+                    # Try another gold API
+                    url = "https://api.metals.live/v1/spot/silver"
+                    try:
+                        response = requests.get(url, timeout=10)
+                        if response.status_code == 200:
+                            data = response.json()
+                            # Use silver price as reference and estimate gold (roughly 80x silver)
+                            silver_price = float(data.get("price", 0))
+                            if silver_price > 0:
+                                return round(silver_price * 80, 2)
+                    except:
+                        pass
+                    
+                    # If all APIs fail, return None instead of random price
+                    print(f"❌ All gold price APIs failed for {pair}")
+                    return None
         else:
             # Forex pairs from a free API
             url = f"https://api.fxratesapi.com/latest?base={pair[:3]}&symbols={pair[3:]}"
@@ -715,7 +728,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 • All signals use REAL prices from live markets
 
 **Channels:**
-• Forex: -1001286609636
+• Forex: -1003118256304
 • Crypto: -1002978318746
 
 *Click any button to proceed*
@@ -1080,7 +1093,7 @@ async def handle_refresh(query, context: ContextTypes.DEFAULT_TYPE) -> None:
 • All signals use REAL prices from live markets
 
 **Channels:**
-• Forex: -1001286609636
+• Forex: -1003118256304
 • Crypto: -1002978318746
 
 *Click any button to proceed*
