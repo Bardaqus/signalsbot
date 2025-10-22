@@ -49,10 +49,10 @@ class EODHDError(Exception):
 def format_price(pair: str, price: float) -> str:
     # JPY pairs often quoted with 3 decimals; XAUUSD with 2 decimals; others 5
     if pair.endswith("JPY.FOREX"):
-        return f"{price:.3f}"
+        return f"{price:,.3f}"
     elif pair == "XAUUSD.FOREX":
-        return f"{price:.2f}"
-    return f"{price:.5f}"
+        return f"{price:,.2f}"
+    return f"{price:,.5f}"
 
 
 @retry(

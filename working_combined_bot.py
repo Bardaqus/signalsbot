@@ -259,19 +259,46 @@ def generate_crypto_signal():
 
 def format_forex_signal(signal):
     """Format forex signal message"""
-    return f"""{signal['pair']} {signal['type']} {signal['entry']}
-SL {signal['sl']}
-TP {signal['tp']}"""
+    pair = signal['pair']
+    signal_type = signal['type']
+    
+    # Format numbers based on pair type
+    if pair == "XAUUSD":
+        # Gold: 2 decimal places
+        entry = f"{signal['entry']:,.2f}"
+        sl = f"{signal['sl']:,.2f}"
+        tp = f"{signal['tp']:,.2f}"
+    elif pair.endswith("JPY"):
+        # JPY pairs: 3 decimal places
+        entry = f"{signal['entry']:,.3f}"
+        sl = f"{signal['sl']:,.3f}"
+        tp = f"{signal['tp']:,.3f}"
+    else:
+        # Other forex pairs: 5 decimal places
+        entry = f"{signal['entry']:,.5f}"
+        sl = f"{signal['sl']:,.5f}"
+        tp = f"{signal['tp']:,.5f}"
+    
+    return f"""{pair} {signal_type} {entry}
+SL {sl}
+TP {tp}"""
 
 
 def format_crypto_signal(signal):
     """Format crypto signal message"""
+    # Format crypto numbers with 6 decimal places and comma separators
+    entry = f"{signal['entry']:,.6f}"
+    sl = f"{signal['sl']:,.6f}"
+    tp1 = f"{signal['tp1']:,.6f}"
+    tp2 = f"{signal['tp2']:,.6f}"
+    tp3 = f"{signal['tp3']:,.6f}"
+    
     return f"""{signal['pair']} {signal['type']}
-Entry: {signal['entry']}
-SL: {signal['sl']}
-TP1: {signal['tp1']}
-TP2: {signal['tp2']}
-TP3: {signal['tp3']}"""
+Entry: {entry}
+SL: {sl}
+TP1: {tp1}
+TP2: {tp2}
+TP3: {tp3}"""
 
 
 def get_next_interval():
