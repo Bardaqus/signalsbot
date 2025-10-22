@@ -132,9 +132,21 @@ def load_signals():
     """Load today's signals"""
     try:
         with open(SIGNALS_FILE, 'r') as f:
-            return json.load(f)
+            signals = json.load(f)
+            # Ensure all required keys exist
+            if "forex_3tp" not in signals:
+                signals["forex_3tp"] = []
+            if "forwarded_forex" not in signals:
+                signals["forwarded_forex"] = []
+            return signals
     except:
-        return {"forex": [], "crypto": [], "date": datetime.now(timezone.utc).strftime("%Y-%m-%d")}
+        return {
+            "forex": [], 
+            "forex_3tp": [], 
+            "crypto": [], 
+            "forwarded_forex": [],
+            "date": datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        }
 
 
 def save_signals(signals):
