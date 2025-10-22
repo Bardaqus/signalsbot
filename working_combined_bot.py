@@ -179,28 +179,43 @@ def calculate_signal_profit(signal, current_price):
             tp3 = signal.get("tp3", 0)
             
             # 3TP Logic: Check which TP was hit first, then if SL was hit
+            # Calculate actual profit percentages based on entry price
             if signal_type == "BUY":
                 # For BUY: Check if price went up to TPs first, then down to SL
                 if current_price >= tp3:
                     # Price reached TP3, check if SL was hit after
                     if current_price <= sl:
-                        return -3  # TP3 hit then SL hit = -3%
+                        # TP3 hit then SL hit = negative of TP3 percentage
+                        tp3_profit = ((tp3 - entry) / entry) * 100
+                        return -tp3_profit
                     else:
-                        return 3   # TP3 hit, no SL = +3%
+                        # TP3 hit, no SL = positive TP3 percentage
+                        tp3_profit = ((tp3 - entry) / entry) * 100
+                        return tp3_profit
                 elif current_price >= tp2:
                     # Price reached TP2, check if SL was hit after
                     if current_price <= sl:
-                        return -2  # TP2 hit then SL hit = -2%
+                        # TP2 hit then SL hit = negative of TP2 percentage
+                        tp2_profit = ((tp2 - entry) / entry) * 100
+                        return -tp2_profit
                     else:
-                        return 2   # TP2 hit, no SL = +2%
+                        # TP2 hit, no SL = positive TP2 percentage
+                        tp2_profit = ((tp2 - entry) / entry) * 100
+                        return tp2_profit
                 elif current_price >= tp1:
                     # Price reached TP1, check if SL was hit after
                     if current_price <= sl:
-                        return -1  # TP1 hit then SL hit = -1%
+                        # TP1 hit then SL hit = negative of TP1 percentage
+                        tp1_profit = ((tp1 - entry) / entry) * 100
+                        return -tp1_profit
                     else:
-                        return 1   # TP1 hit, no SL = +1%
+                        # TP1 hit, no SL = positive TP1 percentage
+                        tp1_profit = ((tp1 - entry) / entry) * 100
+                        return tp1_profit
                 elif current_price <= sl:
-                    return -1  # No TP hit, SL hit = -1%
+                    # No TP hit, SL hit = negative SL percentage
+                    sl_loss = ((entry - sl) / entry) * 100
+                    return -sl_loss
                 else:
                     return 0   # No TP or SL hit yet
             else:  # SELL
@@ -208,23 +223,37 @@ def calculate_signal_profit(signal, current_price):
                 if current_price <= tp3:
                     # Price reached TP3, check if SL was hit after
                     if current_price >= sl:
-                        return -3  # TP3 hit then SL hit = -3%
+                        # TP3 hit then SL hit = negative of TP3 percentage
+                        tp3_profit = ((entry - tp3) / entry) * 100
+                        return -tp3_profit
                     else:
-                        return 3   # TP3 hit, no SL = +3%
+                        # TP3 hit, no SL = positive TP3 percentage
+                        tp3_profit = ((entry - tp3) / entry) * 100
+                        return tp3_profit
                 elif current_price <= tp2:
                     # Price reached TP2, check if SL was hit after
                     if current_price >= sl:
-                        return -2  # TP2 hit then SL hit = -2%
+                        # TP2 hit then SL hit = negative of TP2 percentage
+                        tp2_profit = ((entry - tp2) / entry) * 100
+                        return -tp2_profit
                     else:
-                        return 2   # TP2 hit, no SL = +2%
+                        # TP2 hit, no SL = positive TP2 percentage
+                        tp2_profit = ((entry - tp2) / entry) * 100
+                        return tp2_profit
                 elif current_price <= tp1:
                     # Price reached TP1, check if SL was hit after
                     if current_price >= sl:
-                        return -1  # TP1 hit then SL hit = -1%
+                        # TP1 hit then SL hit = negative of TP1 percentage
+                        tp1_profit = ((entry - tp1) / entry) * 100
+                        return -tp1_profit
                     else:
-                        return 1   # TP1 hit, no SL = +1%
+                        # TP1 hit, no SL = positive TP1 percentage
+                        tp1_profit = ((entry - tp1) / entry) * 100
+                        return tp1_profit
                 elif current_price >= sl:
-                    return -1  # No TP hit, SL hit = -1%
+                    # No TP hit, SL hit = negative SL percentage
+                    sl_loss = ((sl - entry) / entry) * 100
+                    return -sl_loss
                 else:
                     return 0   # No TP or SL hit yet
         else:
@@ -233,16 +262,24 @@ def calculate_signal_profit(signal, current_price):
             
             if signal_type == "BUY":
                 if current_price >= tp:
-                    return 1   # TP hit = +1%
+                    # TP hit = positive TP percentage
+                    tp_profit = ((tp - entry) / entry) * 100
+                    return tp_profit
                 elif current_price <= sl:
-                    return -1  # SL hit = -1%
+                    # SL hit = negative SL percentage
+                    sl_loss = ((entry - sl) / entry) * 100
+                    return -sl_loss
                 else:
                     return 0   # No TP or SL hit yet
             else:  # SELL
                 if current_price <= tp:
-                    return 1   # TP hit = +1%
+                    # TP hit = positive TP percentage
+                    tp_profit = ((entry - tp) / entry) * 100
+                    return tp_profit
                 elif current_price >= sl:
-                    return -1  # SL hit = -1%
+                    # SL hit = negative SL percentage
+                    sl_loss = ((sl - entry) / entry) * 100
+                    return -sl_loss
                 else:
                     return 0   # No TP or SL hit yet
                     
@@ -372,19 +409,26 @@ def generate_forex_signal():
         print(f"❌ Could not get real price for {pair}, skipping signal")
         return None
     
-    # Calculate SL and TP based on real price
+    # Calculate SL and TP based on real price with new ranges
     if pair == "XAUUSD":
-        # Gold: 2% SL/TP
-        sl = round(entry * 0.98, 2) if signal_type == "BUY" else round(entry * 1.02, 2)
-        tp = round(entry * 1.02, 2) if signal_type == "BUY" else round(entry * 0.98, 2)
-    elif pair.endswith("JPY"):
-        # JPY pairs: 0.2 pip SL/TP (2x bigger range)
-        sl = round(entry - 0.2, 3) if signal_type == "BUY" else round(entry + 0.2, 3)
-        tp = round(entry + 0.2, 3) if signal_type == "BUY" else round(entry - 0.2, 3)
+        # Gold: 1-2% TP, 1-2% SL
+        tp_percent = random.uniform(0.01, 0.02)  # 1-2%
+        sl_percent = random.uniform(0.01, 0.02)  # 1-2%
+        
+        if signal_type == "BUY":
+            tp = round(entry * (1 + tp_percent), 2)
+            sl = round(entry * (1 - sl_percent), 2)
+        else:  # SELL
+            tp = round(entry * (1 - tp_percent), 2)
+            sl = round(entry * (1 + sl_percent), 2)
     else:
-        # Other pairs: 0.001 pip SL/TP
-        sl = round(entry - 0.001, 5) if signal_type == "BUY" else round(entry + 0.001, 5)
-        tp = round(entry + 0.001, 5) if signal_type == "BUY" else round(entry - 0.001, 5)
+        # Main forex pairs: 0.1% TP, 0.15% SL
+        if signal_type == "BUY":
+            tp = round(entry * 1.001, 5)  # 0.1% TP
+            sl = round(entry * 0.9985, 5)  # 0.15% SL
+        else:  # SELL
+            tp = round(entry * 0.999, 5)  # 0.1% TP
+            sl = round(entry * 1.0015, 5)  # 0.15% SL
     
     return {
         "pair": pair,
@@ -424,43 +468,36 @@ def generate_forex_3tp_signal():
         print(f"❌ Could not get real price for {pair}, skipping signal")
         return None
     
-    # Calculate SL and 3 TPs based on real price (similar to crypto logic)
+    # Calculate SL and 3 TPs based on real price with new ranges
     if pair == "XAUUSD":
-        # Gold: 2% SL, 2%/4%/6% TPs
+        # Gold: 1-2% SL, 1-2% TPs (randomized)
+        sl_percent = random.uniform(0.01, 0.02)  # 1-2% SL
+        tp1_percent = random.uniform(0.01, 0.02)  # 1-2% TP1
+        tp2_percent = random.uniform(0.015, 0.025)  # 1.5-2.5% TP2
+        tp3_percent = random.uniform(0.02, 0.03)  # 2-3% TP3
+        
         if signal_type == "BUY":
-            sl = round(entry * 0.98, 2)  # 2% stop loss
-            tp1 = round(entry * 1.02, 2)  # 2% first take profit
-            tp2 = round(entry * 1.04, 2)  # 4% second take profit
-            tp3 = round(entry * 1.06, 2)  # 6% third take profit
+            sl = round(entry * (1 - sl_percent), 2)
+            tp1 = round(entry * (1 + tp1_percent), 2)
+            tp2 = round(entry * (1 + tp2_percent), 2)
+            tp3 = round(entry * (1 + tp3_percent), 2)
         else:  # SELL
-            sl = round(entry * 1.02, 2)  # 2% stop loss
-            tp1 = round(entry * 0.98, 2)  # 2% first take profit
-            tp2 = round(entry * 0.96, 2)  # 4% second take profit
-            tp3 = round(entry * 0.94, 2)  # 6% third take profit
-    elif pair.endswith("JPY"):
-        # JPY pairs: 0.2 pip SL, 0.2/0.4/0.6 pip TPs
-        if signal_type == "BUY":
-            sl = round(entry - 0.2, 3)  # 0.2 pip stop loss
-            tp1 = round(entry + 0.2, 3)  # 0.2 pip first take profit
-            tp2 = round(entry + 0.4, 3)  # 0.4 pip second take profit
-            tp3 = round(entry + 0.6, 3)  # 0.6 pip third take profit
-        else:  # SELL
-            sl = round(entry + 0.2, 3)  # 0.2 pip stop loss
-            tp1 = round(entry - 0.2, 3)  # 0.2 pip first take profit
-            tp2 = round(entry - 0.4, 3)  # 0.4 pip second take profit
-            tp3 = round(entry - 0.6, 3)  # 0.6 pip third take profit
+            sl = round(entry * (1 + sl_percent), 2)
+            tp1 = round(entry * (1 - tp1_percent), 2)
+            tp2 = round(entry * (1 - tp2_percent), 2)
+            tp3 = round(entry * (1 - tp3_percent), 2)
     else:
-        # Other pairs: 0.001 pip SL, 0.001/0.002/0.003 pip TPs
+        # Main forex pairs: 0.1% TP1, 0.15% TP2, 0.2% TP3, 0.15% SL
         if signal_type == "BUY":
-            sl = round(entry - 0.001, 5)  # 0.001 pip stop loss
-            tp1 = round(entry + 0.001, 5)  # 0.001 pip first take profit
-            tp2 = round(entry + 0.002, 5)  # 0.002 pip second take profit
-            tp3 = round(entry + 0.003, 5)  # 0.003 pip third take profit
+            sl = round(entry * 0.9985, 5)  # 0.15% SL
+            tp1 = round(entry * 1.001, 5)  # 0.1% TP1
+            tp2 = round(entry * 1.0015, 5)  # 0.15% TP2
+            tp3 = round(entry * 1.002, 5)  # 0.2% TP3
         else:  # SELL
-            sl = round(entry + 0.001, 5)  # 0.001 pip stop loss
-            tp1 = round(entry - 0.001, 5)  # 0.001 pip first take profit
-            tp2 = round(entry - 0.002, 5)  # 0.002 pip second take profit
-            tp3 = round(entry - 0.003, 5)  # 0.003 pip third take profit
+            sl = round(entry * 1.0015, 5)  # 0.15% SL
+            tp1 = round(entry * 0.999, 5)  # 0.1% TP1
+            tp2 = round(entry * 0.9985, 5)  # 0.15% TP2
+            tp3 = round(entry * 0.998, 5)  # 0.2% TP3
     
     return {
         "pair": pair,
@@ -512,17 +549,22 @@ def generate_crypto_signal():
         print(f"❌ Could not get real price for {pair}, skipping signal")
         return None
     
-    # Calculate SL and TP based on real price
+    # Calculate SL and TP based on real price with new ranges (2-10% TP, 4% SL)
+    # Random TP percentages between 2-10%
+    tp1_percent = random.uniform(0.02, 0.04)  # 2-4% TP1
+    tp2_percent = random.uniform(0.05, 0.07)  # 5-7% TP2
+    tp3_percent = random.uniform(0.08, 0.10)  # 8-10% TP3
+    
     if signal_type == "BUY":
-        sl = round(entry * 0.98, 6)  # 2% stop loss
-        tp1 = round(entry * 1.02, 6)  # 2% first take profit
-        tp2 = round(entry * 1.04, 6)  # 4% second take profit
-        tp3 = round(entry * 1.06, 6)  # 6% third take profit
+        sl = round(entry * 0.96, 6)  # 4% stop loss
+        tp1 = round(entry * (1 + tp1_percent), 6)  # 2-4% first take profit
+        tp2 = round(entry * (1 + tp2_percent), 6)  # 5-7% second take profit
+        tp3 = round(entry * (1 + tp3_percent), 6)  # 8-10% third take profit
     else:  # SELL
-        sl = round(entry * 1.02, 6)  # 2% stop loss
-        tp1 = round(entry * 0.98, 6)  # 2% first take profit
-        tp2 = round(entry * 0.96, 6)  # 4% second take profit
-        tp3 = round(entry * 0.94, 6)  # 6% third take profit
+        sl = round(entry * 1.04, 6)  # 4% stop loss
+        tp1 = round(entry * (1 - tp1_percent), 6)  # 2-4% first take profit
+        tp2 = round(entry * (1 - tp2_percent), 6)  # 5-7% second take profit
+        tp3 = round(entry * (1 - tp3_percent), 6)  # 8-10% third take profit
     
     return {
         "pair": pair,
