@@ -164,6 +164,180 @@ def load_performance():
         return {"forex": [], "crypto": [], "date": datetime.now(timezone.utc).strftime("%Y-%m-%d")}
 
 
+def calculate_signal_profit(signal, current_price):
+    """Calculate profit for a signal based on current price and 3TP rules"""
+    try:
+        pair = signal.get("pair", "")
+        signal_type = signal.get("type", "")
+        entry = signal.get("entry", 0)
+        sl = signal.get("sl", 0)
+        
+        # Check if it's a 3TP signal (crypto or forex_3tp)
+        if "tp1" in signal and "tp2" in signal and "tp3" in signal:
+            tp1 = signal.get("tp1", 0)
+            tp2 = signal.get("tp2", 0)
+            tp3 = signal.get("tp3", 0)
+            
+            # 3TP Logic: Check which TP was hit first, then if SL was hit
+            if signal_type == "BUY":
+                # For BUY: Check if price went up to TPs first, then down to SL
+                if current_price >= tp3:
+                    # Price reached TP3, check if SL was hit after
+                    if current_price <= sl:
+                        return -3  # TP3 hit then SL hit = -3%
+                    else:
+                        return 3   # TP3 hit, no SL = +3%
+                elif current_price >= tp2:
+                    # Price reached TP2, check if SL was hit after
+                    if current_price <= sl:
+                        return -2  # TP2 hit then SL hit = -2%
+                    else:
+                        return 2   # TP2 hit, no SL = +2%
+                elif current_price >= tp1:
+                    # Price reached TP1, check if SL was hit after
+                    if current_price <= sl:
+                        return -1  # TP1 hit then SL hit = -1%
+                    else:
+                        return 1   # TP1 hit, no SL = +1%
+                elif current_price <= sl:
+                    return -1  # No TP hit, SL hit = -1%
+                else:
+                    return 0   # No TP or SL hit yet
+            else:  # SELL
+                # For SELL: Check if price went down to TPs first, then up to SL
+                if current_price <= tp3:
+                    # Price reached TP3, check if SL was hit after
+                    if current_price >= sl:
+                        return -3  # TP3 hit then SL hit = -3%
+                    else:
+                        return 3   # TP3 hit, no SL = +3%
+                elif current_price <= tp2:
+                    # Price reached TP2, check if SL was hit after
+                    if current_price >= sl:
+                        return -2  # TP2 hit then SL hit = -2%
+                    else:
+                        return 2   # TP2 hit, no SL = +2%
+                elif current_price <= tp1:
+                    # Price reached TP1, check if SL was hit after
+                    if current_price >= sl:
+                        return -1  # TP1 hit then SL hit = -1%
+                    else:
+                        return 1   # TP1 hit, no SL = +1%
+                elif current_price >= sl:
+                    return -1  # No TP hit, SL hit = -1%
+                else:
+                    return 0   # No TP or SL hit yet
+        else:
+            # Single TP signal (regular forex)
+            tp = signal.get("tp", 0)
+            
+            if signal_type == "BUY":
+                if current_price >= tp:
+                    return 1   # TP hit = +1%
+                elif current_price <= sl:
+                    return -1  # SL hit = -1%
+                else:
+                    return 0   # No TP or SL hit yet
+            else:  # SELL
+                if current_price <= tp:
+                    return 1   # TP hit = +1%
+                elif current_price >= sl:
+                    return -1  # SL hit = -1%
+                else:
+                    return 0   # No TP or SL hit yet
+                    
+    except Exception as e:
+        print(f"❌ Error calculating profit for {pair}: {e}")
+        return 0
+
+
+def get_performance_summary(signals_list, days=1):
+    """Get performance summary for signals"""
+    try:
+        if not signals_list:
+            return {
+                "total_signals": 0,
+                "profit_signals": 0,
+                "loss_signals": 0,
+                "total_profit": 0,
+                "signals_detail": []
+            }
+        
+        # Filter signals by date range
+        cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
+        filtered_signals = []
+        
+        for signal in signals_list:
+            try:
+                signal_date = datetime.fromisoformat(signal.get("timestamp", "").replace("Z", "+00:00"))
+                if signal_date >= cutoff_date:
+                    filtered_signals.append(signal)
+            except:
+                # If timestamp parsing fails, include the signal
+                filtered_signals.append(signal)
+        
+        if not filtered_signals:
+            return {
+                "total_signals": 0,
+                "profit_signals": 0,
+                "loss_signals": 0,
+                "total_profit": 0,
+                "signals_detail": []
+            }
+        
+        # Calculate performance for each signal
+        signals_detail = []
+        total_profit = 0
+        profit_count = 0
+        loss_count = 0
+        
+        for signal in filtered_signals:
+            pair = signal.get("pair", "")
+            signal_type = signal.get("type", "")
+            entry = signal.get("entry", 0)
+            
+            # Get current price
+            if pair in CRYPTO_PAIRS:
+                current_price = get_real_crypto_price(pair)
+            else:
+                current_price = get_real_forex_price(pair)
+            
+            if current_price is None:
+                continue
+            
+            # Calculate profit
+            profit_percent = calculate_signal_profit(signal, current_price)
+            
+            if profit_percent > 0:
+                profit_count += 1
+                total_profit += profit_percent
+                signals_detail.append(f"{pair} {signal_type} +{profit_percent}%")
+            elif profit_percent < 0:
+                loss_count += 1
+                total_profit += profit_percent
+                signals_detail.append(f"{pair} {signal_type} {profit_percent}%")
+            else:
+                signals_detail.append(f"{pair} {signal_type} 0%")
+        
+        return {
+            "total_signals": len(filtered_signals),
+            "profit_signals": profit_count,
+            "loss_signals": loss_count,
+            "total_profit": total_profit,
+            "signals_detail": signals_detail
+        }
+        
+    except Exception as e:
+        print(f"❌ Error calculating performance summary: {e}")
+        return {
+            "total_signals": 0,
+            "profit_signals": 0,
+            "loss_signals": 0,
+            "total_profit": 0,
+            "signals_detail": []
+        }
+
+
 def save_performance(performance):
     """Save performance data"""
     with open(PERFORMANCE_FILE, 'w') as f:
@@ -707,20 +881,25 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     
     keyboard = [
         [
-            InlineKeyboardButton("📊 Send Forex Signal", callback_data="forex_signal"),
-            InlineKeyboardButton("🪙 Send Crypto Signal", callback_data="crypto_signal")
+            InlineKeyboardButton("📊 Forex Signal", callback_data="forex_signal"),
+            InlineKeyboardButton("📈 Forex 3TP Signal", callback_data="forex_3tp_signal")
         ],
         [
-            InlineKeyboardButton("📈 Forex Status", callback_data="forex_status"),
+            InlineKeyboardButton("🪙 Crypto Signal", callback_data="crypto_signal")
+        ],
+        [
+            InlineKeyboardButton("📊 Forex Performance", callback_data="forex_performance"),
+            InlineKeyboardButton("📈 Forex 3TP Performance", callback_data="forex_3tp_performance")
+        ],
+        [
+            InlineKeyboardButton("🪙 Crypto Performance", callback_data="crypto_performance")
+        ],
+        [
+            InlineKeyboardButton("📊 Forex Status", callback_data="forex_status"),
+            InlineKeyboardButton("📈 Forex 3TP Status", callback_data="forex_3tp_status")
+        ],
+        [
             InlineKeyboardButton("🪙 Crypto Status", callback_data="crypto_status")
-        ],
-        [
-            InlineKeyboardButton("📊 Forex Report 24h", callback_data="forex_report_24h"),
-            InlineKeyboardButton("🪙 Crypto Report 24h", callback_data="crypto_report_24h")
-        ],
-        [
-            InlineKeyboardButton("📊 Forex Report 7d", callback_data="forex_report_7d"),
-            InlineKeyboardButton("🪙 Crypto Report 7d", callback_data="crypto_report_7d")
         ]
     ]
     
@@ -769,20 +948,22 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     if query.data == "forex_signal":
         await handle_forex_signal(query, context)
+    elif query.data == "forex_3tp_signal":
+        await handle_forex_3tp_signal(query, context)
     elif query.data == "crypto_signal":
         await handle_crypto_signal(query, context)
+    elif query.data == "forex_performance":
+        await handle_performance_report(query, context, "forex", days=1)
+    elif query.data == "forex_3tp_performance":
+        await handle_performance_report(query, context, "forex_3tp", days=1)
+    elif query.data == "crypto_performance":
+        await handle_performance_report(query, context, "crypto", days=1)
     elif query.data == "forex_status":
         await handle_forex_status(query, context)
+    elif query.data == "forex_3tp_status":
+        await handle_forex_3tp_status(query, context)
     elif query.data == "crypto_status":
         await handle_crypto_status(query, context)
-    elif query.data == "forex_report_24h":
-        await handle_forex_report(query, context, days=1)
-    elif query.data == "crypto_report_24h":
-        await handle_crypto_report(query, context, days=1)
-    elif query.data == "forex_report_7d":
-        await handle_forex_report(query, context, days=7)
-    elif query.data == "crypto_report_7d":
-        await handle_crypto_report(query, context, days=7)
     elif query.data == "forward_forex":
         await handle_forward_forex(query, context)
     elif query.data == "refresh":
@@ -792,24 +973,163 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def handle_forex_signal(query, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle forex signal generation"""
     await query.edit_message_text("🔄 Generating forex signal with real price...")
+
+
+async def handle_forex_3tp_signal(query, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle forex 3TP signal generation"""
+    await query.edit_message_text("🔄 Generating forex 3TP signal with real price...")
     
     try:
         signals = load_signals()
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         
         if signals.get("date") != today:
-            signals = {"forex": [], "crypto": [], "date": today}
+            signals = {"forex": [], "forex_3tp": [], "crypto": [], "forwarded_forex": [], "date": today}
         
-        if len(signals.get("forex", [])) >= MAX_FOREX_SIGNALS:
+        if len(signals.get("forex_3tp", [])) >= MAX_FOREX_3TP_SIGNALS:
             await query.edit_message_text(
-                f"⚠️ **Forex Signal Limit Reached**\n\n"
-                f"Today's forex signals: {len(signals['forex'])}/{MAX_FOREX_SIGNALS}\n"
+                f"⚠️ **Forex 3TP Signal Limit Reached**\n\n"
+                f"Today's forex 3TP signals: {len(signals['forex_3tp'])}/{MAX_FOREX_3TP_SIGNALS}\n"
                 f"Maximum signals per day reached.",
                 parse_mode='Markdown'
             )
             return
         
         # Generate signal
+        signal = generate_forex_3tp_signal()
+        
+        if signal is None:
+            await query.edit_message_text(
+                "❌ **Could not generate forex 3TP signal**\n\n"
+                "All forex pairs may already have active signals today.",
+                parse_mode='Markdown'
+            )
+            return
+        
+        signals["forex_3tp"].append(signal)
+        save_signals(signals)
+        
+        # Send to channel
+        bot = Bot(token=BOT_TOKEN)
+        message = format_forex_3tp_signal(signal)
+        await bot.send_message(chat_id=FOREX_CHANNEL_3TP, text=message)
+        
+        await query.edit_message_text(
+            f"✅ **Forex 3TP Signal Sent Successfully!**\n\n"
+            f"📊 **Signal Details:**\n"
+            f"• Pair: {signal['pair']}\n"
+            f"• Type: {signal['type']}\n"
+            f"• Entry: {signal['entry']:,.5f}\n"
+            f"• SL: {signal['sl']:,.5f}\n"
+            f"• TP1: {signal['tp1']:,.5f}\n"
+            f"• TP2: {signal['tp2']:,.5f}\n"
+            f"• TP3: {signal['tp3']:,.5f}\n\n"
+            f"📤 **Sent to:** {FOREX_CHANNEL_3TP}\n"
+            f"⏰ **Time:** {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}\n\n"
+            f"📊 Today's forex 3TP signals: {len(signals['forex_3tp'])}/{MAX_FOREX_3TP_SIGNALS}",
+            parse_mode='Markdown'
+        )
+        
+        print(f"✅ Forex 3TP signal sent: {signal['pair']} {signal['type']} at {signal['entry']}")
+        
+    except Exception as e:
+        await query.edit_message_text(
+            f"❌ **Error sending forex 3TP signal:**\n\n"
+            f"Error: {str(e)}",
+            parse_mode='Markdown'
+        )
+        print(f"❌ Error sending forex 3TP signal: {e}")
+
+
+async def handle_performance_report(query, context: ContextTypes.DEFAULT_TYPE, signal_type: str, days: int) -> None:
+    """Handle performance report for specific signal type"""
+    await query.edit_message_text(f"🔄 Calculating {signal_type} performance for last {days} day(s)...")
+    
+    try:
+        signals = load_signals()
+        
+        # Get signals for the specified type
+        if signal_type == "forex":
+            signals_list = signals.get("forex", [])
+            channel_name = "Forex"
+        elif signal_type == "forex_3tp":
+            signals_list = signals.get("forex_3tp", [])
+            channel_name = "Forex 3TP"
+        elif signal_type == "crypto":
+            signals_list = signals.get("crypto", [])
+            channel_name = "Crypto"
+        else:
+            await query.edit_message_text("❌ Invalid signal type")
+            return
+        
+        # Calculate performance
+        performance = get_performance_summary(signals_list, days)
+        
+        if performance["total_signals"] == 0:
+            await query.edit_message_text(
+                f"📊 **{channel_name} Performance Report**\n\n"
+                f"📅 **Period:** Last {days} day(s)\n"
+                f"📈 **Total Signals:** 0\n\n"
+                f"No signals found for this period.",
+                parse_mode='Markdown'
+            )
+            return
+        
+        # Format performance report
+        report = f"📊 **{channel_name} Performance Report**\n\n"
+        report += f"📅 **Period:** Last {days} day(s)\n\n"
+        
+        # Add individual signal results
+        for signal_detail in performance["signals_detail"]:
+            report += f"{signal_detail}\n"
+        
+        report += f"\n📈 **Summary:**\n"
+        report += f"• Total signals: {performance['total_signals']}\n"
+        report += f"• In profit: {performance['profit_signals']}\n"
+        report += f"• In loss: {performance['loss_signals']}\n"
+        report += f"• Total profit: {performance['total_profit']:+.1f}%"
+        
+        await query.edit_message_text(report, parse_mode='Markdown')
+        
+    except Exception as e:
+        await query.edit_message_text(
+            f"❌ **Error calculating performance:**\n\n"
+            f"Error: {str(e)}",
+            parse_mode='Markdown'
+        )
+        print(f"❌ Error calculating performance: {e}")
+
+
+async def handle_forex_3tp_status(query, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle forex 3TP status check"""
+    try:
+        signals = load_signals()
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        
+        if signals.get("date") != today:
+            forex_3tp_signals = []
+        else:
+            forex_3tp_signals = signals.get("forex_3tp", [])
+        
+        forex_3tp_count = len(forex_3tp_signals)
+        active_pairs = [s["pair"] for s in forex_3tp_signals]
+        active_pairs_text = ", ".join(active_pairs) if active_pairs else "None"
+        
+        await query.edit_message_text(
+            f"📈 **Forex 3TP Status**\n\n"
+            f"📊 Today's signals: {forex_3tp_count}/{MAX_FOREX_3TP_SIGNALS}\n"
+            f"📋 Active pairs: {active_pairs_text}\n\n"
+            f"{'✅ Ready to generate more signals' if forex_3tp_count < MAX_FOREX_3TP_SIGNALS else '⚠️ Daily limit reached'}\n"
+            f"🤖 Automatic signals: Running in background",
+            parse_mode='Markdown'
+        )
+        
+    except Exception as e:
+        await query.edit_message_text(
+            f"❌ **Error checking forex 3TP status:**\n\n"
+            f"Error: {str(e)}",
+            parse_mode='Markdown'
+        )
         signal = generate_forex_signal()
         
         if signal is None:
@@ -1083,20 +1403,25 @@ async def handle_refresh(query, context: ContextTypes.DEFAULT_TYPE) -> None:
     
     keyboard = [
         [
-            InlineKeyboardButton("📊 Send Forex Signal", callback_data="forex_signal"),
-            InlineKeyboardButton("🪙 Send Crypto Signal", callback_data="crypto_signal")
+            InlineKeyboardButton("📊 Forex Signal", callback_data="forex_signal"),
+            InlineKeyboardButton("📈 Forex 3TP Signal", callback_data="forex_3tp_signal")
         ],
         [
-            InlineKeyboardButton("📈 Forex Status", callback_data="forex_status"),
+            InlineKeyboardButton("🪙 Crypto Signal", callback_data="crypto_signal")
+        ],
+        [
+            InlineKeyboardButton("📊 Forex Performance", callback_data="forex_performance"),
+            InlineKeyboardButton("📈 Forex 3TP Performance", callback_data="forex_3tp_performance")
+        ],
+        [
+            InlineKeyboardButton("🪙 Crypto Performance", callback_data="crypto_performance")
+        ],
+        [
+            InlineKeyboardButton("📊 Forex Status", callback_data="forex_status"),
+            InlineKeyboardButton("📈 Forex 3TP Status", callback_data="forex_3tp_status")
+        ],
+        [
             InlineKeyboardButton("🪙 Crypto Status", callback_data="crypto_status")
-        ],
-        [
-            InlineKeyboardButton("📊 Forex Report 24h", callback_data="forex_report_24h"),
-            InlineKeyboardButton("🪙 Crypto Report 24h", callback_data="crypto_report_24h")
-        ],
-        [
-            InlineKeyboardButton("📊 Forex Report 7d", callback_data="forex_report_7d"),
-            InlineKeyboardButton("🪙 Crypto Report 7d", callback_data="crypto_report_7d")
         ]
     ]
     
