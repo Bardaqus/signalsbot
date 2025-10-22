@@ -138,6 +138,8 @@ def load_signals():
                 signals["forex_3tp"] = []
             if "forwarded_forex" not in signals:
                 signals["forwarded_forex"] = []
+            if "tp_notifications" not in signals:
+                signals["tp_notifications"] = []
             return signals
     except:
         return {
@@ -145,6 +147,7 @@ def load_signals():
             "forex_3tp": [], 
             "crypto": [], 
             "forwarded_forex": [],
+            "tp_notifications": [],
             "date": datetime.now(timezone.utc).strftime("%Y-%m-%d")
         }
 
@@ -379,6 +382,214 @@ def save_performance(performance):
     """Save performance data"""
     with open(PERFORMANCE_FILE, 'w') as f:
         json.dump(performance, f, indent=2)
+
+
+async def check_and_notify_tp_hits():
+    """Check all active signals for TP hits and send notifications"""
+    try:
+        signals = load_signals()
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        
+        if signals.get("date") != today:
+            return  # No signals for today
+        
+        bot = Bot(token=BOT_TOKEN)
+        notifications_sent = signals.get("tp_notifications", [])
+        
+        # Check forex signals (single TP)
+        forex_signals = signals.get("forex", [])
+        for signal in forex_signals:
+            pair = signal.get("pair", "")
+            signal_type = signal.get("type", "")
+            entry = signal.get("entry", 0)
+            tp = signal.get("tp", 0)
+            sl = signal.get("sl", 0)
+            timestamp = signal.get("timestamp", "")
+            
+            # Get current price
+            current_price = get_real_forex_price(pair)
+            if current_price is None:
+                continue
+            
+            # Check for TP hit
+            tp_hit = False
+            if signal_type == "BUY" and current_price >= tp:
+                tp_hit = True
+                profit_percent = ((tp - entry) / entry) * 100
+            elif signal_type == "SELL" and current_price <= tp:
+                tp_hit = True
+                profit_percent = ((entry - tp) / entry) * 100
+            
+            if tp_hit and timestamp not in notifications_sent:
+                # Send TP hit notification to forex channel
+                message = f"🎯 **TP HIT!**\n\n"
+                message += f"**{pair} {signal_type}**\n"
+                message += f"Entry: {entry:,.5f}\n"
+                message += f"TP: {tp:,.5f}\n"
+                message += f"Current: {current_price:,.5f}\n"
+                message += f"**Profit: +{profit_percent:.2f}%**\n\n"
+                message += f"⏰ Time: {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"
+                
+                await bot.send_message(chat_id=FOREX_CHANNEL, text=message, parse_mode='Markdown')
+                notifications_sent.append(timestamp)
+                print(f"✅ TP hit notification sent for {pair} {signal_type}: +{profit_percent:.2f}%")
+        
+        # Check forex 3TP signals
+        forex_3tp_signals = signals.get("forex_3tp", [])
+        for signal in forex_3tp_signals:
+            pair = signal.get("pair", "")
+            signal_type = signal.get("type", "")
+            entry = signal.get("entry", 0)
+            tp1 = signal.get("tp1", 0)
+            tp2 = signal.get("tp2", 0)
+            tp3 = signal.get("tp3", 0)
+            sl = signal.get("sl", 0)
+            timestamp = signal.get("timestamp", "")
+            
+            # Get current price
+            current_price = get_real_forex_price(pair)
+            if current_price is None:
+                continue
+            
+            # Check for TP hits
+            tp_hit = None
+            profit_percent = 0
+            
+            if signal_type == "BUY":
+                if current_price >= tp3:
+                    tp_hit = "TP3"
+                    profit_percent = ((tp3 - entry) / entry) * 100
+                elif current_price >= tp2:
+                    tp_hit = "TP2"
+                    profit_percent = ((tp2 - entry) / entry) * 100
+                elif current_price >= tp1:
+                    tp_hit = "TP1"
+                    profit_percent = ((tp1 - entry) / entry) * 100
+            else:  # SELL
+                if current_price <= tp3:
+                    tp_hit = "TP3"
+                    profit_percent = ((entry - tp3) / entry) * 100
+                elif current_price <= tp2:
+                    tp_hit = "TP2"
+                    profit_percent = ((entry - tp2) / entry) * 100
+                elif current_price <= tp1:
+                    tp_hit = "TP1"
+                    profit_percent = ((entry - tp1) / entry) * 100
+            
+            if tp_hit and timestamp not in notifications_sent:
+                # Send TP hit notification to forex 3TP channel
+                message = f"🎯 **{tp_hit} HIT!**\n\n"
+                message += f"**{pair} {signal_type}**\n"
+                message += f"Entry: {entry:,.5f}\n"
+                message += f"{tp_hit}: {signal.get(tp_hit.lower(), 0):,.5f}\n"
+                message += f"Current: {current_price:,.5f}\n"
+                message += f"**Profit: +{profit_percent:.2f}%**\n\n"
+                message += f"⏰ Time: {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"
+                
+                await bot.send_message(chat_id=FOREX_CHANNEL_3TP, text=message, parse_mode='Markdown')
+                notifications_sent.append(timestamp)
+                print(f"✅ {tp_hit} hit notification sent for {pair} {signal_type}: +{profit_percent:.2f}%")
+        
+        # Check crypto signals
+        crypto_signals = signals.get("crypto", [])
+        for signal in crypto_signals:
+            pair = signal.get("pair", "")
+            signal_type = signal.get("type", "")
+            entry = signal.get("entry", 0)
+            tp1 = signal.get("tp1", 0)
+            tp2 = signal.get("tp2", 0)
+            tp3 = signal.get("tp3", 0)
+            sl = signal.get("sl", 0)
+            timestamp = signal.get("timestamp", "")
+            
+            # Get current price
+            current_price = get_real_crypto_price(pair)
+            if current_price is None:
+                continue
+            
+            # Check for TP hits
+            tp_hit = None
+            profit_percent = 0
+            
+            if signal_type == "BUY":
+                if current_price >= tp3:
+                    tp_hit = "TP3"
+                    profit_percent = ((tp3 - entry) / entry) * 100
+                elif current_price >= tp2:
+                    tp_hit = "TP2"
+                    profit_percent = ((tp2 - entry) / entry) * 100
+                elif current_price >= tp1:
+                    tp_hit = "TP1"
+                    profit_percent = ((tp1 - entry) / entry) * 100
+            else:  # SELL
+                if current_price <= tp3:
+                    tp_hit = "TP3"
+                    profit_percent = ((entry - tp3) / entry) * 100
+                elif current_price <= tp2:
+                    tp_hit = "TP2"
+                    profit_percent = ((entry - tp2) / entry) * 100
+                elif current_price <= tp1:
+                    tp_hit = "TP1"
+                    profit_percent = ((entry - tp1) / entry) * 100
+            
+            if tp_hit and timestamp not in notifications_sent:
+                # Send TP hit notification to crypto channel
+                message = f"🎯 **{tp_hit} HIT!**\n\n"
+                message += f"**{pair} {signal_type}**\n"
+                message += f"Entry: {entry:,.6f}\n"
+                message += f"{tp_hit}: {signal.get(tp_hit.lower(), 0):,.6f}\n"
+                message += f"Current: {current_price:,.6f}\n"
+                message += f"**Profit: +{profit_percent:.2f}%**\n\n"
+                message += f"⏰ Time: {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"
+                
+                await bot.send_message(chat_id=CRYPTO_CHANNEL, text=message, parse_mode='Markdown')
+                notifications_sent.append(timestamp)
+                print(f"✅ {tp_hit} hit notification sent for {pair} {signal_type}: +{profit_percent:.2f}%")
+        
+        # Check forwarded forex signals
+        forwarded_signals = signals.get("forwarded_forex", [])
+        for signal in forwarded_signals:
+            pair = signal.get("pair", "")
+            signal_type = signal.get("type", "")
+            entry = signal.get("entry", 0)
+            tp = signal.get("tp", 0)
+            sl = signal.get("sl", 0)
+            timestamp = signal.get("timestamp", "")
+            
+            # Get current price
+            current_price = get_real_forex_price(pair)
+            if current_price is None:
+                continue
+            
+            # Check for TP hit
+            tp_hit = False
+            if signal_type == "BUY" and current_price >= tp:
+                tp_hit = True
+                profit_percent = ((tp - entry) / entry) * 100
+            elif signal_type == "SELL" and current_price <= tp:
+                tp_hit = True
+                profit_percent = ((entry - tp) / entry) * 100
+            
+            if tp_hit and timestamp not in notifications_sent:
+                # Send TP hit notification to the forwarded channel (-1001286609636)
+                message = f"🎯 **TP HIT!**\n\n"
+                message += f"**{pair} {signal_type}**\n"
+                message += f"Entry: {entry:,.5f}\n"
+                message += f"TP: {tp:,.5f}\n"
+                message += f"Current: {current_price:,.5f}\n"
+                message += f"**Profit: +{profit_percent:.2f}%**\n\n"
+                message += f"⏰ Time: {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"
+                
+                await bot.send_message(chat_id="-1001286609636", text=message, parse_mode='Markdown')
+                notifications_sent.append(timestamp)
+                print(f"✅ TP hit notification sent for forwarded {pair} {signal_type}: +{profit_percent:.2f}%")
+        
+        # Save updated notifications list
+        signals["tp_notifications"] = notifications_sent
+        save_signals(signals)
+        
+    except Exception as e:
+        print(f"❌ Error checking TP hits: {e}")
 
 
 def generate_forex_signal():
@@ -1587,7 +1798,7 @@ def automatic_signal_loop():
                 today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
                 
                 if signals.get("date") != today:
-                    signals = {"forex": [], "forex_3tp": [], "crypto": [], "date": today}
+                    signals = {"forex": [], "forex_3tp": [], "crypto": [], "forwarded_forex": [], "tp_notifications": [], "date": today}
                     save_signals(signals)
                     print(f"📅 New day: {today}")
                 
@@ -1614,6 +1825,9 @@ def automatic_signal_loop():
                     success = await send_crypto_signal()
                     if not success:
                         print("⚠️ Could not send crypto signal (all pairs may be active)")
+                
+                # Check for TP hits and send notifications
+                await check_and_notify_tp_hits()
                 
                 # Check if all signals sent for today
                 if (forex_count >= MAX_FOREX_SIGNALS and 
