@@ -709,11 +709,18 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         [
             InlineKeyboardButton("📊 Forex Report 7d", callback_data="forex_report_7d"),
             InlineKeyboardButton("🪙 Crypto Report 7d", callback_data="crypto_report_7d")
-        ],
-        [
-            InlineKeyboardButton("🔄 Refresh", callback_data="refresh")
         ]
     ]
+    
+    # Add special forward button only for user 501779863
+    if user_id == 501779863:
+        keyboard.append([
+            InlineKeyboardButton("🔄 Forward Forex to New Channel", callback_data="forward_forex")
+        ])
+    
+    keyboard.append([
+        InlineKeyboardButton("🔄 Refresh", callback_data="refresh")
+    ])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -764,6 +771,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await handle_forex_report(query, context, days=7)
     elif query.data == "crypto_report_7d":
         await handle_crypto_report(query, context, days=7)
+    elif query.data == "forward_forex":
+        await handle_forward_forex(query, context)
     elif query.data == "refresh":
         await handle_refresh(query, context)
 
@@ -1058,6 +1067,8 @@ No crypto signals found for the period.
 
 async def handle_refresh(query, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle refresh - go back to main menu"""
+    user_id = query.from_user.id
+    
     keyboard = [
         [
             InlineKeyboardButton("📊 Send Forex Signal", callback_data="forex_signal"),
@@ -1074,11 +1085,18 @@ async def handle_refresh(query, context: ContextTypes.DEFAULT_TYPE) -> None:
         [
             InlineKeyboardButton("📊 Forex Report 7d", callback_data="forex_report_7d"),
             InlineKeyboardButton("🪙 Crypto Report 7d", callback_data="crypto_report_7d")
-        ],
-        [
-            InlineKeyboardButton("🔄 Refresh", callback_data="refresh")
         ]
     ]
+    
+    # Add special forward button only for user 501779863
+    if user_id == 501779863:
+        keyboard.append([
+            InlineKeyboardButton("🔄 Forward Forex to New Channel", callback_data="forward_forex")
+        ])
+    
+    keyboard.append([
+        InlineKeyboardButton("🔄 Refresh", callback_data="refresh")
+    ])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -1100,6 +1118,79 @@ async def handle_refresh(query, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     
     await query.edit_message_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
+
+
+async def handle_forward_forex(query, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle forwarding forex signals from original channel to new channel"""
+    user_id = query.from_user.id
+    
+    # Only allow user 501779863 to use this feature
+    if user_id != 501779863:
+        await query.edit_message_text("❌ You are not authorized to use this feature.")
+        return
+    
+    await query.edit_message_text("🔄 Forwarding forex signal to new channel...")
+    
+    try:
+        # Generate a new forex signal (with 1 TP)
+        signal = generate_forex_signal()
+        
+        if signal is None:
+            await query.edit_message_text(
+                "❌ Could not generate forex signal. All pairs may be active today.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔄 Back to Menu", callback_data="refresh")
+                ]])
+            )
+            return
+        
+        # Send to the new channel (-1001286609636)
+        bot = Bot(token=BOT_TOKEN)
+        message = format_forex_signal(signal)
+        await bot.send_message(chat_id="-1001286609636", text=message)
+        
+        # Update signals data (don't count towards daily limit since it's a forward)
+        signals = load_signals()
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        
+        if signals.get("date") != today:
+            signals = {"forex": [], "forex_3tp": [], "crypto": [], "date": today}
+        
+        # Add to forwarded signals (separate tracking)
+        if "forwarded_forex" not in signals:
+            signals["forwarded_forex"] = []
+        
+        signals["forwarded_forex"].append(signal)
+        save_signals(signals)
+        
+        await query.edit_message_text(
+            f"✅ **Forex Signal Forwarded Successfully!**\n\n"
+            f"📊 **Signal Details:**\n"
+            f"• Pair: {signal['pair']}\n"
+            f"• Type: {signal['type']}\n"
+            f"• Entry: {signal['entry']:,.5f}\n"
+            f"• SL: {signal['sl']:,.5f}\n"
+            f"• TP: {signal['tp']:,.5f}\n\n"
+            f"📤 **Sent to:** -1001286609636\n"
+            f"⏰ **Time:** {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔄 Back to Menu", callback_data="refresh")
+            ]]),
+            parse_mode='Markdown'
+        )
+        
+        print(f"✅ Forex signal forwarded by user {user_id}: {signal['pair']} {signal['type']} to -1001286609636")
+        
+    except Exception as e:
+        await query.edit_message_text(
+            f"❌ **Error forwarding forex signal:**\n\n"
+            f"Error: {str(e)}",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔄 Back to Menu", callback_data="refresh")
+            ]]),
+            parse_mode='Markdown'
+        )
+        print(f"❌ Error forwarding forex signal: {e}")
 
 
 def automatic_signal_loop():
