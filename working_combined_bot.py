@@ -21,6 +21,7 @@ import threading
 # Configuration
 BOT_TOKEN = "7734435177:AAGeoSk7TChGNvaVf63R9DW8TELWRQB_rmY"
 FOREX_CHANNEL = "-1003118256304"
+FOREX_CHANNEL_3TP = "-1001220540048"  # New forex channel with 3 TPs
 CRYPTO_CHANNEL = "-1002978318746"
 SUMMARY_USER_ID = 615348532
 
@@ -44,7 +45,8 @@ SIGNALS_FILE = "working_combined_signals.json"
 PERFORMANCE_FILE = "working_combined_performance.json"
 
 # Signal limits
-MAX_FOREX_SIGNALS = 5
+MAX_FOREX_SIGNALS = 5  # Original forex channel
+MAX_FOREX_3TP_SIGNALS = 4  # New forex channel with 3 TPs
 MAX_CRYPTO_SIGNALS = 5
 
 # Time intervals (in hours)
@@ -195,6 +197,84 @@ def generate_forex_signal():
     }
 
 
+def generate_forex_3tp_signal():
+    """Generate a forex signal with 3 TPs (like crypto signals)"""
+    # Check for active signals to avoid duplicates
+    signals = load_signals()
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    
+    if signals.get("date") != today:
+        active_forex_3tp_pairs = []
+    else:
+        active_forex_3tp_pairs = [s["pair"] for s in signals.get("forex_3tp", [])]
+    
+    # Filter out pairs that already have active signals
+    available_pairs = [pair for pair in FOREX_PAIRS if pair not in active_forex_3tp_pairs]
+    
+    if not available_pairs:
+        print("⚠️ All forex 3TP pairs already have active signals today")
+        return None
+    
+    pair = random.choice(available_pairs)
+    signal_type = random.choice(["BUY", "SELL"])
+    
+    # Get real price from forex API
+    entry = get_real_forex_price(pair)
+    
+    if entry is None:
+        print(f"❌ Could not get real price for {pair}, skipping signal")
+        return None
+    
+    # Calculate SL and 3 TPs based on real price (similar to crypto logic)
+    if pair == "XAUUSD":
+        # Gold: 2% SL, 2%/4%/6% TPs
+        if signal_type == "BUY":
+            sl = round(entry * 0.98, 2)  # 2% stop loss
+            tp1 = round(entry * 1.02, 2)  # 2% first take profit
+            tp2 = round(entry * 1.04, 2)  # 4% second take profit
+            tp3 = round(entry * 1.06, 2)  # 6% third take profit
+        else:  # SELL
+            sl = round(entry * 1.02, 2)  # 2% stop loss
+            tp1 = round(entry * 0.98, 2)  # 2% first take profit
+            tp2 = round(entry * 0.96, 2)  # 4% second take profit
+            tp3 = round(entry * 0.94, 2)  # 6% third take profit
+    elif pair.endswith("JPY"):
+        # JPY pairs: 0.2 pip SL, 0.2/0.4/0.6 pip TPs
+        if signal_type == "BUY":
+            sl = round(entry - 0.2, 3)  # 0.2 pip stop loss
+            tp1 = round(entry + 0.2, 3)  # 0.2 pip first take profit
+            tp2 = round(entry + 0.4, 3)  # 0.4 pip second take profit
+            tp3 = round(entry + 0.6, 3)  # 0.6 pip third take profit
+        else:  # SELL
+            sl = round(entry + 0.2, 3)  # 0.2 pip stop loss
+            tp1 = round(entry - 0.2, 3)  # 0.2 pip first take profit
+            tp2 = round(entry - 0.4, 3)  # 0.4 pip second take profit
+            tp3 = round(entry - 0.6, 3)  # 0.6 pip third take profit
+    else:
+        # Other pairs: 0.001 pip SL, 0.001/0.002/0.003 pip TPs
+        if signal_type == "BUY":
+            sl = round(entry - 0.001, 5)  # 0.001 pip stop loss
+            tp1 = round(entry + 0.001, 5)  # 0.001 pip first take profit
+            tp2 = round(entry + 0.002, 5)  # 0.002 pip second take profit
+            tp3 = round(entry + 0.003, 5)  # 0.003 pip third take profit
+        else:  # SELL
+            sl = round(entry + 0.001, 5)  # 0.001 pip stop loss
+            tp1 = round(entry - 0.001, 5)  # 0.001 pip first take profit
+            tp2 = round(entry - 0.002, 5)  # 0.002 pip second take profit
+            tp3 = round(entry - 0.003, 5)  # 0.003 pip third take profit
+    
+    return {
+        "pair": pair,
+        "type": signal_type,
+        "entry": entry,
+        "sl": sl,
+        "tp1": tp1,
+        "tp2": tp2,
+        "tp3": tp3,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
+
 def generate_crypto_signal():
     """Generate a crypto signal with real prices from Binance"""
     # Check for active signals to avoid duplicates
@@ -284,6 +364,42 @@ SL {sl}
 TP {tp}"""
 
 
+def format_forex_3tp_signal(signal):
+    """Format forex signal message with 3 TPs"""
+    pair = signal['pair']
+    signal_type = signal['type']
+    
+    # Format numbers based on pair type
+    if pair == "XAUUSD":
+        # Gold: 2 decimal places
+        entry = f"{signal['entry']:,.2f}"
+        sl = f"{signal['sl']:,.2f}"
+        tp1 = f"{signal['tp1']:,.2f}"
+        tp2 = f"{signal['tp2']:,.2f}"
+        tp3 = f"{signal['tp3']:,.2f}"
+    elif pair.endswith("JPY"):
+        # JPY pairs: 3 decimal places
+        entry = f"{signal['entry']:,.3f}"
+        sl = f"{signal['sl']:,.3f}"
+        tp1 = f"{signal['tp1']:,.3f}"
+        tp2 = f"{signal['tp2']:,.3f}"
+        tp3 = f"{signal['tp3']:,.3f}"
+    else:
+        # Other forex pairs: 5 decimal places
+        entry = f"{signal['entry']:,.5f}"
+        sl = f"{signal['sl']:,.5f}"
+        tp1 = f"{signal['tp1']:,.5f}"
+        tp2 = f"{signal['tp2']:,.5f}"
+        tp3 = f"{signal['tp3']:,.5f}"
+    
+    return f"""{pair} {signal_type}
+Entry: {entry}
+SL: {sl}
+TP1: {tp1}
+TP2: {tp2}
+TP3: {tp3}"""
+
+
 def format_crypto_signal(signal):
     """Format crypto signal message"""
     # Format crypto numbers with 6 decimal places and comma separators
@@ -313,7 +429,7 @@ async def send_forex_signal():
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         
         if signals.get("date") != today:
-            signals = {"forex": [], "crypto": [], "date": today}
+            signals = {"forex": [], "forex_3tp": [], "crypto": [], "date": today}
         
         if len(signals.get("forex", [])) >= MAX_FOREX_SIGNALS:
             print(f"⚠️ Forex signal limit reached: {len(signals['forex'])}/{MAX_FOREX_SIGNALS}")
@@ -340,6 +456,43 @@ async def send_forex_signal():
         
     except Exception as e:
         print(f"❌ Error sending forex signal: {e}")
+        return False
+
+
+async def send_forex_3tp_signal():
+    """Send a forex signal with 3 TPs"""
+    try:
+        signals = load_signals()
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        
+        if signals.get("date") != today:
+            signals = {"forex": [], "forex_3tp": [], "crypto": [], "date": today}
+        
+        if len(signals.get("forex_3tp", [])) >= MAX_FOREX_3TP_SIGNALS:
+            print(f"⚠️ Forex 3TP signal limit reached: {len(signals['forex_3tp'])}/{MAX_FOREX_3TP_SIGNALS}")
+            return False
+        
+        # Generate signal
+        signal = generate_forex_3tp_signal()
+        
+        if signal is None:
+            print("❌ Could not generate forex 3TP signal")
+            return False
+        
+        signals["forex_3tp"].append(signal)
+        save_signals(signals)
+        
+        # Send to channel
+        bot = Bot(token=BOT_TOKEN)
+        message = format_forex_3tp_signal(signal)
+        await bot.send_message(chat_id=FOREX_CHANNEL_3TP, text=message)
+        
+        print(f"✅ Forex 3TP signal sent: {signal['pair']} {signal['type']} at {signal['entry']}")
+        print(f"📊 Today's forex 3TP signals: {len(signals['forex_3tp'])}/{MAX_FOREX_3TP_SIGNALS}")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Error sending forex 3TP signal: {e}")
         return False
 
 
@@ -395,14 +548,20 @@ async def send_daily_summary():
         
         if signals.get("date") != today:
             forex_signals = []
+            forex_3tp_signals = []
             crypto_signals = []
         else:
             forex_signals = signals.get("forex", [])
+            forex_3tp_signals = signals.get("forex_3tp", [])
             crypto_signals = signals.get("crypto", [])
         
         # Calculate forex stats
         forex_buy = len([s for s in forex_signals if s.get("type") == "BUY"])
         forex_sell = len([s for s in forex_signals if s.get("type") == "SELL"])
+        
+        # Calculate forex 3TP stats
+        forex_3tp_buy = len([s for s in forex_3tp_signals if s.get("type") == "BUY"])
+        forex_3tp_sell = len([s for s in forex_3tp_signals if s.get("type") == "SELL"])
         
         # Calculate crypto stats
         crypto_buy = len([s for s in crypto_signals if s.get("type") == "BUY"])
@@ -421,6 +580,12 @@ async def send_daily_summary():
 • BUY: {forex_buy}
 • SELL: {forex_sell}
 • Channel: {FOREX_CHANNEL}
+
+📈 **Forex 3TP Signals**
+• Total: {len(forex_3tp_signals)}/{MAX_FOREX_3TP_SIGNALS}
+• BUY: {forex_3tp_buy}
+• SELL: {forex_3tp_sell}
+• Channel: {FOREX_CHANNEL_3TP}
 
 🪙 **Crypto Signals**
 • Total: {len(crypto_signals)}/{MAX_CRYPTO_SIGNALS}
@@ -939,20 +1104,27 @@ def automatic_signal_loop():
                 today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
                 
                 if signals.get("date") != today:
-                    signals = {"forex": [], "crypto": [], "date": today}
+                    signals = {"forex": [], "forex_3tp": [], "crypto": [], "date": today}
                     save_signals(signals)
                     print(f"📅 New day: {today}")
                 
                 forex_count = len(signals.get("forex", []))
+                forex_3tp_count = len(signals.get("forex_3tp", []))
                 crypto_count = len(signals.get("crypto", []))
                 
-                print(f"📊 Current signals: Forex {forex_count}/{MAX_FOREX_SIGNALS}, Crypto {crypto_count}/{MAX_CRYPTO_SIGNALS}")
+                print(f"📊 Current signals: Forex {forex_count}/{MAX_FOREX_SIGNALS}, Forex 3TP {forex_3tp_count}/{MAX_FOREX_3TP_SIGNALS}, Crypto {crypto_count}/{MAX_CRYPTO_SIGNALS}")
                 
                 # Send forex signal if needed
                 if forex_count < MAX_FOREX_SIGNALS:
                     success = await send_forex_signal()
                     if not success:
                         print("⚠️ Could not send forex signal (all pairs may be active)")
+                
+                # Send forex 3TP signal if needed
+                if forex_3tp_count < MAX_FOREX_3TP_SIGNALS:
+                    success = await send_forex_3tp_signal()
+                    if not success:
+                        print("⚠️ Could not send forex 3TP signal (all pairs may be active)")
                 
                 # Send crypto signal if needed
                 if crypto_count < MAX_CRYPTO_SIGNALS:
@@ -961,7 +1133,9 @@ def automatic_signal_loop():
                         print("⚠️ Could not send crypto signal (all pairs may be active)")
                 
                 # Check if all signals sent for today
-                if forex_count >= MAX_FOREX_SIGNALS and crypto_count >= MAX_CRYPTO_SIGNALS:
+                if (forex_count >= MAX_FOREX_SIGNALS and 
+                    forex_3tp_count >= MAX_FOREX_3TP_SIGNALS and 
+                    crypto_count >= MAX_CRYPTO_SIGNALS):
                     print("✅ All signals sent for today. Waiting until tomorrow...")
                     # Wait until next day
                     tomorrow = datetime.now(timezone.utc) + timedelta(days=1)
