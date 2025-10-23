@@ -28,6 +28,7 @@ if __name__ == "__main__":
     print("  • Forex: -1001286609636")
     print("  • Forex 3TP: -1001220540048")
     print("  • Crypto: -1002978318746")
+    print("  • Crypto 2: -1001411205299")
     print("=" * 60)
     print("📊 Summary Reports:")
     print("  • Daily: 14:30 GMT (24h results)")

@@ -23,6 +23,7 @@ BOT_TOKEN = "7734435177:AAGeoSk7TChGNvaVf63R9DW8TELWRQB_rmY"
 FOREX_CHANNEL = "-1001286609636"
 FOREX_CHANNEL_3TP = "-1001220540048"  # New forex channel with 3 TPs
 CRYPTO_CHANNEL = "-1002978318746"
+CRYPTO_CHANNEL_2 = "-1001411205299"  # Second crypto channel
 SUMMARY_USER_ID = 615348532
 
 # Allowed user IDs for interactive features
@@ -543,6 +544,7 @@ async def check_and_notify_tp_hits():
                 message += f"⏰ Time: {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"
                 
                 await bot.send_message(chat_id=CRYPTO_CHANNEL, text=message, parse_mode='Markdown')
+                await bot.send_message(chat_id=CRYPTO_CHANNEL_2, text=message, parse_mode='Markdown')
                 notifications_sent.append(timestamp)
                 print(f"✅ {tp_hit} hit notification sent for {pair} {signal_type}: +{profit_percent:.2f}%")
         
@@ -971,10 +973,11 @@ async def send_crypto_signal():
         signals["crypto"].append(signal)
         save_signals(signals)
         
-        # Send to channel
+        # Send to both crypto channels
         bot = Bot(token=BOT_TOKEN)
         message = format_crypto_signal(signal)
         await bot.send_message(chat_id=CRYPTO_CHANNEL, text=message)
+        await bot.send_message(chat_id=CRYPTO_CHANNEL_2, text=message)
         
         # Calculate distribution
         crypto_signals = signals.get("crypto", [])
@@ -1451,10 +1454,11 @@ async def handle_crypto_signal(query, context: ContextTypes.DEFAULT_TYPE) -> Non
         signals["crypto"].append(signal)
         save_signals(signals)
         
-        # Send to channel
+        # Send to both crypto channels
         bot = Bot(token=BOT_TOKEN)
         message = format_crypto_signal(signal)
         await bot.send_message(chat_id=CRYPTO_CHANNEL, text=message)
+        await bot.send_message(chat_id=CRYPTO_CHANNEL_2, text=message)
         
         # Calculate distribution
         crypto_signals = signals.get("crypto", [])
