@@ -480,6 +480,22 @@ async def post_signals_once(pairs: List[str]) -> None:
     print("🤖 Starting bot...")
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
     
+    # Check if it's weekend (forex market is closed)
+    now = datetime.now(timezone.utc)
+    weekday = now.weekday()  # 0=Monday, 6=Sunday
+    if weekday >= 5:  # Saturday (5) or Sunday (6)
+        print("🏖️ Weekend detected - Forex market is closed. Skipping forex signal generation.")
+        # Still check for TP hits and reports even on weekends
+        await check_and_send_reports(bot)
+        print("🔍 Checking for TP hits...")
+        profit_messages = check_signal_hits()
+        print(f"Found {len(profit_messages)} TP hits")
+        for msg in profit_messages:
+            print(f"Sending TP message: {msg}")
+            await bot.send_message(chat_id=TELEGRAM_CHANNEL_ID, text=msg, disable_web_page_preview=True)
+            await asyncio.sleep(0.4)
+        return
+    
     # Check for performance reports first
     await check_and_send_reports(bot)
     

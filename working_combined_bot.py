@@ -22,8 +22,8 @@ import threading
 BOT_TOKEN = "7734435177:AAGeoSk7TChGNvaVf63R9DW8TELWRQB_rmY"
 FOREX_CHANNEL = "-1001286609636"
 FOREX_CHANNEL_3TP = "-1001220540048"  # New forex channel with 3 TPs
-CRYPTO_CHANNEL = "-1002978318746"
-CRYPTO_CHANNEL_2 = "-1001411205299"  # Second crypto channel
+CRYPTO_CHANNEL_LINGRID = "-1002978318746"  # Crypto Lingrid channel
+CRYPTO_CHANNEL_GAINMUSE = "-1001411205299"  # Crypto Gain muse channel
 SUMMARY_USER_ID = 615348532
 
 # Allowed user IDs for interactive features
@@ -543,8 +543,8 @@ async def check_and_notify_tp_hits():
                 message += f"**Profit: +{profit_percent:.2f}%**\n\n"
                 message += f"⏰ Time: {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"
                 
-                await bot.send_message(chat_id=CRYPTO_CHANNEL, text=message, parse_mode='Markdown')
-                await bot.send_message(chat_id=CRYPTO_CHANNEL_2, text=message, parse_mode='Markdown')
+                await bot.send_message(chat_id=CRYPTO_CHANNEL_LINGRID, text=message, parse_mode='Markdown')
+                await bot.send_message(chat_id=CRYPTO_CHANNEL_GAINMUSE, text=message, parse_mode='Markdown')
                 notifications_sent.append(timestamp)
                 print(f"✅ {tp_hit} hit notification sent for {pair} {signal_type}: +{profit_percent:.2f}%")
         
@@ -976,8 +976,8 @@ async def send_crypto_signal():
         # Send to both crypto channels
         bot = Bot(token=BOT_TOKEN)
         message = format_crypto_signal(signal)
-        await bot.send_message(chat_id=CRYPTO_CHANNEL, text=message)
-        await bot.send_message(chat_id=CRYPTO_CHANNEL_2, text=message)
+        await bot.send_message(chat_id=CRYPTO_CHANNEL_LINGRID, text=message)
+        await bot.send_message(chat_id=CRYPTO_CHANNEL_GAINMUSE, text=message)
         
         # Calculate distribution
         crypto_signals = signals.get("crypto", [])
@@ -1047,7 +1047,7 @@ async def send_daily_summary():
 • BUY: {crypto_buy} ({crypto_buy_ratio:.1f}%)
 • SELL: {crypto_sell} ({crypto_sell_ratio:.1f}%)
 • Target: 73% BUY / 27% SELL
-• Channel: {CRYPTO_CHANNEL}
+• Channel: {CRYPTO_CHANNEL_LINGRID}
 
 ⏰ Generated: {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC
         """
@@ -1107,7 +1107,7 @@ async def send_weekly_summary():
 • BUY: {crypto_buy} ({crypto_buy_ratio:.1f}%)
 • SELL: {crypto_sell} ({crypto_sell_ratio:.1f}%)
 • Target: 73% BUY / 27% SELL
-• Channel: {CRYPTO_CHANNEL}
+• Channel: {CRYPTO_CHANNEL_LINGRID}
 
 ⏰ Generated: {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC
         """
@@ -1135,57 +1135,27 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text("❌ You are not authorized to use this bot.")
         return
     
+    # Main menu: Channel selection buttons
     keyboard = [
-        [
-            InlineKeyboardButton("📊 Forex Signal", callback_data="forex_signal"),
-            InlineKeyboardButton("📈 Forex 3TP Signal", callback_data="forex_3tp_signal")
-        ],
-        [
-            InlineKeyboardButton("🪙 Crypto Signal", callback_data="crypto_signal")
-        ],
-        [
-            InlineKeyboardButton("📊 Forex Performance", callback_data="forex_performance"),
-            InlineKeyboardButton("📈 Forex 3TP Performance", callback_data="forex_3tp_performance")
-        ],
-        [
-            InlineKeyboardButton("🪙 Crypto Performance", callback_data="crypto_performance")
-        ],
-        [
-            InlineKeyboardButton("📊 Forex Status", callback_data="forex_status"),
-            InlineKeyboardButton("📈 Forex 3TP Status", callback_data="forex_3tp_status")
-        ],
-        [
-            InlineKeyboardButton("🪙 Crypto Status", callback_data="crypto_status")
-        ]
+        [InlineKeyboardButton("📊 Forex 3TP", callback_data="channel_forex_3tp")],
+        [InlineKeyboardButton("📈 Forex", callback_data="channel_forex")],
+        [InlineKeyboardButton("🪙 Crypto Lingrid", callback_data="channel_crypto_lingrid")],
+        [InlineKeyboardButton("💎 Crypto Gain Muse", callback_data="channel_crypto_gainmuse")]
     ]
-    
-    # Add special forward button for admin users
-    if user_id in ALLOWED_USERS:
-        keyboard.append([
-            InlineKeyboardButton("🔄 Forward Forex to New Channel", callback_data="forward_forex")
-        ])
-    
-    keyboard.append([
-        InlineKeyboardButton("🔄 Refresh", callback_data="refresh")
-    ])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     welcome_text = """
-🤖 **Working Combined Trading Signals Bot Control Panel**
+🤖 **Trading Signals Bot Control Panel**
 
-**Features:**
-• Automatic signal generation (2-5 hour intervals)
-• Manual signal generation with buttons
-• Real-time status and distribution monitoring
-• 24-hour and 7-day performance reports
-• All signals use REAL prices from live markets
+**Select a channel to manage:**
 
-**Channels:**
-• Forex: -1003118256304
-• Crypto: -1002978318746
+📊 **Forex 3TP** - Forex signals with 3 take profit levels
+📈 **Forex** - Standard forex signals
+🪙 **Crypto Lingrid** - Crypto channel 1
+💎 **Crypto Gain Muse** - Crypto channel 2
 
-*Click any button to proceed*
+*Click any channel button to proceed*
     """
     
     await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
@@ -1202,7 +1172,24 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     await query.answer()
     
-    if query.data == "forex_signal":
+    # Channel selection (level 1)
+    if query.data.startswith("channel_"):
+        channel_type = query.data.replace("channel_", "")
+        await show_channel_menu(query, context, channel_type)
+    # Channel actions (level 2)
+    elif query.data.startswith("result_24h_"):
+        channel_type = query.data.replace("result_24h_", "")
+        await handle_performance_report(query, context, channel_type, days=1)
+    elif query.data.startswith("result_7d_"):
+        channel_type = query.data.replace("result_7d_", "")
+        await handle_performance_report(query, context, channel_type, days=7)
+    elif query.data.startswith("give_signal_"):
+        channel_type = query.data.replace("give_signal_", "")
+        await handle_give_signal(query, context, channel_type)
+    elif query.data == "back_to_main":
+        await show_main_menu(query, context)
+    # Legacy handlers for backward compatibility
+    elif query.data == "forex_signal":
         await handle_forex_signal(query, context)
     elif query.data == "forex_3tp_signal":
         await handle_forex_3tp_signal(query, context)
@@ -1223,12 +1210,206 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     elif query.data == "forward_forex":
         await handle_forward_forex(query, context)
     elif query.data == "refresh":
-        await handle_refresh(query, context)
+        await show_main_menu(query, context)
+
+
+async def show_main_menu(query, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show main menu with channel selection"""
+    keyboard = [
+        [InlineKeyboardButton("📊 Forex 3TP", callback_data="channel_forex_3tp")],
+        [InlineKeyboardButton("📈 Forex", callback_data="channel_forex")],
+        [InlineKeyboardButton("🪙 Crypto Lingrid", callback_data="channel_crypto_lingrid")],
+        [InlineKeyboardButton("💎 Crypto Gain Muse", callback_data="channel_crypto_gainmuse")]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    welcome_text = """
+🤖 **Trading Signals Bot Control Panel**
+
+**Select a channel to manage:**
+
+📊 **Forex 3TP** - Forex signals with 3 take profit levels
+📈 **Forex** - Standard forex signals
+🪙 **Crypto Lingrid** - Crypto channel 1
+💎 **Crypto Gain Muse** - Crypto channel 2
+
+*Click any channel button to proceed*
+    """
+    
+    await query.edit_message_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
+
+
+async def show_channel_menu(query, context: ContextTypes.DEFAULT_TYPE, channel_type: str) -> None:
+    """Show channel-specific menu with actions"""
+    # Channel names mapping
+    channel_names = {
+        "forex_3tp": "Forex 3TP",
+        "forex": "Forex",
+        "crypto_lingrid": "Crypto Lingrid",
+        "crypto_gainmuse": "Crypto Gain Muse"
+    }
+    
+    channel_name = channel_names.get(channel_type, channel_type)
+    
+    keyboard = [
+        [InlineKeyboardButton("📊 Result 24h", callback_data=f"result_24h_{channel_type}")],
+        [InlineKeyboardButton("📈 Result 7 days", callback_data=f"result_7d_{channel_type}")],
+        [InlineKeyboardButton("🚀 Give signal", callback_data=f"give_signal_{channel_type}")],
+        [InlineKeyboardButton("⬅️ Back to Main Menu", callback_data="back_to_main")]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    menu_text = f"""
+📺 **{channel_name} Channel**
+
+**Available actions:**
+
+📊 **Result 24h** - Check profit from all signals in last 24 hours
+📈 **Result 7 days** - Check profit from all signals in last 7 days
+🚀 **Give signal** - Generate and send a signal to this channel
+
+*Select an action*
+    """
+    
+    await query.edit_message_text(menu_text, reply_markup=reply_markup, parse_mode='Markdown')
+
+
+async def handle_give_signal(query, context: ContextTypes.DEFAULT_TYPE, channel_type: str) -> None:
+    """Handle signal generation for a specific channel"""
+    await query.edit_message_text("🔄 Generating signal with real price...")
+    
+    try:
+        if channel_type == "forex_3tp":
+            await handle_forex_3tp_signal(query, context)
+        elif channel_type == "forex":
+            await handle_forex_signal(query, context)
+        elif channel_type == "crypto_lingrid":
+            await handle_crypto_signal_for_channel(query, context, CRYPTO_CHANNEL_LINGRID, "crypto_lingrid")
+        elif channel_type == "crypto_gainmuse":
+            await handle_crypto_signal_for_channel(query, context, CRYPTO_CHANNEL_GAINMUSE, "crypto_gainmuse")
+        else:
+            await query.edit_message_text(
+                f"❌ **Unknown channel type:** {channel_type}",
+                parse_mode='Markdown'
+            )
+    except Exception as e:
+        await query.edit_message_text(
+            f"❌ **Error generating signal:**\n\n{str(e)}",
+            parse_mode='Markdown'
+        )
+
+
+async def handle_crypto_signal_for_channel(query, context: ContextTypes.DEFAULT_TYPE, channel_id: str, channel_type: str) -> None:
+    """Handle crypto signal generation for a specific channel"""
+    await query.edit_message_text("🔄 Generating crypto signal with real price...")
+    
+    try:
+        signals = load_signals()
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        
+        if signals.get("date") != today:
+            signals = {"forex": [], "forex_3tp": [], "crypto": [], "date": today}
+        
+        if len(signals.get("crypto", [])) >= MAX_CRYPTO_SIGNALS:
+            await query.edit_message_text(
+                f"⚠️ **Crypto Signal Limit Reached**\n\n"
+                f"Today's crypto signals: {len(signals['crypto'])}/{MAX_CRYPTO_SIGNALS}\n"
+                f"Maximum signals per day reached.",
+                parse_mode='Markdown'
+            )
+            return
+        
+        # Generate signal
+        signal = generate_crypto_signal()
+        
+        if signal is None:
+            await query.edit_message_text(
+                f"❌ **Error generating crypto signal**\n\n"
+                f"Could not get real price from Binance API or all pairs already have active signals today",
+                parse_mode='Markdown'
+            )
+            return
+        
+        signals["crypto"].append(signal)
+        save_signals(signals)
+        
+        # Send to specified channel
+        bot = Bot(token=BOT_TOKEN)
+        message = format_crypto_signal(signal)
+        await bot.send_message(chat_id=channel_id, text=message)
+        
+        # Calculate distribution
+        crypto_signals = signals.get("crypto", [])
+        buy_count = len([s for s in crypto_signals if s.get("type") == "BUY"])
+        total_crypto = len(crypto_signals)
+        buy_ratio = (buy_count / total_crypto * 100) if total_crypto > 0 else 0
+        sell_ratio = ((total_crypto - buy_count) / total_crypto * 100) if total_crypto > 0 else 0
+        
+        # Show channel menu again
+        await show_channel_menu(query, context, channel_type)
+        
+        print(f"✅ Crypto signal sent to {channel_id}: {signal['pair']} {signal['type']} at {signal['entry']}")
+        
+    except Exception as e:
+        await query.edit_message_text(
+            f"❌ **Error generating crypto signal**\n\n"
+            f"Error: {str(e)}",
+            parse_mode='Markdown'
+        )
 
 
 async def handle_forex_signal(query, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle forex signal generation"""
     await query.edit_message_text("🔄 Generating forex signal with real price...")
+    
+    try:
+        signals = load_signals()
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        
+        if signals.get("date") != today:
+            signals = {"forex": [], "forex_3tp": [], "crypto": [], "forwarded_forex": [], "date": today}
+        
+        if len(signals.get("forex", [])) >= MAX_FOREX_SIGNALS:
+            await query.edit_message_text(
+                f"⚠️ **Forex Signal Limit Reached**\n\n"
+                f"Today's forex signals: {len(signals['forex'])}/{MAX_FOREX_SIGNALS}\n"
+                f"Maximum signals per day reached.",
+                parse_mode='Markdown'
+            )
+            return
+        
+        # Generate signal
+        signal = generate_forex_signal()
+        
+        if signal is None:
+            await query.edit_message_text(
+                f"❌ **Error generating forex signal**\n\n"
+                f"Could not get real price from forex API or all pairs already have active signals today",
+                parse_mode='Markdown'
+            )
+            return
+        
+        signals["forex"].append(signal)
+        save_signals(signals)
+        
+        # Send to channel
+        bot = Bot(token=BOT_TOKEN)
+        message = format_forex_signal(signal)
+        await bot.send_message(chat_id=FOREX_CHANNEL, text=message)
+        
+        # Show channel menu again
+        await show_channel_menu(query, context, "forex")
+        
+        print(f"✅ Forex signal sent: {signal['pair']} {signal['type']} at {signal['entry']}")
+        
+    except Exception as e:
+        await query.edit_message_text(
+            f"❌ **Error generating forex signal**\n\n"
+            f"Error: {str(e)}",
+            parse_mode='Markdown'
+        )
 
 
 async def handle_forex_3tp_signal(query, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1270,21 +1451,8 @@ async def handle_forex_3tp_signal(query, context: ContextTypes.DEFAULT_TYPE) -> 
         message = format_forex_3tp_signal(signal)
         await bot.send_message(chat_id=FOREX_CHANNEL_3TP, text=message)
         
-        await query.edit_message_text(
-            f"✅ **Forex 3TP Signal Sent Successfully!**\n\n"
-            f"📊 **Signal Details:**\n"
-            f"• Pair: {signal['pair']}\n"
-            f"• Type: {signal['type']}\n"
-            f"• Entry: {signal['entry']:,.5f}\n"
-            f"• SL: {signal['sl']:,.5f}\n"
-            f"• TP1: {signal['tp1']:,.5f}\n"
-            f"• TP2: {signal['tp2']:,.5f}\n"
-            f"• TP3: {signal['tp3']:,.5f}\n\n"
-            f"📤 **Sent to:** {FOREX_CHANNEL_3TP}\n"
-            f"⏰ **Time:** {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}\n\n"
-            f"📊 Today's forex 3TP signals: {len(signals['forex_3tp'])}/{MAX_FOREX_3TP_SIGNALS}",
-            parse_mode='Markdown'
-        )
+        # Show channel menu again
+        await show_channel_menu(query, context, "forex_3tp")
         
         print(f"✅ Forex 3TP signal sent: {signal['pair']} {signal['type']} at {signal['entry']}")
         
@@ -1311,9 +1479,14 @@ async def handle_performance_report(query, context: ContextTypes.DEFAULT_TYPE, s
         elif signal_type == "forex_3tp":
             signals_list = signals.get("forex_3tp", [])
             channel_name = "Forex 3TP"
-        elif signal_type == "crypto":
+        elif signal_type == "crypto" or signal_type == "crypto_lingrid" or signal_type == "crypto_gainmuse":
             signals_list = signals.get("crypto", [])
-            channel_name = "Crypto"
+            if signal_type == "crypto_lingrid":
+                channel_name = "Crypto Lingrid"
+            elif signal_type == "crypto_gainmuse":
+                channel_name = "Crypto Gain Muse"
+            else:
+                channel_name = "Crypto"
         else:
             await query.edit_message_text("❌ Invalid signal type")
             return
@@ -1321,12 +1494,17 @@ async def handle_performance_report(query, context: ContextTypes.DEFAULT_TYPE, s
         # Calculate performance
         performance = get_performance_summary(signals_list, days)
         
+        # Create back button
+        keyboard = [[InlineKeyboardButton("⬅️ Back to Channel Menu", callback_data=f"channel_{signal_type}")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
         if performance["total_signals"] == 0:
             await query.edit_message_text(
                 f"📊 **{channel_name} Performance Report**\n\n"
                 f"📅 **Period:** Last {days} day(s)\n"
                 f"📈 **Total Signals:** 0\n\n"
                 f"No signals found for this period.",
+                reply_markup=reply_markup,
                 parse_mode='Markdown'
             )
             return
@@ -1345,7 +1523,7 @@ async def handle_performance_report(query, context: ContextTypes.DEFAULT_TYPE, s
         report += f"• In loss: {performance['loss_signals']}\n"
         report += f"• Total profit: {performance['total_profit']:+.1f}%"
         
-        await query.edit_message_text(report, parse_mode='Markdown')
+        await query.edit_message_text(report, reply_markup=reply_markup, parse_mode='Markdown')
         
     except Exception as e:
         await query.edit_message_text(
@@ -1457,8 +1635,8 @@ async def handle_crypto_signal(query, context: ContextTypes.DEFAULT_TYPE) -> Non
         # Send to both crypto channels
         bot = Bot(token=BOT_TOKEN)
         message = format_crypto_signal(signal)
-        await bot.send_message(chat_id=CRYPTO_CHANNEL, text=message)
-        await bot.send_message(chat_id=CRYPTO_CHANNEL_2, text=message)
+        await bot.send_message(chat_id=CRYPTO_CHANNEL_LINGRID, text=message)
+        await bot.send_message(chat_id=CRYPTO_CHANNEL_GAINMUSE, text=message)
         
         # Calculate distribution
         crypto_signals = signals.get("crypto", [])
@@ -1656,62 +1834,7 @@ No crypto signals found for the period.
 
 async def handle_refresh(query, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle refresh - go back to main menu"""
-    user_id = query.from_user.id
-    
-    keyboard = [
-        [
-            InlineKeyboardButton("📊 Forex Signal", callback_data="forex_signal"),
-            InlineKeyboardButton("📈 Forex 3TP Signal", callback_data="forex_3tp_signal")
-        ],
-        [
-            InlineKeyboardButton("🪙 Crypto Signal", callback_data="crypto_signal")
-        ],
-        [
-            InlineKeyboardButton("📊 Forex Performance", callback_data="forex_performance"),
-            InlineKeyboardButton("📈 Forex 3TP Performance", callback_data="forex_3tp_performance")
-        ],
-        [
-            InlineKeyboardButton("🪙 Crypto Performance", callback_data="crypto_performance")
-        ],
-        [
-            InlineKeyboardButton("📊 Forex Status", callback_data="forex_status"),
-            InlineKeyboardButton("📈 Forex 3TP Status", callback_data="forex_3tp_status")
-        ],
-        [
-            InlineKeyboardButton("🪙 Crypto Status", callback_data="crypto_status")
-        ]
-    ]
-    
-    # Add special forward button for admin users
-    if user_id in ALLOWED_USERS:
-        keyboard.append([
-            InlineKeyboardButton("🔄 Forward Forex to New Channel", callback_data="forward_forex")
-        ])
-    
-    keyboard.append([
-        InlineKeyboardButton("🔄 Refresh", callback_data="refresh")
-    ])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    welcome_text = """
-🤖 **Working Combined Trading Signals Bot Control Panel**
-
-**Features:**
-• Automatic signal generation (2-5 hour intervals)
-• Manual signal generation with buttons
-• Real-time status and distribution monitoring
-• 24-hour and 7-day performance reports
-• All signals use REAL prices from live markets
-
-**Channels:**
-• Forex: -1003118256304
-• Crypto: -1002978318746
-
-*Click any button to proceed*
-    """
-    
-    await query.edit_message_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
+    await show_main_menu(query, context)
 
 
 async def handle_forward_forex(query, context: ContextTypes.DEFAULT_TYPE) -> None:

@@ -21,6 +21,30 @@ async def run_continuous_bot():
             current_time = datetime.now(timezone.utc)
             print(f"\n⏰ {current_time.strftime('%Y-%m-%d %H:%M:%S')} UTC")
             
+            # Check if it's weekend (forex market is closed)
+            weekday = current_time.weekday()  # 0=Monday, 6=Sunday
+            if weekday >= 5:  # Saturday (5) or Sunday (6)
+                print("🏖️ Weekend detected - Forex market is closed. Skipping forex signal generation.")
+                # Still check for TP hits even on weekends
+                from bot import check_signal_hits, Bot
+                bot = Bot(token="7734435177:AAGeoSk7TChGNvaVf63R9DW8TELWRQB_rmY")
+                
+                # Check for TP hits
+                profit_messages = check_signal_hits()
+                if profit_messages:
+                    print(f"🎯 Found {len(profit_messages)} TP hits")
+                    for msg in profit_messages:
+                        print(f"📤 Sending TP message: {msg}")
+                        await bot.send_message(chat_id="-1003118256304", text=msg, disable_web_page_preview=True)
+                        await asyncio.sleep(0.4)
+                else:
+                    print("🔍 No TP hits found")
+                
+                # Wait 5 minutes before next check
+                print("⏳ Waiting 5 minutes...")
+                await asyncio.sleep(300)  # 5 minutes
+                continue
+            
             # Check current signal count
             today_count = get_today_signals_count()
             print(f"📊 Today's signals: {today_count}/{MAX_SIGNALS_PER_DAY}")
