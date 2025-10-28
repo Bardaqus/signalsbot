@@ -407,6 +407,29 @@ async def check_and_notify_tp_hits():
                         profit_percent = ((entry - tp1) / entry) * 100
             
             if tp_hit and timestamp not in notifications_sent:
+                # Calculate profit in pips for forex
+                if pair.endswith("JPY"):
+                    # JPY pairs use 3 decimal places, so multiply by 1000
+                    multiplier = 1000
+                else:
+                    # Other pairs use 5 decimal places, so multiply by 10000
+                    multiplier = 10000
+                
+                if signal_type == "BUY":
+                    if tp_hit == "TP1":
+                        profit_pips = (signal.get("tp1", 0) - entry) * multiplier
+                    elif tp_hit == "TP2":
+                        profit_pips = (signal.get("tp2", 0) - entry) * multiplier
+                    else:  # Single TP
+                        profit_pips = (signal.get("tp", 0) - entry) * multiplier
+                else:  # SELL
+                    if tp_hit == "TP1":
+                        profit_pips = (entry - signal.get("tp1", 0)) * multiplier
+                    elif tp_hit == "TP2":
+                        profit_pips = (entry - signal.get("tp2", 0)) * multiplier
+                    else:  # Single TP
+                        profit_pips = (entry - signal.get("tp", 0)) * multiplier
+                
                 # Calculate R/R ratio for forex
                 if signal_type == "BUY":
                     risk_pips = ((entry - sl) / entry) * 100
@@ -429,13 +452,13 @@ async def check_and_notify_tp_hits():
                 
                 # Send TP hit notification to forex channel
                 if tp_hit == "TP2":
-                    message = f"#{pair}: Both targets 🔥🔥🔥 hit +{profit_percent:.1f}% total gain!"
+                    message = f"#{pair}: Both targets 🔥🔥🔥 hit +{profit_pips:.1f} pips total gain!"
                 else:
-                    message = f"#{pair}: TP1 reached 🎯💰 +{profit_percent:.1f}% (R/R 1:{rr_ratio:.1f})"
+                    message = f"#{pair}: TP1 reached 🎯💰 +{profit_pips:.1f} pips (R/R 1:{rr_ratio:.1f})"
                 
                 await bot.send_message(chat_id=FOREX_CHANNEL, text=message, parse_mode='Markdown')
                 notifications_sent.append(timestamp)
-                print(f"✅ {tp_hit} hit notification sent for {pair} {signal_type}: +{profit_percent:.2f}%")
+                print(f"✅ {tp_hit} hit notification sent for {pair} {signal_type}: +{profit_pips:.1f} pips")
         
         # Check forex 3TP signals
         forex_3tp_signals = signals.get("forex_3tp", [])
@@ -480,6 +503,19 @@ async def check_and_notify_tp_hits():
                     profit_percent = ((entry - tp1) / entry) * 100
             
             if tp_hit and timestamp not in notifications_sent:
+                # Calculate profit in pips for forex 3TP
+                if pair.endswith("JPY"):
+                    # JPY pairs use 3 decimal places, so multiply by 1000
+                    multiplier = 1000
+                else:
+                    # Other pairs use 5 decimal places, so multiply by 10000
+                    multiplier = 10000
+                
+                if signal_type == "BUY":
+                    profit_pips = (signal.get(tp_hit.lower(), 0) - entry) * multiplier
+                else:  # SELL
+                    profit_pips = (entry - signal.get(tp_hit.lower(), 0)) * multiplier
+                
                 # Calculate R/R ratio for forex 3TP
                 if signal_type == "BUY":
                     risk_pips = ((entry - sl) / entry) * 100
@@ -492,13 +528,13 @@ async def check_and_notify_tp_hits():
                 
                 # Send TP hit notification to forex 3TP channel
                 if tp_hit == "TP3":
-                    message = f"#{pair}: Both targets 🔥🔥🔥 hit +{profit_percent:.1f}% total gain!"
+                    message = f"#{pair}: Both targets 🔥🔥🔥 hit +{profit_pips:.1f} pips total gain!"
                 else:
-                    message = f"#{pair}: TP{tp_hit[-1]} reached 🎯💰 +{profit_percent:.1f}% (R/R 1:{rr_ratio:.1f})"
+                    message = f"#{pair}: TP{tp_hit[-1]} reached 🎯💰 +{profit_pips:.1f} pips (R/R 1:{rr_ratio:.1f})"
                 
                 await bot.send_message(chat_id=FOREX_CHANNEL_3TP, text=message, parse_mode='Markdown')
                 notifications_sent.append(timestamp)
-                print(f"✅ {tp_hit} hit notification sent for {pair} {signal_type}: +{profit_percent:.2f}%")
+                print(f"✅ {tp_hit} hit notification sent for {pair} {signal_type}: +{profit_pips:.1f} pips")
         
         # Check crypto signals
         crypto_signals = signals.get("crypto", [])
