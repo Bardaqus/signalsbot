@@ -201,7 +201,7 @@ def calculate_signal_profit(signal, current_price):
                 profit_pips = (entry - current_price) * multiplier
             
             return profit_pips
-            
+                    
     except Exception as e:
         print(f"❌ Error calculating profit for {pair}: {e}")
         return 0
@@ -359,13 +359,12 @@ async def check_and_notify_tp_hits():
         bot = Bot(token=BOT_TOKEN)
         notifications_sent = signals.get("tp_notifications", [])
         
-        # Check forex signals (single TP)
+        # Check forex signals (2 TPs for main pairs, 1 TP for XAUUSD)
         forex_signals = signals.get("forex", [])
         for signal in forex_signals:
             pair = signal.get("pair", "")
             signal_type = signal.get("type", "")
             entry = signal.get("entry", 0)
-            tp = signal.get("tp", 0)
             sl = signal.get("sl", 0)
             timestamp = signal.get("timestamp", "")
             
@@ -374,32 +373,69 @@ async def check_and_notify_tp_hits():
             if current_price is None:
                 continue
             
-            # Check for TP hit
-            tp_hit = False
-            if signal_type == "BUY" and current_price >= tp:
-                tp_hit = True
-                profit_percent = ((tp - entry) / entry) * 100
-            elif signal_type == "SELL" and current_price <= tp:
-                tp_hit = True
-                profit_percent = ((entry - tp) / entry) * 100
+            # Check for TP hits based on pair type
+            tp_hit = None
+            profit_percent = 0
+            
+            if pair == "XAUUSD":
+                # XAUUSD: Single TP
+                tp = signal.get("tp", 0)
+                if signal_type == "BUY" and current_price >= tp:
+                    tp_hit = "TP"
+                    profit_percent = ((tp - entry) / entry) * 100
+                elif signal_type == "SELL" and current_price <= tp:
+                    tp_hit = "TP"
+                    profit_percent = ((entry - tp) / entry) * 100
+            else:
+                # Main forex pairs: 2 TPs
+                tp1 = signal.get("tp1", 0)
+                tp2 = signal.get("tp2", 0)
+                
+                if signal_type == "BUY":
+                    if current_price >= tp2:
+                        tp_hit = "TP2"
+                        profit_percent = ((tp2 - entry) / entry) * 100
+                    elif current_price >= tp1:
+                        tp_hit = "TP1"
+                        profit_percent = ((tp1 - entry) / entry) * 100
+                else:  # SELL
+                    if current_price <= tp2:
+                        tp_hit = "TP2"
+                        profit_percent = ((entry - tp2) / entry) * 100
+                    elif current_price <= tp1:
+                        tp_hit = "TP1"
+                        profit_percent = ((entry - tp1) / entry) * 100
             
             if tp_hit and timestamp not in notifications_sent:
                 # Calculate R/R ratio for forex
                 if signal_type == "BUY":
                     risk_pips = ((entry - sl) / entry) * 100
-                    reward_pips = ((tp - entry) / entry) * 100
+                    if tp_hit == "TP1":
+                        reward_pips = ((signal.get("tp1", 0) - entry) / entry) * 100
+                    elif tp_hit == "TP2":
+                        reward_pips = ((signal.get("tp2", 0) - entry) / entry) * 100
+                    else:  # Single TP
+                        reward_pips = ((signal.get("tp", 0) - entry) / entry) * 100
                 else:  # SELL
                     risk_pips = ((sl - entry) / entry) * 100
-                    reward_pips = ((entry - tp) / entry) * 100
+                    if tp_hit == "TP1":
+                        reward_pips = ((entry - signal.get("tp1", 0)) / entry) * 100
+                    elif tp_hit == "TP2":
+                        reward_pips = ((entry - signal.get("tp2", 0)) / entry) * 100
+                    else:  # Single TP
+                        reward_pips = ((entry - signal.get("tp", 0)) / entry) * 100
                 
                 rr_ratio = reward_pips / risk_pips if risk_pips > 0 else 0
                 
                 # Send TP hit notification to forex channel
-                message = f"#{pair}: TP1 reached 🎯💰 +{profit_percent:.1f}% (R/R 1:{rr_ratio:.1f})"
+                if tp_hit == "TP2":
+                    message = f"#{pair}: Both targets 🔥🔥🔥 hit +{profit_percent:.1f}% total gain!"
+                else:
+                    message = f"#{pair}: TP1 reached 🎯💰 +{profit_percent:.1f}% (R/R 1:{rr_ratio:.1f})"
                 
                 await bot.send_message(chat_id=FOREX_CHANNEL, text=message, parse_mode='Markdown')
                 notifications_sent.append(timestamp)
-                print(f"✅ TP hit notification sent for {pair} {signal_type}: +{profit_percent:.2f}%")
+                print(f"✅ {tp_hit} hit notification sent for {pair} {signal_type}: +{profit_percent:.2f}%")
         
         # Check forex 3TP signals
         forex_3tp_signals = signals.get("forex_3tp", [])
@@ -602,9 +638,9 @@ def generate_forex_signal():
         print(f"❌ Could not get real price for {pair}, skipping signal")
         return None
     
-    # Calculate SL and TP based on real price with new ranges
+    # Calculate SL and TP based on real price with 2 TPs
     if pair == "XAUUSD":
-        # Gold: 1-2% TP, 1-2% SL
+        # Gold: 1-2% TP, 1-2% SL (single TP for XAUUSD)
         tp_percent = random.uniform(0.01, 0.02)  # 1-2%
         sl_percent = random.uniform(0.01, 0.02)  # 1-2%
         
@@ -614,21 +650,33 @@ def generate_forex_signal():
         else:  # SELL
             tp = round(entry * (1 - tp_percent), 2)
             sl = round(entry * (1 + sl_percent), 2)
+        
+        return {
+            "pair": pair,
+            "type": signal_type,
+            "entry": entry,
+            "sl": sl,
+            "tp": tp,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
     else:
-        # Main forex pairs: 0.2% TP, 0.3% SL (doubled)
+        # Main forex pairs: 2 TPs with doubled distances
         if signal_type == "BUY":
-            tp = round(entry * 1.002, 5)  # 0.2% TP (doubled from 0.1%)
             sl = round(entry * 0.997, 5)  # 0.3% SL (doubled from 0.15%)
+            tp1 = round(entry * 1.002, 5)  # 0.2% TP1 (doubled from 0.1%)
+            tp2 = round(entry * 1.004, 5)  # 0.4% TP2 (doubled from 0.2%)
         else:  # SELL
-            tp = round(entry * 0.998, 5)  # 0.2% TP (doubled from 0.1%)
             sl = round(entry * 1.003, 5)  # 0.3% SL (doubled from 0.15%)
+            tp1 = round(entry * 0.998, 5)  # 0.2% TP1 (doubled from 0.1%)
+            tp2 = round(entry * 0.996, 5)  # 0.4% TP2 (doubled from 0.2%)
     
     return {
         "pair": pair,
         "type": signal_type,
         "entry": entry,
         "sl": sl,
-        "tp": tp,
+            "tp1": tp1,
+            "tp2": tp2,
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
@@ -772,30 +820,39 @@ def generate_crypto_signal():
 
 
 def format_forex_signal(signal):
-    """Format forex signal message"""
+    """Format forex signal message with 2 TPs"""
     pair = signal['pair']
     signal_type = signal['type']
     
     # Format numbers based on pair type
     if pair == "XAUUSD":
-        # Gold: 2 decimal places
+        # Gold: 2 decimal places (single TP)
         entry = f"{signal['entry']:,.2f}"
         sl = f"{signal['sl']:,.2f}"
         tp = f"{signal['tp']:,.2f}"
-    elif pair.endswith("JPY"):
-        # JPY pairs: 3 decimal places
-        entry = f"{signal['entry']:,.3f}"
-        sl = f"{signal['sl']:,.3f}"
-        tp = f"{signal['tp']:,.3f}"
-    else:
-        # Other forex pairs: 5 decimal places
-        entry = f"{signal['entry']:,.5f}"
-        sl = f"{signal['sl']:,.5f}"
-        tp = f"{signal['tp']:,.5f}"
-    
-    return f"""{pair} {signal_type} {entry}
+        return f"""{pair} {signal_type} {entry}
 SL {sl}
 TP {tp}"""
+    elif pair.endswith("JPY"):
+        # JPY pairs: 3 decimal places (2 TPs)
+        entry = f"{signal['entry']:,.3f}"
+        sl = f"{signal['sl']:,.3f}"
+        tp1 = f"{signal['tp1']:,.3f}"
+        tp2 = f"{signal['tp2']:,.3f}"
+        return f"""{pair} {signal_type} {entry}
+SL {sl}
+TP1 {tp1}
+TP2 {tp2}"""
+    else:
+        # Other forex pairs: 5 decimal places (2 TPs)
+        entry = f"{signal['entry']:,.5f}"
+        sl = f"{signal['sl']:,.5f}"
+        tp1 = f"{signal['tp1']:,.5f}"
+        tp2 = f"{signal['tp2']:,.5f}"
+        return f"""{pair} {signal_type} {entry}
+SL {sl}
+TP1 {tp1}
+TP2 {tp2}"""
 
 
 def format_forex_3tp_signal(signal):
@@ -1522,8 +1579,8 @@ async def handle_performance_report(query, context: ContextTypes.DEFAULT_TYPE, s
         # Individual signal results (only for short periods)
         if days <= 3 and performance['signals_detail']:
             report += "📋 **INDIVIDUAL SIGNALS**\n"
-            for signal_detail in performance["signals_detail"]:
-                report += f"{signal_detail}\n"
+        for signal_detail in performance["signals_detail"]:
+            report += f"{signal_detail}\n"
             report += "\n"
         
         # Performance rating
