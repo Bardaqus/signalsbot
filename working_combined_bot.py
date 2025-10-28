@@ -1472,7 +1472,7 @@ async def handle_performance_report(query, context: ContextTypes.DEFAULT_TYPE, s
             elif signal_type == "crypto_gainmuse":
                 channel_name = "Crypto Gain Muse"
             else:
-            channel_name = "Crypto"
+                channel_name = "Crypto"
         else:
             await query.edit_message_text("❌ Invalid signal type")
             return
