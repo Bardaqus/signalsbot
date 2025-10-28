@@ -528,9 +528,11 @@ async def check_and_notify_tp_hits():
                 
                 # Send TP hit notification to forex 3TP channel
                 if tp_hit == "TP3":
-                    message = f"#{pair}: Both targets 🔥🔥🔥 hit +{profit_pips:.1f} pips total gain!"
-                else:
-                    message = f"#{pair}: TP{tp_hit[-1]} reached 🎯💰 +{profit_pips:.1f} pips (R/R 1:{rr_ratio:.1f})"
+                    message = f"🎯 {pair} {signal_type} - All targets achieved! +{profit_pips:.1f} pips profit"
+                elif tp_hit == "TP2":
+                    message = f"✅ {pair} {signal_type} - TP2 hit! +{profit_pips:.1f} pips (R/R 1:{rr_ratio:.1f})"
+                else:  # TP1
+                    message = f"📈 {pair} {signal_type} - TP1 reached! +{profit_pips:.1f} pips (R/R 1:{rr_ratio:.1f})"
                 
                 await bot.send_message(chat_id=FOREX_CHANNEL_3TP, text=message, parse_mode='Markdown')
                 notifications_sent.append(timestamp)
