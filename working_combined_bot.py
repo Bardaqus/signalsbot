@@ -51,8 +51,8 @@ MAX_FOREX_3TP_SIGNALS = 4  # New forex channel with 3 TPs
 MAX_CRYPTO_SIGNALS = 5
 
 # Time intervals (in hours)
-MIN_INTERVAL = 2
-MAX_INTERVAL = 5
+MIN_INTERVAL = 3  # Changed to 3 hours minimum
+MAX_INTERVAL = 5  # Keep 5 hours maximum
 
 
 def get_real_forex_price(pair):
@@ -169,131 +169,46 @@ def load_performance():
 
 
 def calculate_signal_profit(signal, current_price):
-    """Calculate profit for a signal based on current price and 3TP rules"""
+    """Calculate profit for a signal with proper units (pips for forex, % for crypto)"""
     try:
         pair = signal.get("pair", "")
         signal_type = signal.get("type", "")
         entry = signal.get("entry", 0)
         sl = signal.get("sl", 0)
         
-        # Check if it's a 3TP signal (crypto or forex_3tp)
-        if "tp1" in signal and "tp2" in signal and "tp3" in signal:
-            tp1 = signal.get("tp1", 0)
-            tp2 = signal.get("tp2", 0)
-            tp3 = signal.get("tp3", 0)
-            
-            # 3TP Logic: Check which TP was hit first, then if SL was hit
-            # Calculate actual profit percentages based on entry price
+        # Determine if it's crypto or forex
+        is_crypto = pair in CRYPTO_PAIRS
+        
+        if is_crypto:
+            # Crypto signals: Calculate profit in percentage
             if signal_type == "BUY":
-                # For BUY: Check if price went up to TPs first, then down to SL
-                if current_price >= tp3:
-                    # Price reached TP3, check if SL was hit after
-                    if current_price <= sl:
-                        # TP3 hit then SL hit = negative of TP3 percentage
-                        tp3_profit = ((tp3 - entry) / entry) * 100
-                        return -tp3_profit
-                    else:
-                        # TP3 hit, no SL = positive TP3 percentage
-                        tp3_profit = ((tp3 - entry) / entry) * 100
-                        return tp3_profit
-                elif current_price >= tp2:
-                    # Price reached TP2, check if SL was hit after
-                    if current_price <= sl:
-                        # TP2 hit then SL hit = negative of TP2 percentage
-                        tp2_profit = ((tp2 - entry) / entry) * 100
-                        return -tp2_profit
-                    else:
-                        # TP2 hit, no SL = positive TP2 percentage
-                        tp2_profit = ((tp2 - entry) / entry) * 100
-                        return tp2_profit
-                elif current_price >= tp1:
-                    # Price reached TP1, check if SL was hit after
-                    if current_price <= sl:
-                        # TP1 hit then SL hit = negative of TP1 percentage
-                        tp1_profit = ((tp1 - entry) / entry) * 100
-                        return -tp1_profit
-                    else:
-                        # TP1 hit, no SL = positive TP1 percentage
-                        tp1_profit = ((tp1 - entry) / entry) * 100
-                        return tp1_profit
-                elif current_price <= sl:
-                    # No TP hit, SL hit = negative SL percentage
-                    sl_loss = ((entry - sl) / entry) * 100
-                    return -sl_loss
-                else:
-                    return 0   # No TP or SL hit yet
+                profit_pct = ((current_price - entry) / entry) * 100
             else:  # SELL
-                # For SELL: Check if price went down to TPs first, then up to SL
-                if current_price <= tp3:
-                    # Price reached TP3, check if SL was hit after
-                    if current_price >= sl:
-                        # TP3 hit then SL hit = negative of TP3 percentage
-                        tp3_profit = ((entry - tp3) / entry) * 100
-                        return -tp3_profit
-                    else:
-                        # TP3 hit, no SL = positive TP3 percentage
-                        tp3_profit = ((entry - tp3) / entry) * 100
-                        return tp3_profit
-                elif current_price <= tp2:
-                    # Price reached TP2, check if SL was hit after
-                    if current_price >= sl:
-                        # TP2 hit then SL hit = negative of TP2 percentage
-                        tp2_profit = ((entry - tp2) / entry) * 100
-                        return -tp2_profit
-                    else:
-                        # TP2 hit, no SL = positive TP2 percentage
-                        tp2_profit = ((entry - tp2) / entry) * 100
-                        return tp2_profit
-                elif current_price <= tp1:
-                    # Price reached TP1, check if SL was hit after
-                    if current_price >= sl:
-                        # TP1 hit then SL hit = negative of TP1 percentage
-                        tp1_profit = ((entry - tp1) / entry) * 100
-                        return -tp1_profit
-                    else:
-                        # TP1 hit, no SL = positive TP1 percentage
-                        tp1_profit = ((entry - tp1) / entry) * 100
-                        return tp1_profit
-                elif current_price >= sl:
-                    # No TP hit, SL hit = negative SL percentage
-                    sl_loss = ((sl - entry) / entry) * 100
-                    return -sl_loss
-                else:
-                    return 0   # No TP or SL hit yet
+                profit_pct = ((entry - current_price) / entry) * 100
+            return profit_pct
         else:
-            # Single TP signal (regular forex)
-            tp = signal.get("tp", 0)
+            # Forex signals: Calculate profit in pips
+            if pair.endswith("JPY"):
+                # JPY pairs use 3 decimal places, so multiply by 1000
+                multiplier = 1000
+            else:
+                # Other pairs use 5 decimal places, so multiply by 10000
+                multiplier = 10000
             
             if signal_type == "BUY":
-                if current_price >= tp:
-                    # TP hit = positive TP percentage
-                    tp_profit = ((tp - entry) / entry) * 100
-                    return tp_profit
-                elif current_price <= sl:
-                    # SL hit = negative SL percentage
-                    sl_loss = ((entry - sl) / entry) * 100
-                    return -sl_loss
-                else:
-                    return 0   # No TP or SL hit yet
+                profit_pips = (current_price - entry) * multiplier
             else:  # SELL
-                if current_price <= tp:
-                    # TP hit = positive TP percentage
-                    tp_profit = ((entry - tp) / entry) * 100
-                    return tp_profit
-                elif current_price >= sl:
-                    # SL hit = negative SL percentage
-                    sl_loss = ((sl - entry) / entry) * 100
-                    return -sl_loss
-                else:
-                    return 0   # No TP or SL hit yet
-                    
+                profit_pips = (entry - current_price) * multiplier
+            
+            return profit_pips
+            
     except Exception as e:
         print(f"❌ Error calculating profit for {pair}: {e}")
         return 0
 
 
 def get_performance_summary(signals_list, days=1):
-    """Get performance summary for signals"""
+    """Get comprehensive performance summary for signals"""
     try:
         if not signals_list:
             return {
@@ -301,6 +216,11 @@ def get_performance_summary(signals_list, days=1):
                 "profit_signals": 0,
                 "loss_signals": 0,
                 "total_profit": 0,
+                "avg_profit_per_signal": 0,
+                "win_rate": 0,
+                "avg_profit": 0,
+                "avg_loss": 0,
+                "profit_factor": 0,
                 "signals_detail": []
             }
         
@@ -323,6 +243,11 @@ def get_performance_summary(signals_list, days=1):
                 "profit_signals": 0,
                 "loss_signals": 0,
                 "total_profit": 0,
+                "avg_profit_per_signal": 0,
+                "win_rate": 0,
+                "avg_profit": 0,
+                "avg_loss": 0,
+                "profit_factor": 0,
                 "signals_detail": []
             }
         
@@ -331,6 +256,8 @@ def get_performance_summary(signals_list, days=1):
         total_profit = 0
         profit_count = 0
         loss_count = 0
+        profit_values = []
+        loss_values = []
         
         for signal in filtered_signals:
             pair = signal.get("pair", "")
@@ -347,24 +274,54 @@ def get_performance_summary(signals_list, days=1):
                 continue
             
             # Calculate profit
-            profit_percent = calculate_signal_profit(signal, current_price)
+            profit_value = calculate_signal_profit(signal, current_price)
             
-            if profit_percent > 0:
-                profit_count += 1
-                total_profit += profit_percent
-                signals_detail.append(f"{pair} {signal_type} +{profit_percent}%")
-            elif profit_percent < 0:
-                loss_count += 1
-                total_profit += profit_percent
-                signals_detail.append(f"{pair} {signal_type} {profit_percent}%")
+            # Determine unit and format display
+            is_crypto = pair in CRYPTO_PAIRS
+            if is_crypto:
+                # Crypto: profit in percentage
+                unit = "%"
+                profit_display = f"{profit_value:+.2f}{unit}"
             else:
-                signals_detail.append(f"{pair} {signal_type} 0%")
+                # Forex: profit in pips
+                unit = " pips"
+                profit_display = f"{profit_value:+.1f}{unit}"
+            
+            if profit_value > 0:
+                profit_count += 1
+                total_profit += profit_value
+                profit_values.append(profit_value)
+                signals_detail.append(f"✅ {pair} {signal_type}: {profit_display}")
+            elif profit_value < 0:
+                loss_count += 1
+                total_profit += profit_value
+                loss_values.append(abs(profit_value))
+                signals_detail.append(f"❌ {pair} {signal_type}: {profit_display}")
+            else:
+                signals_detail.append(f"➖ {pair} {signal_type}: 0.00{unit}")
+        
+        # Calculate advanced statistics
+        total_signals = len(filtered_signals)
+        avg_profit_per_signal = total_profit / total_signals if total_signals > 0 else 0
+        win_rate = (profit_count / total_signals * 100) if total_signals > 0 else 0
+        avg_profit = sum(profit_values) / len(profit_values) if profit_values else 0
+        avg_loss = sum(loss_values) / len(loss_values) if loss_values else 0
+        
+        # Calculate profit factor
+        total_profit_sum = sum(profit_values) if profit_values else 0
+        total_loss_sum = sum(loss_values) if loss_values else 0
+        profit_factor = total_profit_sum / total_loss_sum if total_loss_sum > 0 else float('inf')
         
         return {
-            "total_signals": len(filtered_signals),
+            "total_signals": total_signals,
             "profit_signals": profit_count,
             "loss_signals": loss_count,
             "total_profit": total_profit,
+            "avg_profit_per_signal": avg_profit_per_signal,
+            "win_rate": win_rate,
+            "avg_profit": avg_profit,
+            "avg_loss": avg_loss,
+            "profit_factor": profit_factor,
             "signals_detail": signals_detail
         }
         
@@ -375,6 +332,11 @@ def get_performance_summary(signals_list, days=1):
             "profit_signals": 0,
             "loss_signals": 0,
             "total_profit": 0,
+            "avg_profit_per_signal": 0,
+            "win_rate": 0,
+            "avg_profit": 0,
+            "avg_loss": 0,
+            "profit_factor": 0,
             "signals_detail": []
         }
 
@@ -422,14 +384,18 @@ async def check_and_notify_tp_hits():
                 profit_percent = ((entry - tp) / entry) * 100
             
             if tp_hit and timestamp not in notifications_sent:
+                # Calculate R/R ratio for forex
+                if signal_type == "BUY":
+                    risk_pips = ((entry - sl) / entry) * 100
+                    reward_pips = ((tp - entry) / entry) * 100
+                else:  # SELL
+                    risk_pips = ((sl - entry) / entry) * 100
+                    reward_pips = ((entry - tp) / entry) * 100
+                
+                rr_ratio = reward_pips / risk_pips if risk_pips > 0 else 0
+                
                 # Send TP hit notification to forex channel
-                message = f"🎯 **TP HIT!**\n\n"
-                message += f"**{pair} {signal_type}**\n"
-                message += f"Entry: {entry:,.5f}\n"
-                message += f"TP: {tp:,.5f}\n"
-                message += f"Current: {current_price:,.5f}\n"
-                message += f"**Profit: +{profit_percent:.2f}%**\n\n"
-                message += f"⏰ Time: {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"
+                message = f"#{pair}: TP1 reached 🎯💰 +{profit_percent:.1f}% (R/R 1:{rr_ratio:.1f})"
                 
                 await bot.send_message(chat_id=FOREX_CHANNEL, text=message, parse_mode='Markdown')
                 notifications_sent.append(timestamp)
@@ -478,14 +444,21 @@ async def check_and_notify_tp_hits():
                     profit_percent = ((entry - tp1) / entry) * 100
             
             if tp_hit and timestamp not in notifications_sent:
+                # Calculate R/R ratio for forex 3TP
+                if signal_type == "BUY":
+                    risk_pips = ((entry - sl) / entry) * 100
+                    reward_pips = ((signal.get(tp_hit.lower(), 0) - entry) / entry) * 100
+                else:  # SELL
+                    risk_pips = ((sl - entry) / entry) * 100
+                    reward_pips = ((entry - signal.get(tp_hit.lower(), 0)) / entry) * 100
+                
+                rr_ratio = reward_pips / risk_pips if risk_pips > 0 else 0
+                
                 # Send TP hit notification to forex 3TP channel
-                message = f"🎯 **{tp_hit} HIT!**\n\n"
-                message += f"**{pair} {signal_type}**\n"
-                message += f"Entry: {entry:,.5f}\n"
-                message += f"{tp_hit}: {signal.get(tp_hit.lower(), 0):,.5f}\n"
-                message += f"Current: {current_price:,.5f}\n"
-                message += f"**Profit: +{profit_percent:.2f}%**\n\n"
-                message += f"⏰ Time: {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"
+                if tp_hit == "TP3":
+                    message = f"#{pair}: Both targets 🔥🔥🔥 hit +{profit_percent:.1f}% total gain!"
+                else:
+                    message = f"#{pair}: TP{tp_hit[-1]} reached 🎯💰 +{profit_percent:.1f}% (R/R 1:{rr_ratio:.1f})"
                 
                 await bot.send_message(chat_id=FOREX_CHANNEL_3TP, text=message, parse_mode='Markdown')
                 notifications_sent.append(timestamp)
@@ -534,14 +507,21 @@ async def check_and_notify_tp_hits():
                     profit_percent = ((entry - tp1) / entry) * 100
             
             if tp_hit and timestamp not in notifications_sent:
-                # Send TP hit notification to crypto channel
-                message = f"🎯 **{tp_hit} HIT!**\n\n"
-                message += f"**{pair} {signal_type}**\n"
-                message += f"Entry: {entry:,.6f}\n"
-                message += f"{tp_hit}: {signal.get(tp_hit.lower(), 0):,.6f}\n"
-                message += f"Current: {current_price:,.6f}\n"
-                message += f"**Profit: +{profit_percent:.2f}%**\n\n"
-                message += f"⏰ Time: {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"
+                # Calculate R/R ratio for crypto
+                if signal_type == "BUY":
+                    risk_pips = ((entry - sl) / entry) * 100
+                    reward_pips = ((signal.get(tp_hit.lower(), 0) - entry) / entry) * 100
+                else:  # SELL
+                    risk_pips = ((sl - entry) / entry) * 100
+                    reward_pips = ((entry - signal.get(tp_hit.lower(), 0)) / entry) * 100
+                
+                rr_ratio = reward_pips / risk_pips if risk_pips > 0 else 0
+                
+                # Send TP hit notification to crypto channels
+                if tp_hit == "TP3":
+                    message = f"#{pair}: Both targets 🚀🚀 hit +{profit_percent:.1f}% total gain!"
+                else:
+                    message = f"#{pair}: TP{tp_hit[-1]} reached ⚡️ +{profit_percent:.1f}% (R/R 1:{rr_ratio:.1f})"
                 
                 await bot.send_message(chat_id=CRYPTO_CHANNEL_LINGRID, text=message, parse_mode='Markdown')
                 await bot.send_message(chat_id=CRYPTO_CHANNEL_GAINMUSE, text=message, parse_mode='Markdown')
@@ -635,13 +615,13 @@ def generate_forex_signal():
             tp = round(entry * (1 - tp_percent), 2)
             sl = round(entry * (1 + sl_percent), 2)
     else:
-        # Main forex pairs: 0.1% TP, 0.15% SL
+        # Main forex pairs: 0.2% TP, 0.3% SL (doubled)
         if signal_type == "BUY":
-            tp = round(entry * 1.001, 5)  # 0.1% TP
-            sl = round(entry * 0.9985, 5)  # 0.15% SL
+            tp = round(entry * 1.002, 5)  # 0.2% TP (doubled from 0.1%)
+            sl = round(entry * 0.997, 5)  # 0.3% SL (doubled from 0.15%)
         else:  # SELL
-            tp = round(entry * 0.999, 5)  # 0.1% TP
-            sl = round(entry * 1.0015, 5)  # 0.15% SL
+            tp = round(entry * 0.998, 5)  # 0.2% TP (doubled from 0.1%)
+            sl = round(entry * 1.003, 5)  # 0.3% SL (doubled from 0.15%)
     
     return {
         "pair": pair,
@@ -700,17 +680,17 @@ def generate_forex_3tp_signal():
             tp2 = round(entry * (1 - tp2_percent), 2)
             tp3 = round(entry * (1 - tp3_percent), 2)
     else:
-        # Main forex pairs: 0.1% TP1, 0.15% TP2, 0.2% TP3, 0.15% SL
+        # Main forex pairs: 0.2% TP1, 0.3% TP2, 0.4% TP3, 0.3% SL (doubled)
         if signal_type == "BUY":
-            sl = round(entry * 0.9985, 5)  # 0.15% SL
-            tp1 = round(entry * 1.001, 5)  # 0.1% TP1
-            tp2 = round(entry * 1.0015, 5)  # 0.15% TP2
-            tp3 = round(entry * 1.002, 5)  # 0.2% TP3
+            sl = round(entry * 0.997, 5)  # 0.3% SL (doubled from 0.15%)
+            tp1 = round(entry * 1.002, 5)  # 0.2% TP1 (doubled from 0.1%)
+            tp2 = round(entry * 1.003, 5)  # 0.3% TP2 (doubled from 0.15%)
+            tp3 = round(entry * 1.004, 5)  # 0.4% TP3 (doubled from 0.2%)
         else:  # SELL
-            sl = round(entry * 1.0015, 5)  # 0.15% SL
-            tp1 = round(entry * 0.999, 5)  # 0.1% TP1
-            tp2 = round(entry * 0.9985, 5)  # 0.15% TP2
-            tp3 = round(entry * 0.998, 5)  # 0.2% TP3
+            sl = round(entry * 1.003, 5)  # 0.3% SL (doubled from 0.15%)
+            tp1 = round(entry * 0.998, 5)  # 0.2% TP1 (doubled from 0.1%)
+            tp2 = round(entry * 0.997, 5)  # 0.3% TP2 (doubled from 0.15%)
+            tp3 = round(entry * 0.996, 5)  # 0.4% TP3 (doubled from 0.2%)
     
     return {
         "pair": pair,
@@ -871,8 +851,15 @@ TP2: {tp2}
 TP3: {tp3}"""
 
 
+def is_trading_hours():
+    """Check if current time is within trading hours (4 GMT - 23 GMT)"""
+    current_time = datetime.now(timezone.utc)
+    current_hour = current_time.hour
+    return 4 <= current_hour < 23
+
+
 def get_next_interval():
-    """Get next interval in seconds (2-5 hours)"""
+    """Get next interval in seconds (3-5 hours)"""
     return random.randint(MIN_INTERVAL * 3600, MAX_INTERVAL * 3600)
 
 
@@ -996,7 +983,7 @@ async def send_crypto_signal():
 
 
 async def send_daily_summary():
-    """Send daily summary to user"""
+    """Send comprehensive daily summary with performance data"""
     try:
         signals = load_signals()
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -1010,47 +997,39 @@ async def send_daily_summary():
             forex_3tp_signals = signals.get("forex_3tp", [])
             crypto_signals = signals.get("crypto", [])
         
-        # Calculate forex stats
-        forex_buy = len([s for s in forex_signals if s.get("type") == "BUY"])
-        forex_sell = len([s for s in forex_signals if s.get("type") == "SELL"])
+        # Calculate performance for each channel
+        forex_performance = get_performance_summary(forex_signals, 1)
+        forex_3tp_performance = get_performance_summary(forex_3tp_signals, 1)
+        crypto_performance = get_performance_summary(crypto_signals, 1)
         
-        # Calculate forex 3TP stats
-        forex_3tp_buy = len([s for s in forex_3tp_signals if s.get("type") == "BUY"])
-        forex_3tp_sell = len([s for s in forex_3tp_signals if s.get("type") == "SELL"])
-        
-        # Calculate crypto stats
-        crypto_buy = len([s for s in crypto_signals if s.get("type") == "BUY"])
-        crypto_sell = len([s for s in crypto_signals if s.get("type") == "SELL"])
-        crypto_total = len(crypto_signals)
-        crypto_buy_ratio = (crypto_buy / crypto_total * 100) if crypto_total > 0 else 0
-        crypto_sell_ratio = (crypto_sell / crypto_total * 100) if crypto_total > 0 else 0
-        
-        # Create summary message
-        summary = f"""
-📊 **Daily Trading Signals Summary (24h)**
+        # Create comprehensive summary message
+        summary = f"""📊 **Daily Trading Signals Summary (24h)**
 📅 Date: {today}
 
 📈 **Forex Signals**
 • Total: {len(forex_signals)}/{MAX_FOREX_SIGNALS}
-• BUY: {forex_buy}
-• SELL: {forex_sell}
-• Channel: {FOREX_CHANNEL}
+• Performance: {forex_performance['total_profit']:+.2f}% total
+• Win Rate: {forex_performance['win_rate']:.1f}%
+• Profit Factor: {forex_performance['profit_factor']:.2f if forex_performance['profit_factor'] != float('inf') else '∞'}
 
 📈 **Forex 3TP Signals**
 • Total: {len(forex_3tp_signals)}/{MAX_FOREX_3TP_SIGNALS}
-• BUY: {forex_3tp_buy}
-• SELL: {forex_3tp_sell}
-• Channel: {FOREX_CHANNEL_3TP}
+• Performance: {forex_3tp_performance['total_profit']:+.2f}% total
+• Win Rate: {forex_3tp_performance['win_rate']:.1f}%
+• Profit Factor: {forex_3tp_performance['profit_factor']:.2f if forex_3tp_performance['profit_factor'] != float('inf') else '∞'}
 
 🪙 **Crypto Signals**
 • Total: {len(crypto_signals)}/{MAX_CRYPTO_SIGNALS}
-• BUY: {crypto_buy} ({crypto_buy_ratio:.1f}%)
-• SELL: {crypto_sell} ({crypto_sell_ratio:.1f}%)
-• Target: 73% BUY / 27% SELL
-• Channel: {CRYPTO_CHANNEL_LINGRID}
+• Performance: {crypto_performance['total_profit']:+.2f}% total
+• Win Rate: {crypto_performance['win_rate']:.1f}%
+• Profit Factor: {crypto_performance['profit_factor']:.2f if crypto_performance['profit_factor'] != float('inf') else '∞'}
 
-⏰ Generated: {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC
-        """
+💰 **OVERALL PERFORMANCE**
+• Total Signals: {forex_performance['total_signals'] + forex_3tp_performance['total_signals'] + crypto_performance['total_signals']}
+• Combined Profit: {forex_performance['total_profit'] + forex_3tp_performance['total_profit'] + crypto_performance['total_profit']:+.2f}%
+• Average Win Rate: {(forex_performance['win_rate'] + forex_3tp_performance['win_rate'] + crypto_performance['win_rate']) / 3:.1f}%
+
+⏰ Generated at: {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"""
         
         # Send to user
         bot = Bot(token=BOT_TOKEN)
@@ -1063,54 +1042,61 @@ async def send_daily_summary():
 
 
 async def send_weekly_summary():
-    """Send weekly summary to user (Friday)"""
+    """Send comprehensive weekly summary with performance data"""
     try:
         # Get signals from last 7 days
         today = datetime.now(timezone.utc)
         week_ago = today - timedelta(days=7)
         
-        # Load all performance data
-        performance = load_performance()
+        # Load current signals
+        signals = load_signals()
         
-        # Calculate weekly stats
-        forex_signals = performance.get("forex", [])
-        crypto_signals = performance.get("crypto", [])
+        # Get all signals from the last 7 days (we'll need to load from performance data)
+        # For now, let's use the current signals and calculate performance
+        forex_signals = signals.get("forex", [])
+        forex_3tp_signals = signals.get("forex_3tp", [])
+        crypto_signals = signals.get("crypto", [])
         
-        # Filter signals from last 7 days
-        recent_forex = [s for s in forex_signals if datetime.fromisoformat(s.get("timestamp", "")).replace(tzinfo=timezone.utc) >= week_ago]
-        recent_crypto = [s for s in crypto_signals if datetime.fromisoformat(s.get("timestamp", "")).replace(tzinfo=timezone.utc) >= week_ago]
+        # Calculate performance for each channel over 7 days
+        forex_performance = get_performance_summary(forex_signals, 7)
+        forex_3tp_performance = get_performance_summary(forex_3tp_signals, 7)
+        crypto_performance = get_performance_summary(crypto_signals, 7)
         
-        # Calculate forex stats
-        forex_buy = len([s for s in recent_forex if s.get("type") == "BUY"])
-        forex_sell = len([s for s in recent_forex if s.get("type") == "SELL"])
-        
-        # Calculate crypto stats
-        crypto_buy = len([s for s in recent_crypto if s.get("type") == "BUY"])
-        crypto_sell = len([s for s in recent_crypto if s.get("type") == "SELL"])
-        crypto_total = len(recent_crypto)
-        crypto_buy_ratio = (crypto_buy / crypto_total * 100) if crypto_total > 0 else 0
-        crypto_sell_ratio = (crypto_sell / crypto_total * 100) if crypto_total > 0 else 0
-        
-        # Create weekly summary message
-        summary = f"""
-📊 **Weekly Trading Signals Summary (7 days)**
+        # Create comprehensive weekly summary message
+        summary = f"""📊 **Weekly Trading Signals Summary (7 days)**
 📅 Period: {week_ago.strftime('%Y-%m-%d')} to {today.strftime('%Y-%m-%d')}
 
 📈 **Forex Signals**
-• Total: {len(recent_forex)}
-• BUY: {forex_buy}
-• SELL: {forex_sell}
-• Channel: {FOREX_CHANNEL}
+• Total: {forex_performance['total_signals']}
+• Performance: {forex_performance['total_profit']:+.2f}% total
+• Win Rate: {forex_performance['win_rate']:.1f}%
+• Profit Factor: {forex_performance['profit_factor']:.2f if forex_performance['profit_factor'] != float('inf') else '∞'}
+• Average Win: {forex_performance['avg_profit']:+.2f}%
+• Average Loss: {forex_performance['avg_loss']:+.2f}%
+
+📈 **Forex 3TP Signals**
+• Total: {forex_3tp_performance['total_signals']}
+• Performance: {forex_3tp_performance['total_profit']:+.2f}% total
+• Win Rate: {forex_3tp_performance['win_rate']:.1f}%
+• Profit Factor: {forex_3tp_performance['profit_factor']:.2f if forex_3tp_performance['profit_factor'] != float('inf') else '∞'}
+• Average Win: {forex_3tp_performance['avg_profit']:+.2f}%
+• Average Loss: {forex_3tp_performance['avg_loss']:+.2f}%
 
 🪙 **Crypto Signals**
-• Total: {len(recent_crypto)}
-• BUY: {crypto_buy} ({crypto_buy_ratio:.1f}%)
-• SELL: {crypto_sell} ({crypto_sell_ratio:.1f}%)
-• Target: 73% BUY / 27% SELL
-• Channel: {CRYPTO_CHANNEL_LINGRID}
+• Total: {crypto_performance['total_signals']}
+• Performance: {crypto_performance['total_profit']:+.2f}% total
+• Win Rate: {crypto_performance['win_rate']:.1f}%
+• Profit Factor: {crypto_performance['profit_factor']:.2f if crypto_performance['profit_factor'] != float('inf') else '∞'}
+• Average Win: {crypto_performance['avg_profit']:+.2f}%
+• Average Loss: {crypto_performance['avg_loss']:+.2f}%
 
-⏰ Generated: {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC
-        """
+💰 **OVERALL WEEKLY PERFORMANCE**
+• Total Signals: {forex_performance['total_signals'] + forex_3tp_performance['total_signals'] + crypto_performance['total_signals']}
+• Combined Profit: {forex_performance['total_profit'] + forex_3tp_performance['total_profit'] + crypto_performance['total_profit']:+.2f}%
+• Average Win Rate: {(forex_performance['win_rate'] + forex_3tp_performance['win_rate'] + crypto_performance['win_rate']) / 3:.1f}%
+• Daily Average: {(forex_performance['total_profit'] + forex_3tp_performance['total_profit'] + crypto_performance['total_profit']) / 7:+.2f}%
+
+⏰ Generated at: {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"""
         
         # Send to user
         bot = Bot(token=BOT_TOKEN)
@@ -1486,7 +1472,7 @@ async def handle_performance_report(query, context: ContextTypes.DEFAULT_TYPE, s
             elif signal_type == "crypto_gainmuse":
                 channel_name = "Crypto Gain Muse"
             else:
-                channel_name = "Crypto"
+            channel_name = "Crypto"
         else:
             await query.edit_message_text("❌ Invalid signal type")
             return
@@ -1509,19 +1495,53 @@ async def handle_performance_report(query, context: ContextTypes.DEFAULT_TYPE, s
             )
             return
         
-        # Format performance report
+        # Format comprehensive performance report
         report = f"📊 **{channel_name} Performance Report**\n\n"
         report += f"📅 **Period:** Last {days} day(s)\n\n"
         
-        # Add individual signal results
-        for signal_detail in performance["signals_detail"]:
-            report += f"{signal_detail}\n"
+        # Summary statistics
+        report += "📈 **SUMMARY**\n"
+        report += f"Total Signals: {performance['total_signals']}\n"
+        report += f"Winning Signals: {performance['profit_signals']} ({performance['win_rate']:.1f}%)\n"
+        report += f"Losing Signals: {performance['loss_signals']} ({100-performance['win_rate']:.1f}%)\n\n"
         
-        report += f"\n📈 **Summary:**\n"
-        report += f"• Total signals: {performance['total_signals']}\n"
-        report += f"• In profit: {performance['profit_signals']}\n"
-        report += f"• In loss: {performance['loss_signals']}\n"
-        report += f"• Total profit: {performance['total_profit']:+.1f}%"
+        # Profit/Loss details
+        report += "💰 **PROFIT/LOSS**\n"
+        report += f"Total Profit: {performance['total_profit']:+.2f}%\n"
+        report += f"Average per Signal: {performance['avg_profit_per_signal']:+.2f}%\n"
+        if performance['profit_signals'] > 0:
+            report += f"Average Win: {performance['avg_profit']:+.2f}%\n"
+        if performance['loss_signals'] > 0:
+            report += f"Average Loss: {performance['avg_loss']:+.2f}%\n"
+        if performance['profit_factor'] != float('inf'):
+            report += f"Profit Factor: {performance['profit_factor']:.2f}\n"
+        else:
+            report += "Profit Factor: ∞\n"
+        report += "\n"
+        
+        # Individual signal results (only for short periods)
+        if days <= 3 and performance['signals_detail']:
+            report += "📋 **INDIVIDUAL SIGNALS**\n"
+            for signal_detail in performance["signals_detail"]:
+                report += f"{signal_detail}\n"
+            report += "\n"
+        
+        # Performance rating
+        win_rate = performance['win_rate']
+        profit_factor = performance['profit_factor']
+        
+        if win_rate >= 70 and profit_factor >= 2.0:
+            rating = "🏆 EXCELLENT"
+        elif win_rate >= 60 and profit_factor >= 1.5:
+            rating = "🥇 VERY GOOD"
+        elif win_rate >= 50 and profit_factor >= 1.0:
+            rating = "🥈 GOOD"
+        elif win_rate >= 40:
+            rating = "🥉 FAIR"
+        else:
+            rating = "⚠️ NEEDS IMPROVEMENT"
+        
+        report += f"🎯 **PERFORMANCE RATING: {rating}**"
         
         await query.edit_message_text(report, reply_markup=reply_markup, parse_mode='Markdown')
         
@@ -1920,6 +1940,28 @@ def automatic_signal_loop():
     async def async_loop():
         while True:
             try:
+                current_time = datetime.now(timezone.utc)
+                current_hour = current_time.hour
+                
+                # Check if we're in trading hours (4 GMT - 23 GMT)
+                if not is_trading_hours():
+                    print(f"🌙 Outside trading hours ({current_hour}:00 GMT). Market closed.")
+                    # Still check for TP hits
+                    await check_and_notify_tp_hits()
+                    
+                    # Wait until trading hours start
+                    if current_hour < 4:
+                        # Wait until 4 GMT
+                        next_trading_time = current_time.replace(hour=4, minute=0, second=0, microsecond=0)
+                    else:  # current_hour >= 23
+                        # Wait until 4 GMT next day
+                        next_trading_time = (current_time + timedelta(days=1)).replace(hour=4, minute=0, second=0, microsecond=0)
+                    
+                    wait_seconds = (next_trading_time - current_time).total_seconds()
+                    print(f"⏰ Waiting {wait_seconds/3600:.1f} hours until trading hours...")
+                    await asyncio.sleep(wait_seconds)
+                    continue
+                
                 # Check if we need to send signals
                 signals = load_signals()
                 today = datetime.now(timezone.utc).strftime("%Y-%m-%d")

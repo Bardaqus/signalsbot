@@ -184,31 +184,37 @@ def generate_signal_from_bars(bars: List[Dict], symbol: str = "") -> Tuple[str, 
             sl = entry * (1 + sl_pct)  # 4% above entry
             tp = entry * (1 - profit_pct)  # 4% below entry
     else:
-        # Forex pairs: fixed pip distances
-        sl_pips = 96  # Average SL distance
-        tp_pips = 103  # Average TP distance
+        # Forex pairs: fixed pip distances (doubled) with 2 TPs
+        sl_pips = 192  # Average SL distance (doubled from 96)
+        tp1_pips = 103  # First TP distance (original)
+        tp2_pips = 206  # Second TP distance (doubled)
         
         # Adjust for JPY pairs (3 decimal places) - 2x bigger range
         if symbol.endswith("JPY.FOREX"):
             sl_distance = (sl_pips * 2) / 1000  # JPY pairs use 3 decimals, 2x bigger range
-            tp_distance = (tp_pips * 2) / 1000
+            tp1_distance = (tp1_pips * 2) / 1000
+            tp2_distance = (tp2_pips * 2) / 1000
         else:
             sl_distance = sl_pips / 10000  # Other pairs use 5 decimals
-            tp_distance = tp_pips / 10000
+            tp1_distance = tp1_pips / 10000
+            tp2_distance = tp2_pips / 10000
         
         if signal == "BUY":
             entry = last
             sl = entry - sl_distance
-            tp = entry + tp_distance
+            tp1 = entry + tp1_distance
+            tp2 = entry + tp2_distance
         else:  # SELL
             entry = last
             sl = entry + sl_distance
-            tp = entry - tp_distance
+            tp1 = entry - tp1_distance
+            tp2 = entry - tp2_distance
 
     return signal, {
         "entry": entry,
         "sl": sl,
-        "tp": tp,
+        "tp1": tp1,
+        "tp2": tp2,
     }
 
 
@@ -258,19 +264,35 @@ def get_available_pairs(all_pairs: List[str]) -> List[str]:
     return [pair for pair in all_pairs if pair not in active_pairs]
 
 
-def add_signal(symbol: str, signal_type: str, entry: float, sl: float, tp: float) -> None:
-    """Add new signal to tracking"""
+def add_signal(symbol: str, signal_type: str, entry: float, sl: float, tp1: float, tp2: float = None) -> None:
+    """Add new signal to tracking with 2 TPs"""
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    signal = {
-        "symbol": symbol,
-        "type": signal_type,
-        "entry": entry,
-        "sl": sl,
-        "tp": tp,
-        "date": today,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "status": "active"  # active, hit_sl, hit_tp
-    }
+    
+    if tp2 is not None:
+        # Forex signals with 2 TPs
+        signal = {
+            "symbol": symbol,
+            "type": signal_type,
+            "entry": entry,
+            "sl": sl,
+            "tp1": tp1,
+            "tp2": tp2,
+            "date": today,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "status": "active"  # active, hit_sl, hit_tp1, hit_tp2
+        }
+    else:
+        # XAUUSD signals with 1 TP (backward compatibility)
+        signal = {
+            "symbol": symbol,
+            "type": signal_type,
+            "entry": entry,
+            "sl": sl,
+            "tp": tp1,
+            "date": today,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "status": "active"  # active, hit_sl, hit_tp
+        }
     active_signals = load_active_signals()
     active_signals.append(signal)
     save_active_signals(active_signals)
@@ -297,25 +319,63 @@ def save_performance_data(data: Dict) -> None:
 
 
 def add_completed_signal(symbol: str, signal_type: str, entry: float, exit_price: float, status: str) -> None:
-    """Add completed signal to performance tracking"""
+    """Add completed signal to performance tracking with proper units"""
     performance_data = load_performance_data()
     
-    # Calculate profit percentage
-    if signal_type == "BUY":
-        profit_pct = ((exit_price - entry) / entry) * 100
-    else:  # SELL
-        profit_pct = ((entry - exit_price) / entry) * 100
+    # Determine if it's crypto or forex based on symbol
+    is_crypto = not symbol.endswith(".FOREX")
     
-    completed_signal = {
-        "symbol": symbol.replace(".FOREX", ""),  # Remove .FOREX for display
-        "type": signal_type,
-        "entry": entry,
-        "exit_price": exit_price,
-        "profit_pct": profit_pct,
-        "status": status,  # "hit_tp" or "hit_sl"
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "date": datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    }
+    if is_crypto:
+        # Crypto signals: Calculate profit in percentage
+        if signal_type == "BUY":
+            profit_pct = ((exit_price - entry) / entry) * 100
+        else:  # SELL
+            profit_pct = ((entry - exit_price) / entry) * 100
+        
+        completed_signal = {
+            "symbol": symbol,
+            "type": signal_type,
+            "entry": entry,
+            "exit_price": exit_price,
+            "profit_pct": profit_pct,
+            "profit_pips": None,  # Not applicable for crypto
+            "unit": "percentage",
+            "status": status,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "date": datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        }
+    else:
+        # Forex signals: Calculate profit in pips
+        if symbol.endswith("JPY.FOREX"):
+            # JPY pairs use 3 decimal places, so multiply by 1000
+            multiplier = 1000
+        else:
+            # Other pairs use 5 decimal places, so multiply by 10000
+            multiplier = 10000
+        
+        if signal_type == "BUY":
+            profit_pips = (exit_price - entry) * multiplier
+        else:  # SELL
+            profit_pips = (entry - exit_price) * multiplier
+        
+        # Also calculate percentage for consistency
+        if signal_type == "BUY":
+            profit_pct = ((exit_price - entry) / entry) * 100
+        else:  # SELL
+            profit_pct = ((entry - exit_price) / entry) * 100
+        
+        completed_signal = {
+            "symbol": symbol.replace(".FOREX", ""),  # Remove .FOREX for display
+            "type": signal_type,
+            "entry": entry,
+            "exit_price": exit_price,
+            "profit_pct": profit_pct,
+            "profit_pips": profit_pips,
+            "unit": "pips",
+            "status": status,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "date": datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        }
     
     performance_data["completed_signals"].append(completed_signal)
     save_performance_data(performance_data)
@@ -338,17 +398,37 @@ def check_signal_hits() -> List[Dict]:
             signal_type = signal["type"]
             entry = signal["entry"]
             sl = signal["sl"]
-            tp = signal["tp"]
             
             hit_sl = False
-            hit_tp = False
+            hit_tp = None
             
-            if signal_type == "BUY":
-                hit_sl = current_price <= sl
-                hit_tp = current_price >= tp
-            else:  # SELL
-                hit_sl = current_price >= sl
-                hit_tp = current_price <= tp
+            # Check for 2 TPs (forex signals)
+            if "tp1" in signal and "tp2" in signal:
+                tp1 = signal["tp1"]
+                tp2 = signal["tp2"]
+                
+                if signal_type == "BUY":
+                    hit_sl = current_price <= sl
+                    if current_price >= tp2:
+                        hit_tp = "TP2"
+                    elif current_price >= tp1:
+                        hit_tp = "TP1"
+                else:  # SELL
+                    hit_sl = current_price >= sl
+                    if current_price <= tp2:
+                        hit_tp = "TP2"
+                    elif current_price <= tp1:
+                        hit_tp = "TP1"
+            else:
+                # Single TP (XAUUSD signals - backward compatibility)
+                tp = signal["tp"]
+                
+                if signal_type == "BUY":
+                    hit_sl = current_price <= sl
+                    hit_tp = "TP" if current_price >= tp else None
+                else:  # SELL
+                    hit_sl = current_price >= sl
+                    hit_tp = "TP" if current_price <= tp else None
             
             if hit_tp:
                 # Calculate profit - adjust multiplier for JPY pairs
@@ -365,14 +445,43 @@ def check_signal_hits() -> List[Dict]:
                     profit_pips = (entry - current_price) * multiplier
                 
                 # Build original signal message for reply
-                original_signal_msg = build_signal_message(signal["symbol"], signal_type, entry, sl, tp)
-                profit_msg = f"🎯 TP HIT! {signal['symbol'].replace('.FOREX', '')} {signal_type} - Profit: {profit_pips:.1f} pips\n\nOriginal Signal:\n{original_signal_msg}"
+                if "tp1" in signal and "tp2" in signal:
+                    original_signal_msg = build_signal_message(signal["symbol"], signal_type, entry, sl, signal["tp1"], signal["tp2"])
+                else:
+                    original_signal_msg = build_signal_message(signal["symbol"], signal_type, entry, sl, signal["tp"])
+                
+                # Calculate R/R ratio
+                if signal_type == "BUY":
+                    risk_pips = (entry - sl) * multiplier
+                    if hit_tp == "TP1":
+                        reward_pips = (signal["tp1"] - entry) * multiplier
+                    elif hit_tp == "TP2":
+                        reward_pips = (signal["tp2"] - entry) * multiplier
+                    else:  # Single TP
+                        reward_pips = (signal["tp"] - entry) * multiplier
+                else:  # SELL
+                    risk_pips = (sl - entry) * multiplier
+                    if hit_tp == "TP1":
+                        reward_pips = (entry - signal["tp1"]) * multiplier
+                    elif hit_tp == "TP2":
+                        reward_pips = (entry - signal["tp2"]) * multiplier
+                    else:  # Single TP
+                        reward_pips = (entry - signal["tp"]) * multiplier
+                
+                rr_ratio = reward_pips / risk_pips if risk_pips > 0 else 0
+                
+                # Create TP hit message
+                if hit_tp == "TP2":
+                    profit_msg = f"#{signal['symbol'].replace('.FOREX', '')}: Both targets 🔥🔥🔥 hit +{profit_pips:.1f} pips total gain!"
+                else:
+                    profit_msg = f"#{signal['symbol'].replace('.FOREX', '')}: TP1 reached 🎯💰 +{profit_pips:.1f} pips (R/R 1:{rr_ratio:.1f})"
+                
                 profit_messages.append(profit_msg)
                 
                 # Add to performance tracking
-                add_completed_signal(signal["symbol"], signal_type, entry, current_price, "hit_tp")
+                add_completed_signal(signal["symbol"], signal_type, entry, current_price, f"hit_{hit_tp.lower()}")
                 
-                signal["status"] = "hit_tp"
+                signal["status"] = f"hit_{hit_tp.lower()}"
                 signal["exit_price"] = current_price
                 signal["profit_pips"] = profit_pips
                 
@@ -394,18 +503,26 @@ def check_signal_hits() -> List[Dict]:
     return profit_messages
 
 
-def build_signal_message(symbol: str, signal_type: str, entry: float, sl: float, tp: float) -> str:
-    """Build signal message in the requested format"""
+def build_signal_message(symbol: str, signal_type: str, entry: float, sl: float, tp1: float, tp2: float = None) -> str:
+    """Build signal message in the requested format with 2 TPs"""
     # Remove .FOREX suffix for display
     display_symbol = symbol.replace(".FOREX", "")
     
-    return f"""{display_symbol} {signal_type} {format_price(symbol, entry)}
+    if tp2 is not None:
+        # Forex signals with 2 TPs
+        return f"""{display_symbol} {signal_type} {format_price(symbol, entry)}
 SL {format_price(symbol, sl)}
-TP {format_price(symbol, tp)}"""
+TP1 {format_price(symbol, tp1)}
+TP2 {format_price(symbol, tp2)}"""
+    else:
+        # XAUUSD signals with 1 TP (backward compatibility)
+        return f"""{display_symbol} {signal_type} {format_price(symbol, entry)}
+SL {format_price(symbol, sl)}
+TP {format_price(symbol, tp1)}"""
 
 
 def get_performance_report(days: int = 1) -> str:
-    """Generate performance report for specified number of days"""
+    """Generate comprehensive performance report for specified number of days"""
     performance_data = load_performance_data()
     now = datetime.now(timezone.utc)
     cutoff_date = (now - timedelta(days=days)).strftime("%Y-%m-%d")
@@ -417,47 +534,131 @@ def get_performance_report(days: int = 1) -> str:
     ]
     
     if not recent_signals:
-        return f"No completed signals in the last {days} day(s)"
+        return f"📊 **No completed signals in the last {days} day(s)**"
     
-    # Build report
-    lines = []
+    # Calculate statistics
     total_signals = len(recent_signals)
     profit_signals = [s for s in recent_signals if s["profit_pct"] > 0]
     loss_signals = [s for s in recent_signals if s["profit_pct"] <= 0]
     
-    # Individual signal results
-    for signal in recent_signals:
-        symbol = signal["symbol"]
-        profit_pct = signal["profit_pct"]
-        sign = "+" if profit_pct > 0 else ""
-        lines.append(f"{symbol} {sign}{profit_pct:.1f}%")
+    # Calculate totals
+    total_profit_pct = sum(s["profit_pct"] for s in recent_signals)
+    avg_profit_per_signal = total_profit_pct / total_signals if total_signals > 0 else 0
     
-    # Summary
-    lines.append(f"\nTotal signals {total_signals}")
-    lines.append(f"In profit: {len(profit_signals)}")
-    lines.append(f"In loss: {len(loss_signals)}")
+    # Calculate win rate
+    win_rate = (len(profit_signals) / total_signals * 100) if total_signals > 0 else 0
     
-    # Calculate total profit percentage
-    if total_signals > 0:
-        total_profit = sum(s["profit_pct"] for s in recent_signals)
-        lines.append(f"Profit: {total_profit:.1f}%")
+    # Calculate average profit and loss
+    avg_profit = sum(s["profit_pct"] for s in profit_signals) / len(profit_signals) if profit_signals else 0
+    avg_loss = sum(s["profit_pct"] for s in loss_signals) / len(loss_signals) if loss_signals else 0
     
-    return "\n".join(lines)
+    # Calculate profit factor
+    total_profit = sum(s["profit_pct"] for s in profit_signals)
+    total_loss = abs(sum(s["profit_pct"] for s in loss_signals))
+    profit_factor = total_profit / total_loss if total_loss > 0 else float('inf')
+    
+    # Build report
+    period = "24h" if days == 1 else f"{days} days"
+    report_lines = [
+        f"📊 **Performance Report - {period}**",
+        f"📅 Period: {cutoff_date} to {now.strftime('%Y-%m-%d')}",
+        "",
+        "📈 **SUMMARY**",
+        f"Total Signals: {total_signals}",
+        f"Winning Signals: {len(profit_signals)} ({win_rate:.1f}%)",
+        f"Losing Signals: {len(loss_signals)} ({100-win_rate:.1f}%)",
+        "",
+        "💰 **PROFIT/LOSS**",
+        f"Total Profit: {total_profit_pct:+.2f}%",
+        f"Average per Signal: {avg_profit_per_signal:+.2f}%",
+        f"Average Win: {avg_profit:+.2f}%" if profit_signals else "Average Win: N/A",
+        f"Average Loss: {avg_loss:+.2f}%" if loss_signals else "Average Loss: N/A",
+        f"Profit Factor: {profit_factor:.2f}" if profit_factor != float('inf') else "Profit Factor: ∞",
+        ""
+    ]
+    
+    # Add individual signal results
+    if days <= 3:  # Only show individual signals for short periods
+        report_lines.append("📋 **INDIVIDUAL SIGNALS**")
+        for signal in sorted(recent_signals, key=lambda x: x["timestamp"], reverse=True):
+            symbol = signal["symbol"]
+            signal_type = signal["type"]
+            profit_pct = signal["profit_pct"]
+            profit_pips = signal.get("profit_pips")
+            unit = signal.get("unit", "percentage")
+            status = "✅" if "hit_tp" in signal["status"] else "❌"
+            sign = "+" if profit_pct > 0 else ""
+            
+            if unit == "pips" and profit_pips is not None:
+                # Forex signals: show pips
+                report_lines.append(f"{status} {symbol} {signal_type}: {sign}{profit_pips:.1f} pips ({sign}{profit_pct:.2f}%)")
+            else:
+                # Crypto signals: show percentage
+                report_lines.append(f"{status} {symbol} {signal_type}: {sign}{profit_pct:.2f}%")
+        report_lines.append("")
+    
+    # Add daily breakdown for weekly reports
+    if days >= 7:
+        report_lines.append("📅 **DAILY BREAKDOWN**")
+        daily_stats = {}
+        for signal in recent_signals:
+            date = signal["date"]
+            if date not in daily_stats:
+                daily_stats[date] = {"total": 0, "profit": 0, "wins": 0, "losses": 0}
+            daily_stats[date]["total"] += 1
+            daily_stats[date]["profit"] += signal["profit_pct"]
+            if signal["profit_pct"] > 0:
+                daily_stats[date]["wins"] += 1
+            else:
+                daily_stats[date]["losses"] += 1
+        
+        for date in sorted(daily_stats.keys(), reverse=True):
+            stats = daily_stats[date]
+            win_rate_daily = (stats["wins"] / stats["total"] * 100) if stats["total"] > 0 else 0
+            report_lines.append(f"{date}: {stats['total']} signals, {win_rate_daily:.0f}% win rate, {stats['profit']:+.2f}% total")
+        report_lines.append("")
+    
+    # Add performance rating
+    if win_rate >= 70 and profit_factor >= 2.0:
+        rating = "🏆 EXCELLENT"
+    elif win_rate >= 60 and profit_factor >= 1.5:
+        rating = "🥇 VERY GOOD"
+    elif win_rate >= 50 and profit_factor >= 1.0:
+        rating = "🥈 GOOD"
+    elif win_rate >= 40:
+        rating = "🥉 FAIR"
+    else:
+        rating = "⚠️ NEEDS IMPROVEMENT"
+    
+    report_lines.append(f"🎯 **PERFORMANCE RATING: {rating}**")
+    
+    return "\n".join(report_lines)
 
 
 async def send_performance_report(bot: Bot, days: int = 1) -> None:
-    """Send performance report to user"""
+    """Send comprehensive performance report to user and channels"""
     try:
         report = get_performance_report(days)
         period = "24h" if days == 1 else f"{days} days"
-        title = f"📊 Performance Report - {period}\n\n"
         
+        # Send to user
         await bot.send_message(
             chat_id=PERFORMANCE_USER_ID,
-            text=title + report,
+            text=report,
+            parse_mode='Markdown',
             disable_web_page_preview=True
         )
         print(f"📊 Sent {period} performance report to user {PERFORMANCE_USER_ID}")
+        
+        # Send to forex channel as well
+        await bot.send_message(
+            chat_id=TELEGRAM_CHANNEL_ID,
+            text=report,
+            parse_mode='Markdown',
+            disable_web_page_preview=True
+        )
+        print(f"📊 Sent {period} performance report to forex channel")
+        
     except Exception as e:
         print(f"❌ Failed to send performance report: {e}")
 
@@ -486,6 +687,21 @@ async def post_signals_once(pairs: List[str]) -> None:
     if weekday >= 5:  # Saturday (5) or Sunday (6)
         print("🏖️ Weekend detected - Forex market is closed. Skipping forex signal generation.")
         # Still check for TP hits and reports even on weekends
+        await check_and_send_reports(bot)
+        print("🔍 Checking for TP hits...")
+        profit_messages = check_signal_hits()
+        print(f"Found {len(profit_messages)} TP hits")
+        for msg in profit_messages:
+            print(f"Sending TP message: {msg}")
+            await bot.send_message(chat_id=TELEGRAM_CHANNEL_ID, text=msg, disable_web_page_preview=True)
+            await asyncio.sleep(0.4)
+        return
+    
+    # Check if we're in trading hours (4 GMT - 23 GMT)
+    current_hour = now.hour
+    if current_hour < 4 or current_hour >= 23:
+        print(f"🌙 Outside trading hours ({current_hour}:00 GMT). Market closed. Skipping forex signal generation.")
+        # Still check for TP hits and reports even outside trading hours
         await check_and_send_reports(bot)
         print("🔍 Checking for TP hits...")
         profit_messages = check_signal_hits()
@@ -559,7 +775,7 @@ async def post_signals_once(pairs: List[str]) -> None:
                 
                 # Use different TP/SL logic for XAUUSD vs forex pairs
                 if sym == "XAUUSD.FOREX":
-                    # XAUUSD: 3-5% profit target, same for SL
+                    # XAUUSD: 3-5% profit target, same for SL (single TP)
                     profit_pct = 0.04  # 4% average (between 3-5%)
                     sl_pct = 0.04  # 4% SL (same as TP)
                     
@@ -569,33 +785,46 @@ async def post_signals_once(pairs: List[str]) -> None:
                     else:  # SELL
                         sl = entry * (1 + sl_pct)  # 4% above entry
                         tp = entry * (1 - profit_pct)  # 4% below entry
+                    
+                    print(f"  Entry: {entry}, SL: {sl}, TP: {tp}")
+                    
+                    # Add signal to tracking (single TP)
+                    add_signal(sym, signal_type, entry, sl, tp)
+                    
+                    # Send signal message (single TP)
+                    msg = build_signal_message(sym, signal_type, entry, sl, tp)
                 else:
-                    # Forex pairs: fixed pip distances
-                    sl_pips = 96  # Average SL distance
-                    tp_pips = 103  # Average TP distance
+                    # Forex pairs: fixed pip distances with 2 TPs
+                    sl_pips = 192  # Average SL distance (doubled from 96)
+                    tp1_pips = 103  # First TP distance (original)
+                    tp2_pips = 206  # Second TP distance (doubled)
                     
                     # Adjust for JPY pairs (3 decimal places) - 2x bigger range
                     if sym.endswith("JPY.FOREX"):
                         sl_distance = (sl_pips * 2) / 1000  # JPY pairs use 3 decimals, 2x bigger range
-                        tp_distance = (tp_pips * 2) / 1000
+                        tp1_distance = (tp1_pips * 2) / 1000
+                        tp2_distance = (tp2_pips * 2) / 1000
                     else:
                         sl_distance = sl_pips / 10000  # Other pairs use 5 decimals
-                        tp_distance = tp_pips / 10000
+                        tp1_distance = tp1_pips / 10000
+                        tp2_distance = tp2_pips / 10000
                     
                     if signal_type == "BUY":
                         sl = entry - sl_distance
-                        tp = entry + tp_distance
+                        tp1 = entry + tp1_distance
+                        tp2 = entry + tp2_distance
                     else:  # SELL
                         sl = entry + sl_distance
-                        tp = entry - tp_distance
-                
-                print(f"  Entry: {entry}, SL: {sl}, TP: {tp}")
-                
-                # Add signal to tracking
-                add_signal(sym, signal_type, entry, sl, tp)
-                
-                # Send signal message
-                msg = build_signal_message(sym, signal_type, entry, sl, tp)
+                        tp1 = entry - tp1_distance
+                        tp2 = entry - tp2_distance
+                    
+                    print(f"  Entry: {entry}, SL: {sl}, TP1: {tp1}, TP2: {tp2}")
+                    
+                    # Add signal to tracking (2 TPs)
+                    add_signal(sym, signal_type, entry, sl, tp1, tp2)
+                    
+                    # Send signal message (2 TPs)
+                    msg = build_signal_message(sym, signal_type, entry, sl, tp1, tp2)
                 print(f"📤 Sending signal: {msg}")
                 await bot.send_message(chat_id=TELEGRAM_CHANNEL_ID, text=msg, disable_web_page_preview=True)
                 
