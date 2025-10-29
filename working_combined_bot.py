@@ -22,6 +22,7 @@ import threading
 BOT_TOKEN = "7734435177:AAGeoSk7TChGNvaVf63R9DW8TELWRQB_rmY"
 FOREX_CHANNEL = "-1001286609636"
 FOREX_CHANNEL_3TP = "-1001220540048"  # New forex channel with 3 TPs
+FOREX_CHANNEL_ADDITIONAL = "-1002987399941"  # Additional forex channel
 CRYPTO_CHANNEL_LINGRID = "-1002978318746"  # Crypto Lingrid channel
 CRYPTO_CHANNEL_GAINMUSE = "-1001411205299"  # Crypto Gain muse channel
 SUMMARY_USER_ID = 615348532
@@ -450,13 +451,14 @@ async def check_and_notify_tp_hits():
                 
                 rr_ratio = reward_pips / risk_pips if risk_pips > 0 else 0
                 
-                # Send TP hit notification to forex channel
+                # Send TP hit notification to forex channels
                 if tp_hit == "TP2":
                     message = f"#{pair}: Both targets 🔥🔥🔥 hit +{profit_pips:.1f} pips total gain!"
                 else:
                     message = f"#{pair}: TP1 reached 🎯💰 +{profit_pips:.1f} pips (R/R 1:{rr_ratio:.1f})"
                 
                 await bot.send_message(chat_id=FOREX_CHANNEL, text=message, parse_mode='Markdown')
+                await bot.send_message(chat_id=FOREX_CHANNEL_ADDITIONAL, text=message, parse_mode='Markdown')
                 notifications_sent.append(timestamp)
                 print(f"✅ {tp_hit} hit notification sent for {pair} {signal_type}: +{profit_pips:.1f} pips")
         
@@ -981,10 +983,11 @@ async def send_forex_signal():
         signals["forex"].append(signal)
         save_signals(signals)
         
-        # Send to channel
+        # Send to channels
         bot = Bot(token=BOT_TOKEN)
         message = format_forex_signal(signal)
         await bot.send_message(chat_id=FOREX_CHANNEL, text=message)
+        await bot.send_message(chat_id=FOREX_CHANNEL_ADDITIONAL, text=message)
         
         print(f"✅ Forex signal sent: {signal['pair']} {signal['type']} at {signal['entry']}")
         print(f"📊 Today's forex signals: {len(signals['forex'])}/{MAX_FOREX_SIGNALS}")
@@ -1475,10 +1478,11 @@ async def handle_forex_signal(query, context: ContextTypes.DEFAULT_TYPE) -> None
         signals["forex"].append(signal)
         save_signals(signals)
         
-        # Send to channel
+        # Send to channels
         bot = Bot(token=BOT_TOKEN)
         message = format_forex_signal(signal)
         await bot.send_message(chat_id=FOREX_CHANNEL, text=message)
+        await bot.send_message(chat_id=FOREX_CHANNEL_ADDITIONAL, text=message)
         
         # Show channel menu again
         await show_channel_menu(query, context, "forex")
@@ -1692,15 +1696,16 @@ async def handle_forex_3tp_status(query, context: ContextTypes.DEFAULT_TYPE) -> 
         signals["forex"].append(signal)
         save_signals(signals)
         
-        # Send to channel
+        # Send to channels
         bot = Bot(token=BOT_TOKEN)
         message = format_forex_signal(signal)
         await bot.send_message(chat_id=FOREX_CHANNEL, text=message)
+        await bot.send_message(chat_id=FOREX_CHANNEL_ADDITIONAL, text=message)
         
         await query.edit_message_text(
             f"✅ **Forex Signal Generated**\n\n"
             f"📊 {signal['pair']} {signal['type']} at {signal['entry']}\n"
-            f"📤 Signal sent to forex channel\n"
+            f"📤 Signal sent to forex channels\n"
             f"📊 Today's forex signals: {len(signals['forex'])}/{MAX_FOREX_SIGNALS}",
             parse_mode='Markdown'
         )
