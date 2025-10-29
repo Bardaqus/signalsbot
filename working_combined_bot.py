@@ -49,6 +49,7 @@ PERFORMANCE_FILE = "working_combined_performance.json"
 # Signal limits
 MAX_FOREX_SIGNALS = 5  # Original forex channel
 MAX_FOREX_3TP_SIGNALS = 4  # New forex channel with 3 TPs
+MAX_FOREX_ADDITIONAL_SIGNALS = 5  # Additional forex channel (different signals)
 MAX_CRYPTO_SIGNALS = 5
 
 # Time intervals (in hours)
@@ -138,6 +139,8 @@ def load_signals():
             # Ensure all required keys exist
             if "forex_3tp" not in signals:
                 signals["forex_3tp"] = []
+            if "forex_additional" not in signals:
+                signals["forex_additional"] = []
             if "forwarded_forex" not in signals:
                 signals["forwarded_forex"] = []
             if "tp_notifications" not in signals:
@@ -147,6 +150,7 @@ def load_signals():
         return {
             "forex": [], 
             "forex_3tp": [], 
+            "forex_additional": [],
             "crypto": [], 
             "forwarded_forex": [],
             "tp_notifications": [],
@@ -458,9 +462,109 @@ async def check_and_notify_tp_hits():
                     message = f"#{pair}: TP1 reached 🎯💰 +{profit_pips:.1f} pips (R/R 1:{rr_ratio:.1f})"
                 
                 await bot.send_message(chat_id=FOREX_CHANNEL, text=message, parse_mode='Markdown')
-                await bot.send_message(chat_id=FOREX_CHANNEL_ADDITIONAL, text=message, parse_mode='Markdown')
                 notifications_sent.append(timestamp)
                 print(f"✅ {tp_hit} hit notification sent for {pair} {signal_type}: +{profit_pips:.1f} pips")
+        
+        # Check forex additional channel signals
+        forex_additional_signals = signals.get("forex_additional", [])
+        for signal in forex_additional_signals:
+            pair = signal.get("pair", "")
+            signal_type = signal.get("type", "")
+            entry = signal.get("entry", 0)
+            sl = signal.get("sl", 0)
+            timestamp = signal.get("timestamp", "")
+            
+            # Get current price
+            current_price = get_real_forex_price(pair)
+            if current_price is None:
+                continue
+            
+            # Check for TP hits based on pair type
+            tp_hit = None
+            profit_percent = 0
+            
+            if pair == "XAUUSD":
+                # XAUUSD: Single TP
+                tp = signal.get("tp", 0)
+                if signal_type == "BUY" and current_price >= tp:
+                    tp_hit = "TP"
+                    profit_percent = ((tp - entry) / entry) * 100
+                elif signal_type == "SELL" and current_price <= tp:
+                    tp_hit = "TP"
+                    profit_percent = ((entry - tp) / entry) * 100
+            else:
+                # Main forex pairs: 2 TPs
+                tp1 = signal.get("tp1", 0)
+                tp2 = signal.get("tp2", 0)
+                
+                if signal_type == "BUY":
+                    if current_price >= tp2:
+                        tp_hit = "TP2"
+                        profit_percent = ((tp2 - entry) / entry) * 100
+                    elif current_price >= tp1:
+                        tp_hit = "TP1"
+                        profit_percent = ((tp1 - entry) / entry) * 100
+                else:  # SELL
+                    if current_price <= tp2:
+                        tp_hit = "TP2"
+                        profit_percent = ((entry - tp2) / entry) * 100
+                    elif current_price <= tp1:
+                        tp_hit = "TP1"
+                        profit_percent = ((entry - tp1) / entry) * 100
+            
+            if tp_hit and timestamp not in notifications_sent:
+                # Calculate profit in pips for forex additional
+                if pair.endswith("JPY"):
+                    # JPY pairs use 3 decimal places, so multiply by 1000
+                    multiplier = 1000
+                else:
+                    # Other pairs use 5 decimal places, so multiply by 10000
+                    multiplier = 10000
+                
+                if signal_type == "BUY":
+                    if tp_hit == "TP1":
+                        profit_pips = (signal.get("tp1", 0) - entry) * multiplier
+                    elif tp_hit == "TP2":
+                        profit_pips = (signal.get("tp2", 0) - entry) * multiplier
+                    else:  # Single TP
+                        profit_pips = (signal.get("tp", 0) - entry) * multiplier
+                else:  # SELL
+                    if tp_hit == "TP1":
+                        profit_pips = (entry - signal.get("tp1", 0)) * multiplier
+                    elif tp_hit == "TP2":
+                        profit_pips = (entry - signal.get("tp2", 0)) * multiplier
+                    else:  # Single TP
+                        profit_pips = (entry - signal.get("tp", 0)) * multiplier
+                
+                # Calculate R/R ratio for forex additional
+                if signal_type == "BUY":
+                    risk_pips = ((entry - sl) / entry) * 100
+                    if tp_hit == "TP1":
+                        reward_pips = ((signal.get("tp1", 0) - entry) / entry) * 100
+                    elif tp_hit == "TP2":
+                        reward_pips = ((signal.get("tp2", 0) - entry) / entry) * 100
+                    else:  # Single TP
+                        reward_pips = ((signal.get("tp", 0) - entry) / entry) * 100
+                else:  # SELL
+                    risk_pips = ((sl - entry) / entry) * 100
+                    if tp_hit == "TP1":
+                        reward_pips = ((entry - signal.get("tp1", 0)) / entry) * 100
+                    elif tp_hit == "TP2":
+                        reward_pips = ((entry - signal.get("tp2", 0)) / entry) * 100
+                    else:  # Single TP
+                        reward_pips = ((entry - signal.get("tp", 0)) / entry) * 100
+                
+                rr_ratio = reward_pips / risk_pips if risk_pips > 0 else 0
+                
+                # Send TP hit notification to additional forex channel
+                if tp_hit == "TP2":
+                    message = f"#{pair}: Both targets 🔥🔥🔥 hit +{profit_pips:.1f} pips total gain!"
+                else:
+                    message = f"#{pair}: TP1 reached 🎯💰 +{profit_pips:.1f} pips (R/R 1:{rr_ratio:.1f})"
+                
+                await bot.send_message(chat_id=FOREX_CHANNEL_ADDITIONAL, text=message, parse_mode='Markdown')
+                notifications_sent.append(timestamp)
+                print(f"✅ {tp_hit} hit notification sent for additional {pair} {signal_type}: +{profit_pips:.1f} pips")
         
         # Check forex 3TP signals
         forex_3tp_signals = signals.get("forex_3tp", [])
@@ -717,6 +821,77 @@ def generate_forex_signal():
         "sl": sl,
             "tp1": tp1,
             "tp2": tp2,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
+
+def generate_forex_additional_signal():
+    """Generate a forex signal for additional channel with different parameters"""
+    # Check for active signals to avoid duplicates
+    signals = load_signals()
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    
+    if signals.get("date") != today:
+        active_additional_pairs = []
+    else:
+        active_additional_pairs = [s["pair"] for s in signals.get("forex_additional", [])]
+    
+    # Filter out pairs that already have active signals in this channel
+    available_pairs = [pair for pair in FOREX_PAIRS if pair not in active_additional_pairs]
+    
+    if not available_pairs:
+        print("⚠️ All forex additional pairs already have active signals today")
+        return None
+    
+    pair = random.choice(available_pairs)
+    signal_type = random.choice(["BUY", "SELL"])
+    
+    # Get real price from forex API
+    entry = get_real_forex_price(pair)
+    
+    if entry is None:
+        print(f"❌ Could not get real price for {pair}, skipping signal")
+        return None
+    
+    # Calculate SL and TP with different ranges (more aggressive targets)
+    if pair == "XAUUSD":
+        # Gold: Different ranges - 1.5-3% TP, 1-1.5% SL (single TP for XAUUSD)
+        tp_percent = random.uniform(0.015, 0.03)  # 1.5-3%
+        sl_percent = random.uniform(0.01, 0.015)  # 1-1.5%
+        
+        if signal_type == "BUY":
+            tp = round(entry * (1 + tp_percent), 2)
+            sl = round(entry * (1 - sl_percent), 2)
+        else:  # SELL
+            tp = round(entry * (1 - tp_percent), 2)
+            sl = round(entry * (1 + sl_percent), 2)
+        
+        return {
+            "pair": pair,
+            "type": signal_type,
+            "entry": entry,
+            "sl": sl,
+            "tp": tp,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+    else:
+        # Main forex pairs: Different TP/SL ranges (0.25% TP1, 0.5% TP2, 0.25% SL)
+        if signal_type == "BUY":
+            sl = round(entry * 0.9975, 5)  # 0.25% SL
+            tp1 = round(entry * 1.0025, 5)  # 0.25% TP1
+            tp2 = round(entry * 1.005, 5)  # 0.5% TP2
+        else:  # SELL
+            sl = round(entry * 1.0025, 5)  # 0.25% SL
+            tp1 = round(entry * 0.9975, 5)  # 0.25% TP1
+            tp2 = round(entry * 0.995, 5)  # 0.5% TP2
+    
+    return {
+        "pair": pair,
+        "type": signal_type,
+        "entry": entry,
+        "sl": sl,
+        "tp1": tp1,
+        "tp2": tp2,
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
@@ -983,11 +1158,10 @@ async def send_forex_signal():
         signals["forex"].append(signal)
         save_signals(signals)
         
-        # Send to channels
+        # Send to channel
         bot = Bot(token=BOT_TOKEN)
         message = format_forex_signal(signal)
         await bot.send_message(chat_id=FOREX_CHANNEL, text=message)
-        await bot.send_message(chat_id=FOREX_CHANNEL_ADDITIONAL, text=message)
         
         print(f"✅ Forex signal sent: {signal['pair']} {signal['type']} at {signal['entry']}")
         print(f"📊 Today's forex signals: {len(signals['forex'])}/{MAX_FOREX_SIGNALS}")
@@ -998,6 +1172,43 @@ async def send_forex_signal():
         return False
 
 
+async def send_forex_additional_signal():
+    """Send a forex signal to additional channel with different parameters"""
+    try:
+        signals = load_signals()
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        
+        if signals.get("date") != today:
+            signals = {"forex": [], "forex_3tp": [], "forex_additional": [], "crypto": [], "date": today}
+        
+        if len(signals.get("forex_additional", [])) >= MAX_FOREX_ADDITIONAL_SIGNALS:
+            print(f"⚠️ Forex additional signal limit reached: {len(signals['forex_additional'])}/{MAX_FOREX_ADDITIONAL_SIGNALS}")
+            return False
+        
+        # Generate signal
+        signal = generate_forex_additional_signal()
+        
+        if signal is None:
+            print("❌ Could not generate forex additional signal")
+            return False
+        
+        signals["forex_additional"].append(signal)
+        save_signals(signals)
+        
+        # Send to additional channel
+        bot = Bot(token=BOT_TOKEN)
+        message = format_forex_signal(signal)
+        await bot.send_message(chat_id=FOREX_CHANNEL_ADDITIONAL, text=message)
+        
+        print(f"✅ Forex additional signal sent: {signal['pair']} {signal['type']} at {signal['entry']}")
+        print(f"📊 Today's forex additional signals: {len(signals['forex_additional'])}/{MAX_FOREX_ADDITIONAL_SIGNALS}")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Error sending forex additional signal: {e}")
+        return False
+
+
 async def send_forex_3tp_signal():
     """Send a forex signal with 3 TPs"""
     try:
@@ -1005,7 +1216,7 @@ async def send_forex_3tp_signal():
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         
         if signals.get("date") != today:
-            signals = {"forex": [], "forex_3tp": [], "crypto": [], "date": today}
+            signals = {"forex": [], "forex_3tp": [], "forex_additional": [], "crypto": [], "date": today}
         
         if len(signals.get("forex_3tp", [])) >= MAX_FOREX_3TP_SIGNALS:
             print(f"⚠️ Forex 3TP signal limit reached: {len(signals['forex_3tp'])}/{MAX_FOREX_3TP_SIGNALS}")
@@ -1042,7 +1253,7 @@ async def send_crypto_signal():
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         
         if signals.get("date") != today:
-            signals = {"forex": [], "crypto": [], "date": today}
+            signals = {"forex": [], "forex_3tp": [], "forex_additional": [], "crypto": [], "date": today}
         
         if len(signals.get("crypto", [])) >= MAX_CRYPTO_SIGNALS:
             print(f"⚠️ Crypto signal limit reached: {len(signals['crypto'])}/{MAX_CRYPTO_SIGNALS}")
@@ -1478,11 +1689,10 @@ async def handle_forex_signal(query, context: ContextTypes.DEFAULT_TYPE) -> None
         signals["forex"].append(signal)
         save_signals(signals)
         
-        # Send to channels
+        # Send to channel
         bot = Bot(token=BOT_TOKEN)
         message = format_forex_signal(signal)
         await bot.send_message(chat_id=FOREX_CHANNEL, text=message)
-        await bot.send_message(chat_id=FOREX_CHANNEL_ADDITIONAL, text=message)
         
         # Show channel menu again
         await show_channel_menu(query, context, "forex")
@@ -1696,16 +1906,15 @@ async def handle_forex_3tp_status(query, context: ContextTypes.DEFAULT_TYPE) -> 
         signals["forex"].append(signal)
         save_signals(signals)
         
-        # Send to channels
+        # Send to channel
         bot = Bot(token=BOT_TOKEN)
         message = format_forex_signal(signal)
         await bot.send_message(chat_id=FOREX_CHANNEL, text=message)
-        await bot.send_message(chat_id=FOREX_CHANNEL_ADDITIONAL, text=message)
         
         await query.edit_message_text(
             f"✅ **Forex Signal Generated**\n\n"
             f"📊 {signal['pair']} {signal['type']} at {signal['entry']}\n"
-            f"📤 Signal sent to forex channels\n"
+            f"📤 Signal sent to forex channel\n"
             f"📊 Today's forex signals: {len(signals['forex'])}/{MAX_FOREX_SIGNALS}",
             parse_mode='Markdown'
         )
@@ -1727,7 +1936,7 @@ async def handle_crypto_signal(query, context: ContextTypes.DEFAULT_TYPE) -> Non
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         
         if signals.get("date") != today:
-            signals = {"forex": [], "crypto": [], "date": today}
+            signals = {"forex": [], "forex_3tp": [], "forex_additional": [], "crypto": [], "date": today}
         
         if len(signals.get("crypto", [])) >= MAX_CRYPTO_SIGNALS:
             await query.edit_message_text(
@@ -2093,15 +2302,16 @@ def automatic_signal_loop():
                 today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
                 
                 if signals.get("date") != today:
-                    signals = {"forex": [], "forex_3tp": [], "crypto": [], "forwarded_forex": [], "tp_notifications": [], "date": today}
+                    signals = {"forex": [], "forex_3tp": [], "forex_additional": [], "crypto": [], "forwarded_forex": [], "tp_notifications": [], "date": today}
                     save_signals(signals)
                     print(f"📅 New day: {today}")
                 
                 forex_count = len(signals.get("forex", []))
                 forex_3tp_count = len(signals.get("forex_3tp", []))
+                forex_additional_count = len(signals.get("forex_additional", []))
                 crypto_count = len(signals.get("crypto", []))
                 
-                print(f"📊 Current signals: Forex {forex_count}/{MAX_FOREX_SIGNALS}, Forex 3TP {forex_3tp_count}/{MAX_FOREX_3TP_SIGNALS}, Crypto {crypto_count}/{MAX_CRYPTO_SIGNALS}")
+                print(f"📊 Current signals: Forex {forex_count}/{MAX_FOREX_SIGNALS}, Forex 3TP {forex_3tp_count}/{MAX_FOREX_3TP_SIGNALS}, Forex Additional {forex_additional_count}/{MAX_FOREX_ADDITIONAL_SIGNALS}, Crypto {crypto_count}/{MAX_CRYPTO_SIGNALS}")
                 
                 # Send forex signal if needed
                 if forex_count < MAX_FOREX_SIGNALS:
@@ -2115,6 +2325,12 @@ def automatic_signal_loop():
                     if not success:
                         print("⚠️ Could not send forex 3TP signal (all pairs may be active)")
                 
+                # Send forex additional signal if needed
+                if forex_additional_count < MAX_FOREX_ADDITIONAL_SIGNALS:
+                    success = await send_forex_additional_signal()
+                    if not success:
+                        print("⚠️ Could not send forex additional signal (all pairs may be active)")
+                
                 # Send crypto signal if needed
                 if crypto_count < MAX_CRYPTO_SIGNALS:
                     success = await send_crypto_signal()
@@ -2127,6 +2343,7 @@ def automatic_signal_loop():
                 # Check if all signals sent for today
                 if (forex_count >= MAX_FOREX_SIGNALS and 
                     forex_3tp_count >= MAX_FOREX_3TP_SIGNALS and 
+                    forex_additional_count >= MAX_FOREX_ADDITIONAL_SIGNALS and
                     crypto_count >= MAX_CRYPTO_SIGNALS):
                     print("✅ All signals sent for today. Waiting until tomorrow...")
                     # Wait until next day
