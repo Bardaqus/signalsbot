@@ -2030,6 +2030,32 @@ async def handle_forward_forex(query, context: ContextTypes.DEFAULT_TYPE) -> Non
         print(f"❌ Error forwarding forex signal: {e}")
 
 
+def hourly_tp_check_loop():
+    """Hourly TP hit monitoring loop (runs in separate thread)"""
+    print("⏰ Starting hourly TP hit monitoring loop...")
+    
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    async def async_loop():
+        while True:
+            try:
+                # Check for TP hits every hour
+                print(f"🔍 Checking for TP hits at {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}...")
+                await check_and_notify_tp_hits()
+                
+                # Wait 1 hour (3600 seconds) until next check
+                print(f"⏰ Next TP check in 1 hour...")
+                await asyncio.sleep(3600)
+                
+            except Exception as e:
+                print(f"❌ Error in hourly TP check loop: {e}")
+                print("⏳ Waiting 5 minutes before retry...")
+                await asyncio.sleep(300)
+    
+    loop.run_until_complete(async_loop())
+
+
 def automatic_signal_loop():
     """Automatic signal generation loop (runs in separate thread)"""
     print("🤖 Starting automatic signal generation loop...")
@@ -2137,7 +2163,8 @@ def main():
     print("🚀 Starting Working Combined Trading Signals Bot...")
     print("=" * 60)
     print("📱 Interactive features: /start command with buttons")
-    print("🤖 Automatic features: Signal generation every 2-5 hours")
+    print("🤖 Automatic features: Signal generation every 3-5 hours")
+    print("⏰ TP Monitoring: Checking for TP hits every hour")
     print("📊 Daily summaries: 14:30 GMT")
     print("📈 Weekly summaries: Friday 14:30 GMT")
     print("🔐 Authorized users:", ALLOWED_USERS)
@@ -2146,6 +2173,10 @@ def main():
     # Start automatic signal generation in separate thread
     automatic_thread = threading.Thread(target=automatic_signal_loop, daemon=True)
     automatic_thread.start()
+    
+    # Start hourly TP check loop in separate thread
+    tp_check_thread = threading.Thread(target=hourly_tp_check_loop, daemon=True)
+    tp_check_thread.start()
     
     # Create application for interactive features
     application = Application.builder().token(BOT_TOKEN).build()
@@ -2157,6 +2188,7 @@ def main():
     print("✅ Working combined bot started successfully!")
     print("📱 Send /start to your bot to see the control panel")
     print("🤖 Automatic signal generation is running in background")
+    print("⏰ Hourly TP hit monitoring is running in background")
     
     # Start the interactive bot
     application.run_polling()
