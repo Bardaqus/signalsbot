@@ -25,6 +25,9 @@ FOREX_CHANNELS = [
     "-1001220540048",  # PREMIUM Signals DeGRAM
     "-1001286609636",  # Lingrid private signals
 ]
+# Backward-compatible defaults for existing references
+FOREX_CHANNEL = FOREX_CHANNELS[0]
+CRYPTO_CHANNEL = CRYPTO_CHANNELS[0]
 
 # Allowed user IDs for interactive features
 ALLOWED_USERS = [615348532, 501779863]
@@ -319,6 +322,8 @@ async def send_crypto_signal(bot, channel_id: str | None = None, forced_pair: st
         # Format and send
         message = format_crypto_signal(signal)
         await bot.send_message(chat_id=channel_id or signal.get("channel") or CRYPTO_CHANNELS[0], text=message)
+    except Exception as e:
+        print(f"❌ Error sending crypto signal: {e}")
 
 
 async def post_initial_batch(bot):
@@ -352,10 +357,7 @@ async def post_initial_batch(bot):
                 await asyncio.sleep(0.3)
             i += 1
         
-        print(f"✅ Crypto signal sent: {signal['pair']} {signal['type']} at {signal['entry']}")
-        
-    except Exception as e:
-        print(f"❌ Error sending crypto signal: {e}")
+        # Initial batch completed for this channel
 
 
 async def main():
@@ -459,7 +461,7 @@ async def hourly_monitor(bot: Bot):
                     if rec["hits"].get(level) and not rec["notified"].get(level):
                         rec["notified"][level] = True
                         try:
-                            await bot.send_message(chat_id=rec.get("channel", FOREX_CHANNEL), text=f"✅ {rec['pair']} {direction}: {level.upper()} hit")
+                            await bot.send_message(chat_id=rec.get("channel", FOREX_CHANNELS[0]), text=f"✅ {rec['pair']} {direction}: {level.upper()} hit")
                         except Exception:
                             pass
 
@@ -472,7 +474,7 @@ async def hourly_monitor(bot: Bot):
                     if not rec["notified"].get("sl"):
                         rec["notified"]["sl"] = True
                         try:
-                            await bot.send_message(chat_id=rec.get("channel", FOREX_CHANNEL), text=f"❌ {rec['pair']} {direction}: SL hit")
+                            await bot.send_message(chat_id=rec.get("channel", FOREX_CHANNELS[0]), text=f"❌ {rec['pair']} {direction}: SL hit")
                         except Exception:
                             pass
 
@@ -504,7 +506,7 @@ async def hourly_monitor(bot: Bot):
                     if rec["hits"].get(level) and not rec["notified"].get(level):
                         rec["notified"][level] = True
                         try:
-                            await bot.send_message(chat_id=rec.get("channel", CRYPTO_CHANNEL), text=f"✅ {rec['pair']} {direction}: {level.upper()} hit")
+                            await bot.send_message(chat_id=rec.get("channel", CRYPTO_CHANNELS[0]), text=f"✅ {rec['pair']} {direction}: {level.upper()} hit")
                         except Exception:
                             pass
 
@@ -516,7 +518,7 @@ async def hourly_monitor(bot: Bot):
                     if not rec["notified"].get("sl"):
                         rec["notified"]["sl"] = True
                         try:
-                            await bot.send_message(chat_id=rec.get("channel", CRYPTO_CHANNEL), text=f"❌ {rec['pair']} {direction}: SL hit")
+                            await bot.send_message(chat_id=rec.get("channel", CRYPTO_CHANNELS[0]), text=f"❌ {rec['pair']} {direction}: SL hit")
                         except Exception:
                             pass
 
