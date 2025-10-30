@@ -15,8 +15,16 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 
 # Configuration
 BOT_TOKEN = "7734435177:AAGeoSk7TChGNvaVf63R9DW8TELWRQB_rmY"
-FOREX_CHANNEL = "-1003118256304"
-CRYPTO_CHANNEL = "-1002978318746"
+# Channels
+CRYPTO_CHANNELS = [
+    "-1002978318746",  # GainMuse VIP signals
+    "-1001411205299",  # Lingrid Crypto signals
+]
+FOREX_CHANNELS = [
+    "-1002987399941",  # TradersStatistic 10 Vip ( Forex )
+    "-1001220540048",  # PREMIUM Signals DeGRAM
+    "-1001286609636",  # Lingrid private signals
+]
 
 # Allowed user IDs for interactive features
 ALLOWED_USERS = [615348532, 501779863]
@@ -28,8 +36,10 @@ ALLOWED_USERS = [615348532, 501779863]
 
 # Forex pairs
 FOREX_PAIRS = [
-    "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", 
-    "USDCHF", "GBPCAD", "GBPNZD", "XAUUSD"
+    "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD",
+    "USDCHF", "GBPCAD", "GBPNZD", "XAUUSD",
+    "EURCHF", "EURCAD", "EURNZD", "EURGBP", "AUDJPY",
+    "CADJPY", "CHFJPY", "NZDJPY", "GBPCHF"
 ]
 
 # Crypto pairs
@@ -130,9 +140,9 @@ def get_today_signals_count(signals, signal_type):
     return len(signals.get(signal_type, []))
 
 
-def generate_forex_signal():
+def generate_forex_signal(pair: str | None = None, channel: str | None = None):
     """Generate a forex signal with real prices"""
-    pair = random.choice(FOREX_PAIRS)
+    pair = pair or random.choice(FOREX_PAIRS)
     signal_type = random.choice(["BUY", "SELL"])
     
     # Get real price from EODHD
@@ -146,21 +156,21 @@ def generate_forex_signal():
     if pair == "XAUUSD":
         # Gold: 2% SL/TP
         sl = round(entry * 0.98, 2) if signal_type == "BUY" else round(entry * 1.02, 2)
-        tp1 = round(entry * 1.02, 2) if signal_type == "BUY" else round(entry * 0.98, 2)
-        tp2 = None
-        tp3 = None
+        tp1 = round(entry * 1.01, 2) if signal_type == "BUY" else round(entry * 0.99, 2)
+        tp2 = round(entry * 1.02, 2) if signal_type == "BUY" else round(entry * 0.98, 2)
+        tp3 = round(entry * 1.03, 2) if signal_type == "BUY" else round(entry * 0.97, 2)
     elif pair.endswith("JPY"):
         # JPY pairs: 0.1 pip SL/TP
-        sl = round(entry - 0.1, 3) if signal_type == "BUY" else round(entry + 0.1, 3)
-        tp1 = round(entry + 0.1, 3) if signal_type == "BUY" else round(entry - 0.1, 3)
-        tp2 = None
-        tp3 = None
+        sl = round(entry - 0.20, 3) if signal_type == "BUY" else round(entry + 0.20, 3)
+        tp1 = round(entry + 0.05, 3) if signal_type == "BUY" else round(entry - 0.05, 3)
+        tp2 = round(entry + 0.10, 3) if signal_type == "BUY" else round(entry - 0.10, 3)
+        tp3 = round(entry + 0.15, 3) if signal_type == "BUY" else round(entry - 0.15, 3)
     else:
         # Other pairs: 0.001 pip SL/TP
-        sl = round(entry - 0.001, 5) if signal_type == "BUY" else round(entry + 0.001, 5)
-        tp1 = round(entry + 0.001, 5) if signal_type == "BUY" else round(entry - 0.001, 5)
-        tp2 = None
-        tp3 = None
+        sl = round(entry - 0.002, 5) if signal_type == "BUY" else round(entry + 0.002, 5)
+        tp1 = round(entry + 0.0005, 5) if signal_type == "BUY" else round(entry - 0.0005, 5)
+        tp2 = round(entry + 0.0010, 5) if signal_type == "BUY" else round(entry - 0.0010, 5)
+        tp3 = round(entry + 0.0015, 5) if signal_type == "BUY" else round(entry - 0.0015, 5)
     
     return {
         "pair": pair,
@@ -171,16 +181,16 @@ def generate_forex_signal():
         "tp2": tp2,
         "tp3": tp3,
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "channel": FOREX_CHANNEL,
+        "channel": channel or "",
         "status": "ACTIVE",
         "hits": {"tp1": False, "tp2": False, "tp3": False, "sl": False},
         "notified": {"tp1": False, "tp2": False, "tp3": False, "sl": False},
     }
 
 
-def generate_crypto_signal():
+def generate_crypto_signal(pair: str | None = None, channel: str | None = None):
     """Generate a crypto signal with real prices from Binance"""
-    pair = random.choice(CRYPTO_PAIRS)
+    pair = pair or random.choice(CRYPTO_PAIRS)
     
     # Maintain 73% BUY / 27% SELL ratio
     signals = load_signals()
@@ -221,7 +231,7 @@ def generate_crypto_signal():
         "tp2": tp2,
         "tp3": tp3,
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "channel": CRYPTO_CHANNEL,
+        "channel": channel or "",
         "status": "ACTIVE",
         "hits": {"tp1": False, "tp2": False, "tp3": False, "sl": False},
         "notified": {"tp1": False, "tp2": False, "tp3": False, "sl": False},
@@ -246,7 +256,7 @@ TP2: {signal['tp2']}
 TP3: {signal['tp3']}"""
 
 
-async def send_forex_signal(bot):
+async def send_forex_signal(bot, channel_id: str | None = None, forced_pair: str | None = None):
     """Send a forex signal"""
     try:
         signals = load_signals()
@@ -262,7 +272,7 @@ async def send_forex_signal(bot):
             return
         
         # Generate signal
-        signal = generate_forex_signal()
+        signal = generate_forex_signal(pair=forced_pair, channel=channel_id)
         
         if signal is None:
             print("❌ Could not generate forex signal (no real price available)")
@@ -273,7 +283,7 @@ async def send_forex_signal(bot):
         
         # Format and send
         message = format_forex_signal(signal)
-        await bot.send_message(chat_id=FOREX_CHANNEL, text=message)
+        await bot.send_message(chat_id=channel_id or signal.get("channel") or FOREX_CHANNELS[0], text=message)
         
         print(f"✅ Forex signal sent: {signal['pair']} {signal['type']} at {signal['entry']}")
         
@@ -281,7 +291,7 @@ async def send_forex_signal(bot):
         print(f"❌ Error sending forex signal: {e}")
 
 
-async def send_crypto_signal(bot):
+async def send_crypto_signal(bot, channel_id: str | None = None, forced_pair: str | None = None):
     """Send a crypto signal"""
     try:
         signals = load_signals()
@@ -297,7 +307,7 @@ async def send_crypto_signal(bot):
             return
         
         # Generate signal
-        signal = generate_crypto_signal()
+        signal = generate_crypto_signal(pair=forced_pair, channel=channel_id)
         
         if signal is None:
             print("❌ Could not generate crypto signal (no real price available)")
@@ -308,7 +318,39 @@ async def send_crypto_signal(bot):
         
         # Format and send
         message = format_crypto_signal(signal)
-        await bot.send_message(chat_id=CRYPTO_CHANNEL, text=message)
+        await bot.send_message(chat_id=channel_id or signal.get("channel") or CRYPTO_CHANNELS[0], text=message)
+
+
+async def post_initial_batch(bot):
+    """Post 5 signals to each requested channel with different symbols per channel."""
+    # Crypto: split pairs for two channels, 5 each
+    crypto_symbols = CRYPTO_PAIRS[:]
+    random.shuffle(crypto_symbols)
+    for idx, cid in enumerate(CRYPTO_CHANNELS):
+        used = set()
+        for sym in crypto_symbols[idx*5:(idx+1)*5]:
+            if sym in used:
+                continue
+            await send_crypto_signal(bot, channel_id=cid, forced_pair=sym)
+            used.add(sym)
+            await asyncio.sleep(0.3)
+
+    # Forex: distribute 5 per channel, allow repeats across channels if pool exhausted
+    fx_symbols = FOREX_PAIRS[:]
+    random.shuffle(fx_symbols)
+    for idx, cid in enumerate(FOREX_CHANNELS):
+        start = (idx * 5) % len(fx_symbols)
+        taken = 0
+        used = set()
+        i = start
+        while taken < 5:
+            sym = fx_symbols[i % len(fx_symbols)]
+            if sym not in used:
+                await send_forex_signal(bot, channel_id=cid, forced_pair=sym)
+                used.add(sym)
+                taken += 1
+                await asyncio.sleep(0.3)
+            i += 1
         
         print(f"✅ Crypto signal sent: {signal['pair']} {signal['type']} at {signal['entry']}")
         
@@ -330,6 +372,9 @@ async def main():
     
     # Start hourly monitor in background
     asyncio.create_task(hourly_monitor(bot))
+
+    # Post initial batch: 5 signals per specified channel
+    await post_initial_batch(bot)
 
     while True:
         try:
