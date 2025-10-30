@@ -1,0 +1,342 @@
+[
+  {
+    "id": "5b5d6154-2c17-45ed-a899-1c2bc15f1c0c",
+    "symbol": "SOL",
+    "direction": "BUY",
+    "entry": 191.48,
+    "sl": 189.55759999999998,
+    "tp1": 193.082,
+    "tp2": 194.684,
+    "tp3": 196.286,
+    "created_at": "2025-10-20T11:44:24.830663+00:00",
+    "status": "ACTIVE",
+    "hits": {
+      "tp1": false,
+      "tp2": false,
+      "tp3": false,
+      "sl": false
+    },
+    "closed_at": null,
+    "result_label": null
+  },
+  {
+    "id": "df497a76-26e9-44c0-bda8-6ec9d1f44c54",
+    "symbol": "XRP",
+    "direction": "BUY",
+    "entry": 2.4534,
+    "sl": 2.430846,
+    "tp1": 2.4721949999999997,
+    "tp2": 2.49099,
+    "tp3": 2.509785,
+    "created_at": "2025-10-20T11:45:28.464258+00:00",
+    "status": "ACTIVE",
+    "hits": {
+      "tp1": false,
+      "tp2": false,
+      "tp3": false,
+      "sl": false
+    },
+    "closed_at": null,
+    "result_label": null
+  },
+  {
+    "id": "f6f9d4da-0d56-453c-a3fa-5caf517eded9",
+    "symbol": "ADA",
+    "direction": "BUY",
+    "entry": 0.6643,
+    "sl": 0.657496,
+    "tp1": 0.66997,
+    "tp2": 0.67564,
+    "tp3": 0.6813100000000001,
+    "created_at": "2025-10-20T11:45:29.499181+00:00",
+    "status": "ACTIVE",
+    "hits": {
+      "tp1": false,
+      "tp2": false,
+      "tp3": false,
+      "sl": false
+    },
+    "closed_at": null,
+    "result_label": null
+  },
+  {
+    "id": "0639632a-7ba2-4fe5-92f5-c87aeaba73a1",
+    "symbol": "BNB",
+    "direction": "BUY",
+    "entry": 1113.1,
+    "sl": 1103.1981999999998,
+    "tp1": 1121.3515,
+    "tp2": 1129.6029999999998,
+    "tp3": 1137.8545,
+    "created_at": "2025-10-20T11:45:30.536031+00:00",
+    "status": "ACTIVE",
+    "hits": {
+      "tp1": false,
+      "tp2": false,
+      "tp3": false,
+      "sl": false
+    },
+    "closed_at": null,
+    "result_label": null
+  },
+  {
+    "id": "d5ac1e13-79ac-455d-830c-d47763507e84",
+    "symbol": "BTC",
+    "direction": "BUY",
+    "entry": 110761.48,
+    "sl": 109983.1186,
+    "tp1": 111410.1145,
+    "tp2": 112058.749,
+    "tp3": 112707.3835,
+    "created_at": "2025-10-20T11:45:31.558198+00:00",
+    "status": "ACTIVE",
+    "hits": {
+      "tp1": false,
+      "tp2": false,
+      "tp3": false,
+      "sl": false
+    },
+    "closed_at": null,
+    "result_label": null
+  },
+  {
+    "id": "04f4d9c5-3e0a-4e79-9597-d58f9af6bd90",
+    "symbol": "ADA",
+    "direction": "BUY",
+    "entry": 0.6661,
+    "sl": 0.655894,
+    "tp1": 0.67177,
+    "tp2": 0.67744,
+    "tp3": 0.6831100000000001,
+    "created_at": "2025-10-20T11:52:35.188958+00:00",
+    "status": "ACTIVE",
+    "hits": {
+      "tp1": false,
+      "tp2": false,
+      "tp3": false,
+      "sl": false
+    },
+    "closed_at": null,
+    "result_label": null
+  },
+  {
+    "id": "d48b315c-a0d6-425a-9718-f2dbc61b2521",
+    "symbol": "BNB",
+    "direction": "BUY",
+    "entry": 1115.73,
+    "sl": 1100.8773,
+    "tp1": 1123.9815,
+    "tp2": 1132.233,
+    "tp3": 1140.4845,
+    "created_at": "2025-10-20T11:52:36.278471+00:00",
+    "status": "ACTIVE",
+    "hits": {
+      "tp1": false,
+      "tp2": false,
+      "tp3": false,
+      "sl": false
+    },
+    "closed_at": null,
+    "result_label": null
+  },
+  {
+    "id": "d4f8cbee-2fad-4acc-9865-22b28b371811",
+    "symbol": "BTC",
+    "direction": "BUY",
+    "entry": 110980.32,
+    "sl": 109812.77790000002,
+    "tp1": 111628.9545,
+    "tp2": 112277.589,
+    "tp3": 112926.22350000001,
+    "created_at": "2025-10-20T11:52:37.343921+00:00",
+    "status": "ACTIVE",
+    "hits": {
+      "tp1": false,
+      "tp2": false,
+      "tp3": false,
+      "sl": false
+    },
+    "closed_at": null,
+    "result_label": null
+  },
+  {
+    "id": "f88cf220-75b1-4c8a-95ca-3eb6dde71df7",
+    "symbol": "ETH",
+    "direction": "BUY",
+    "entry": 4038.54,
+    "sl": 3990.7149,
+    "tp1": 4065.1095,
+    "tp2": 4091.679,
+    "tp3": 4118.2485,
+    "created_at": "2025-10-20T11:52:38.387262+00:00",
+    "status": "ACTIVE",
+    "hits": {
+      "tp1": false,
+      "tp2": false,
+      "tp3": false,
+      "sl": false
+    },
+    "closed_at": null,
+    "result_label": null
+  },
+  {
+    "id": "e3c22575-0170-4057-900a-e426757357c4",
+    "symbol": "BTC",
+    "direction": "BUY",
+    "entry": 110969.84,
+    "sl": 109802.2979,
+    "tp1": 111618.4745,
+    "tp2": 112267.109,
+    "tp3": 112915.7435,
+    "created_at": "2025-10-20T12:00:51.798081+00:00",
+    "status": "ACTIVE",
+    "hits": {
+      "tp1": false,
+      "tp2": false,
+      "tp3": false,
+      "sl": false
+    },
+    "closed_at": null,
+    "result_label": null
+  },
+  {
+    "id": "1ed58848-60f8-4c36-8060-c5740fc2a640",
+    "symbol": "ETH",
+    "direction": "BUY",
+    "entry": 4032.45,
+    "sl": 3984.6249,
+    "tp1": 4059.0195,
+    "tp2": 4085.589,
+    "tp3": 4112.1585,
+    "created_at": "2025-10-20T12:00:52.846133+00:00",
+    "status": "ACTIVE",
+    "hits": {
+      "tp1": false,
+      "tp2": false,
+      "tp3": false,
+      "sl": false
+    },
+    "closed_at": null,
+    "result_label": null
+  },
+  {
+    "id": "8be3b867-790e-4c21-bfe9-cc8c2c7aa738",
+    "symbol": "SOL",
+    "direction": "BUY",
+    "entry": 192.09,
+    "sl": 189.2064,
+    "tp1": 193.692,
+    "tp2": 195.294,
+    "tp3": 196.89600000000002,
+    "created_at": "2025-10-20T12:00:53.868107+00:00",
+    "status": "ACTIVE",
+    "hits": {
+      "tp1": false,
+      "tp2": false,
+      "tp3": false,
+      "sl": false
+    },
+    "closed_at": null,
+    "result_label": null
+  },
+  {
+    "id": "df15467b-772a-4010-9d8f-7f1efb79680c",
+    "symbol": "XRP",
+    "direction": "BUY",
+    "entry": 2.4561,
+    "sl": 2.422269,
+    "tp1": 2.474895,
+    "tp2": 2.4936900000000004,
+    "tp3": 2.5124850000000003,
+    "created_at": "2025-10-20T12:00:55.077762+00:00",
+    "status": "ACTIVE",
+    "hits": {
+      "tp1": false,
+      "tp2": false,
+      "tp3": false,
+      "sl": false
+    },
+    "closed_at": null,
+    "result_label": null
+  },
+  {
+    "id": "e61d6fdc-0806-4bf8-b85a-5cac67c7e705",
+    "symbol": "ETH",
+    "direction": "BUY",
+    "entry": 4030.27,
+    "sl": 3982.4449,
+    "tp1": 4056.8395,
+    "tp2": 4083.409,
+    "tp3": 4109.9785,
+    "created_at": "2025-10-20T12:01:36.105044+00:00",
+    "status": "ACTIVE",
+    "hits": {
+      "tp1": false,
+      "tp2": false,
+      "tp3": false,
+      "sl": false
+    },
+    "closed_at": null,
+    "result_label": null
+  },
+  {
+    "id": "ca558f3b-e483-4047-a07c-527de581232c",
+    "symbol": "SOL",
+    "direction": "BUY",
+    "entry": 192.06,
+    "sl": 189.1764,
+    "tp1": 193.662,
+    "tp2": 195.264,
+    "tp3": 196.866,
+    "created_at": "2025-10-20T12:01:37.439534+00:00",
+    "status": "ACTIVE",
+    "hits": {
+      "tp1": false,
+      "tp2": false,
+      "tp3": false,
+      "sl": false
+    },
+    "closed_at": null,
+    "result_label": null
+  },
+  {
+    "id": "daead82e-c195-466f-8135-1d8b0e7df2c8",
+    "symbol": "XRP",
+    "direction": "BUY",
+    "entry": 2.4558,
+    "sl": 2.421969,
+    "tp1": 2.474595,
+    "tp2": 2.49339,
+    "tp3": 2.512185,
+    "created_at": "2025-10-20T12:01:38.576515+00:00",
+    "status": "ACTIVE",
+    "hits": {
+      "tp1": false,
+      "tp2": false,
+      "tp3": false,
+      "sl": false
+    },
+    "closed_at": null,
+    "result_label": null
+  },
+  {
+    "id": "2af361b0-096b-4af9-8bee-b613d5371fbd",
+    "symbol": "ADA",
+    "direction": "BUY",
+    "entry": 0.6656,
+    "sl": 0.6553939999999999,
+    "tp1": 0.67127,
+    "tp2": 0.67694,
+    "tp3": 0.6826099999999999,
+    "created_at": "2025-10-20T12:01:39.696544+00:00",
+    "status": "ACTIVE",
+    "hits": {
+      "tp1": false,
+      "tp2": false,
+      "tp3": false,
+      "sl": false
+    },
+    "closed_at": null,
+    "result_label": null
+  }
+]
