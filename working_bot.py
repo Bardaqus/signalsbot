@@ -40,6 +40,7 @@ CRYPTO_PAIRS = [
 
 # Signal storage
 SIGNALS_FILE = "working_signals.json"
+APP_START_ISO = datetime.now(timezone.utc).isoformat()
 
 
 def get_real_forex_price(pair):
@@ -145,23 +146,35 @@ def generate_forex_signal():
     if pair == "XAUUSD":
         # Gold: 2% SL/TP
         sl = round(entry * 0.98, 2) if signal_type == "BUY" else round(entry * 1.02, 2)
-        tp = round(entry * 1.02, 2) if signal_type == "BUY" else round(entry * 0.98, 2)
+        tp1 = round(entry * 1.02, 2) if signal_type == "BUY" else round(entry * 0.98, 2)
+        tp2 = None
+        tp3 = None
     elif pair.endswith("JPY"):
         # JPY pairs: 0.1 pip SL/TP
         sl = round(entry - 0.1, 3) if signal_type == "BUY" else round(entry + 0.1, 3)
-        tp = round(entry + 0.1, 3) if signal_type == "BUY" else round(entry - 0.1, 3)
+        tp1 = round(entry + 0.1, 3) if signal_type == "BUY" else round(entry - 0.1, 3)
+        tp2 = None
+        tp3 = None
     else:
         # Other pairs: 0.001 pip SL/TP
         sl = round(entry - 0.001, 5) if signal_type == "BUY" else round(entry + 0.001, 5)
-        tp = round(entry + 0.001, 5) if signal_type == "BUY" else round(entry - 0.001, 5)
+        tp1 = round(entry + 0.001, 5) if signal_type == "BUY" else round(entry - 0.001, 5)
+        tp2 = None
+        tp3 = None
     
     return {
         "pair": pair,
         "type": signal_type,
         "entry": entry,
         "sl": sl,
-        "tp": tp,
-        "timestamp": datetime.now(timezone.utc).isoformat()
+        "tp1": tp1,
+        "tp2": tp2,
+        "tp3": tp3,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "channel": FOREX_CHANNEL,
+        "status": "ACTIVE",
+        "hits": {"tp1": False, "tp2": False, "tp3": False, "sl": False},
+        "notified": {"tp1": False, "tp2": False, "tp3": False, "sl": False},
     }
 
 
@@ -207,15 +220,20 @@ def generate_crypto_signal():
         "tp1": tp1,
         "tp2": tp2,
         "tp3": tp3,
-        "timestamp": datetime.now(timezone.utc).isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "channel": CRYPTO_CHANNEL,
+        "status": "ACTIVE",
+        "hits": {"tp1": False, "tp2": False, "tp3": False, "sl": False},
+        "notified": {"tp1": False, "tp2": False, "tp3": False, "sl": False},
     }
 
 
 def format_forex_signal(signal):
     """Format forex signal message"""
+    tp = signal.get('tp1')
     return f"""{signal['pair']} {signal['type']} {signal['entry']}
 SL {signal['sl']}
-TP {signal['tp']}"""
+TP {tp}"""
 
 
 def format_crypto_signal(signal):
@@ -310,6 +328,9 @@ async def main():
     
     bot = Bot(token=BOT_TOKEN)
     
+    # Start hourly monitor in background
+    asyncio.create_task(hourly_monitor(bot))
+
     while True:
         try:
             current_time = datetime.now(timezone.utc)
@@ -347,6 +368,119 @@ async def main():
             print(f"❌ Error: {e}")
             print("⏳ Waiting 5 minutes before retry...")
             await asyncio.sleep(300)
+
+
+async def hourly_monitor(bot: Bot):
+    """Every hour, check active signals for TP/SL hits and notify.
+    Rules:
+    - If TP1 hit then SL later => result as TP1; don't notify SL.
+    - If TP2 hit then SL later => result as TP2; don't notify SL.
+    - If TP3 hit then SL later => result as TP3; don't notify SL.
+    - If no TP hit and SL hit => result as SL1.
+    Only analyze signals created after bot start time.
+    """
+    while True:
+        try:
+            signals = load_signals()
+            # Forex
+            for rec in signals.get("forex", []):
+                ts = rec.get("timestamp")
+                if ts and ts < APP_START_ISO:
+                    continue
+                if rec.get("status") != "ACTIVE":
+                    continue
+                price = get_real_forex_price(rec["pair"]) or 0
+                if not price:
+                    continue
+                direction = rec.get("type")
+                # Update hits
+                tp1 = rec.get("tp1")
+                tp2 = rec.get("tp2")
+                tp3 = rec.get("tp3")
+                sl = rec.get("sl")
+                if direction == "BUY":
+                    if tp1 is not None and price >= tp1: rec["hits"]["tp1"] = True
+                    if tp2 is not None and price >= tp2: rec["hits"]["tp2"] = True
+                    if tp3 is not None and price >= tp3: rec["hits"]["tp3"] = True
+                    if price <= sl: rec["hits"]["sl"] = True
+                else:
+                    if tp1 is not None and price <= tp1: rec["hits"]["tp1"] = True
+                    if tp2 is not None and price <= tp2: rec["hits"]["tp2"] = True
+                    if tp3 is not None and price <= tp3: rec["hits"]["tp3"] = True
+                    if price >= sl: rec["hits"]["sl"] = True
+
+                # Notify TP hits once
+                for level in ["tp1","tp2","tp3"]:
+                    if rec["hits"].get(level) and not rec["notified"].get(level):
+                        rec["notified"][level] = True
+                        try:
+                            await bot.send_message(chat_id=rec.get("channel", FOREX_CHANNEL), text=f"✅ {rec['pair']} {direction}: {level.upper()} hit")
+                        except Exception:
+                            pass
+
+                # Close conditions
+                if rec["hits"].get("tp3"):
+                    rec["status"] = "CLOSED"
+                elif rec["hits"].get("sl") and not (rec["hits"].get("tp1") or rec["hits"].get("tp2") or rec["hits"].get("tp3")):
+                    rec["status"] = "CLOSED"
+                    # Do not notify SL if any TP hit
+                    if not rec["notified"].get("sl"):
+                        rec["notified"]["sl"] = True
+                        try:
+                            await bot.send_message(chat_id=rec.get("channel", FOREX_CHANNEL), text=f"❌ {rec['pair']} {direction}: SL hit")
+                        except Exception:
+                            pass
+
+            # Crypto
+            for rec in signals.get("crypto", []):
+                ts = rec.get("timestamp")
+                if ts and ts < APP_START_ISO:
+                    continue
+                if rec.get("status") != "ACTIVE":
+                    continue
+                price = get_real_crypto_price(rec["pair"]) or 0
+                if not price:
+                    continue
+                direction = rec.get("type")
+                # Update hits
+                if direction == "BUY":
+                    if price >= rec["tp1"]: rec["hits"]["tp1"] = True
+                    if price >= rec["tp2"]: rec["hits"]["tp2"] = True
+                    if price >= rec["tp3"]: rec["hits"]["tp3"] = True
+                    if price <= rec["sl"]: rec["hits"]["sl"] = True
+                else:
+                    if price <= rec["tp1"]: rec["hits"]["tp1"] = True
+                    if price <= rec["tp2"]: rec["hits"]["tp2"] = True
+                    if price <= rec["tp3"]: rec["hits"]["tp3"] = True
+                    if price >= rec["sl"]: rec["hits"]["sl"] = True
+
+                # Notify TP hits once
+                for level in ["tp1","tp2","tp3"]:
+                    if rec["hits"].get(level) and not rec["notified"].get(level):
+                        rec["notified"][level] = True
+                        try:
+                            await bot.send_message(chat_id=rec.get("channel", CRYPTO_CHANNEL), text=f"✅ {rec['pair']} {direction}: {level.upper()} hit")
+                        except Exception:
+                            pass
+
+                # Close
+                if rec["hits"].get("tp3"):
+                    rec["status"] = "CLOSED"
+                elif rec["hits"].get("sl") and not (rec["hits"].get("tp1") or rec["hits"].get("tp2") or rec["hits"].get("tp3")):
+                    rec["status"] = "CLOSED"
+                    if not rec["notified"].get("sl"):
+                        rec["notified"]["sl"] = True
+                        try:
+                            await bot.send_message(chat_id=rec.get("channel", CRYPTO_CHANNEL), text=f"❌ {rec['pair']} {direction}: SL hit")
+                        except Exception:
+                            pass
+
+            # Persist
+            save_signals(signals)
+        except Exception as e:
+            print(f"❌ Hourly monitor error: {e}")
+        # Sleep 1 hour
+        await asyncio.sleep(3600)
 
 
 def is_authorized(user_id: int) -> bool:
@@ -777,32 +911,33 @@ async def run_interactive_bot():
     await application.run_polling()
 
 
-async def run_complete_bot():
-    """Run both automatic and interactive features"""
+def run_complete_bot():
+    """Run both automatic and interactive features (no event-loop conflicts)."""
     print("🚀 Starting Complete Trading Signals Bot...")
     print("📱 Interactive features: /start command with buttons")
     print("🤖 Automatic features: Signal generation every 5 minutes")
     print("🔐 Authorized users:", ALLOWED_USERS)
-    
+
     # Create application
     application = Application.builder().token(BOT_TOKEN).build()
-    
+
     # Add handlers
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CallbackQueryHandler(button_callback))
-    
-    # Start automatic signal generation in background
-    asyncio.create_task(main())
-    
+
+    # Launch automatic signal loop in a separate thread with its own event loop
+    import threading
+    threading.Thread(target=lambda: asyncio.run(main()), daemon=True).start()
+
     print("✅ Complete bot started successfully!")
     print("📱 Send /start to your bot to see the control panel")
     print("🤖 Automatic signal generation is running in background")
-    
-    # Start the bot
-    await application.run_polling()
+
+    # Run polling (blocking, managed internally by PTB)
+    application.run_polling()
 
 
 if __name__ == "__main__":
     # Choose which mode to run:
     # asyncio.run(run_interactive_bot())  # Interactive only
-    asyncio.run(run_complete_bot())  # Complete (automatic + interactive)
+    run_complete_bot()  # Complete (automatic + interactive)
