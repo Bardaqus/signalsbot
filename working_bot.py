@@ -269,9 +269,11 @@ async def send_forex_signal(bot, channel_id: str | None = None, forced_pair: str
         if signals.get("date") != today:
             signals = {"forex": [], "crypto": [], "date": today}
         
-        # Check limit (5 signals per day)
-        if len(signals.get("forex", [])) >= 5:
-            print("⚠️ Forex daily limit reached (5 signals)")
+        # Check per-channel limit (5 signals per channel per day)
+        ch = channel_id or FOREX_CHANNELS[0]
+        sent_for_channel = [s for s in signals.get("forex", []) if s.get("channel") == ch]
+        if len(sent_for_channel) >= 5:
+            print(f"⚠️ Forex daily limit reached (5 signals) for channel {ch}")
             return
         
         # Generate signal
@@ -286,7 +288,7 @@ async def send_forex_signal(bot, channel_id: str | None = None, forced_pair: str
         
         # Format and send
         message = format_forex_signal(signal)
-        await bot.send_message(chat_id=channel_id or signal.get("channel") or FOREX_CHANNELS[0], text=message)
+        await bot.send_message(chat_id=ch, text=message)
         
         print(f"✅ Forex signal sent: {signal['pair']} {signal['type']} at {signal['entry']}")
         
@@ -304,9 +306,11 @@ async def send_crypto_signal(bot, channel_id: str | None = None, forced_pair: st
         if signals.get("date") != today:
             signals = {"forex": [], "crypto": [], "date": today}
         
-        # Check limit (5 signals per day)
-        if len(signals.get("crypto", [])) >= 5:
-            print("⚠️ Crypto daily limit reached (5 signals)")
+        # Check per-channel limit (5 signals per channel per day)
+        ch = channel_id or CRYPTO_CHANNELS[0]
+        sent_for_channel = [s for s in signals.get("crypto", []) if s.get("channel") == ch]
+        if len(sent_for_channel) >= 5:
+            print(f"⚠️ Crypto daily limit reached (5 signals) for channel {ch}")
             return
         
         # Generate signal
@@ -321,7 +325,7 @@ async def send_crypto_signal(bot, channel_id: str | None = None, forced_pair: st
         
         # Format and send
         message = format_crypto_signal(signal)
-        await bot.send_message(chat_id=channel_id or signal.get("channel") or CRYPTO_CHANNELS[0], text=message)
+        await bot.send_message(chat_id=ch, text=message)
     except Exception as e:
         print(f"❌ Error sending crypto signal: {e}")
 
@@ -385,24 +389,20 @@ async def main():
             
             # Check current signals
             signals = load_signals()
-            forex_count = len(signals.get("forex", []))
-            crypto_count = len(signals.get("crypto", []))
-            
-            print(f"📊 Today's signals: Forex {forex_count}/5, Crypto {crypto_count}/5")
-            
-            # Send forex signal if needed
-            if forex_count < 5:
-                print("🎯 Sending forex signal...")
-                await send_forex_signal(bot)
-            else:
-                print("✅ Forex signals complete for today")
-            
-            # Send crypto signal if needed
-            if crypto_count < 5:
-                print("🎯 Sending crypto signal...")
-                await send_crypto_signal(bot)
-            else:
-                print("✅ Crypto signals complete for today")
+            # For each channel, ensure 5/day
+            for ch in FOREX_CHANNELS:
+                sent = [s for s in signals.get("forex", []) if s.get("channel") == ch]
+                remaining = max(0, 5 - len(sent))
+                for _ in range(remaining):
+                    await send_forex_signal(bot, channel_id=ch)
+                    await asyncio.sleep(1)
+
+            for ch in CRYPTO_CHANNELS:
+                sent = [s for s in signals.get("crypto", []) if s.get("channel") == ch]
+                remaining = max(0, 5 - len(sent))
+                for _ in range(remaining):
+                    await send_crypto_signal(bot, channel_id=ch)
+                    await asyncio.sleep(1)
             
             # Wait 5 minutes
             print("⏳ Waiting 5 minutes...")
