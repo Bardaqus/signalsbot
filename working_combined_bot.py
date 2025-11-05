@@ -15,13 +15,43 @@ import random
 import requests
 from datetime import datetime, timezone, timedelta
 import pytz
-# Fix APScheduler timezone issue: patch tzlocal before telegram imports
-try:
-    import tzlocal
-    # Replace get_localzone to return pytz.UTC instead of zoneinfo timezone
-    tzlocal.get_localzone = lambda: pytz.UTC
-except (ImportError, AttributeError):
-    pass
+import sys
+
+# Fix APScheduler timezone issue: patch apscheduler.util.astimezone before APScheduler imports
+# This prevents the "Only timezones from the pytz library are supported" error
+def patch_apscheduler_timezone():
+    """Patch APScheduler's astimezone function to handle zoneinfo timezones"""
+    try:
+        # Import apscheduler.util early and patch astimezone
+        from apscheduler import util as apscheduler_util
+        
+        # Save original function
+        original_astimezone = apscheduler_util.astimezone
+        
+        def patched_astimezone(tz):
+            """Patched astimezone that converts zoneinfo to pytz"""
+            if tz is None:
+                return pytz.UTC
+            # If already pytz, return as-is
+            if isinstance(tz, pytz.BaseTzInfo):
+                return tz
+            # Convert zoneinfo to pytz if needed
+            try:
+                if hasattr(tz, 'key'):  # zoneinfo.ZoneInfo has a 'key' attribute
+                    return pytz.timezone(tz.key)
+            except (AttributeError, pytz.UnknownTimeZoneError):
+                pass
+            # Fallback to UTC
+            return pytz.UTC
+        
+        # Replace the function
+        apscheduler_util.astimezone = patched_astimezone
+    except (ImportError, AttributeError):
+        pass
+
+# Apply patch before importing telegram (which imports APScheduler)
+patch_apscheduler_timezone()
+
 from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 import threading
