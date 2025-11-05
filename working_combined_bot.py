@@ -1663,14 +1663,8 @@ def generate_crypto_signal(channel="lingrid"):
     
     pair = random.choice(available_pairs)
     
-    # Maintain 73% BUY / 27% SELL ratio for this specific channel
-    buy_count = len([s for s in crypto_signals if s.get("type") == "BUY"])
-    total_crypto = len(crypto_signals)
-    
-    if total_crypto == 0 or (buy_count / total_crypto) < 0.73:
-        signal_type = "BUY"
-    else:
-        signal_type = "SELL"
+    # Random BUY or SELL (no distribution ratio enforced)
+    signal_type = random.choice(["BUY", "SELL"])
     
     # Get REAL price from Binance API
     entry = get_real_crypto_price(pair)
@@ -3235,7 +3229,6 @@ async def handle_crypto_status(query, context: ContextTypes.DEFAULT_TYPE) -> Non
 ⏰ Last updated: {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC
 
 {'✅ Ready to generate more signals' if crypto_count < MAX_CRYPTO_SIGNALS else '⚠️ Daily limit reached'}
-🎯 Target: 73% BUY / 27% SELL
 🤖 Automatic signals: Running in background
         """
         
@@ -3321,7 +3314,6 @@ No crypto signals found for the period.
 📊 Total signals: {total_signals}
 📈 BUY signals: {buy_count} ({buy_ratio:.1f}%)
 📉 SELL signals: {sell_count} ({sell_ratio:.1f}%)
-🎯 Target: 73% BUY / 27% SELL
 
 ⏰ Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC
             """
