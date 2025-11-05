@@ -86,9 +86,10 @@ CHANNEL_SIGNALS = {
 
 # Signal limits
 MAX_FOREX_SIGNALS = 5  # Original forex channel
-MAX_FOREX_3TP_SIGNALS = 4  # New forex channel with 3 TPs
+MAX_FOREX_3TP_SIGNALS = 5  # New forex channel with 3 TPs (changed to 5)
 MAX_FOREX_ADDITIONAL_SIGNALS = 5  # Additional forex channel (different signals)
-MAX_CRYPTO_SIGNALS = 5
+MAX_CRYPTO_SIGNALS_LINGRID = 5  # Lingrid Crypto channel
+MAX_CRYPTO_SIGNALS_GAINMUSE = 5  # GainMuse Crypto channel
 MAX_INDEX_SIGNALS = 10  # Index channel (no strict limit, but reasonable max)
 
 # Time intervals (in hours)
@@ -233,13 +234,18 @@ def load_signals():
                 signals["tp_notifications"] = []
             if "indexes" not in signals:
                 signals["indexes"] = []
+            if "crypto_lingrid" not in signals:
+                signals["crypto_lingrid"] = []
+            if "crypto_gainmuse" not in signals:
+                signals["crypto_gainmuse"] = []
             return signals
     except:
         return {
             "forex": [], 
             "forex_3tp": [], 
             "forex_additional": [],
-            "crypto": [],
+            "crypto_lingrid": [],
+            "crypto_gainmuse": [],
             "indexes": [],
             "forwarded_forex": [],
             "tp_notifications": [],
@@ -1304,9 +1310,9 @@ def generate_forex_signal():
     
     # Calculate SL and TP based on real price with 2 TPs
     if pair == "XAUUSD":
-        # Gold: 1-2% TP, 1-2% SL (single TP for XAUUSD)
-        tp_percent = random.uniform(0.01, 0.02)  # 1-2%
-        sl_percent = random.uniform(0.01, 0.02)  # 1-2%
+        # Gold: TP close to entry, SL further away
+        tp_percent = random.uniform(0.01, 0.02)  # 1-2% TP (same as before)
+        sl_percent = random.uniform(0.015, 0.025)  # 1.5-2.5% SL (increased, further away)
         
         if signal_type == "BUY":
             tp = round(entry * (1 + tp_percent), 2)
@@ -1324,15 +1330,33 @@ def generate_forex_signal():
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
     else:
-        # Main forex pairs: 2 TPs with doubled distances
+        # Main forex pairs: 2 TPs - TP1 close to entry, SL further away
+        # Calculate using pip distances for more control
+        if pair.endswith("JPY"):
+            # JPY pairs: 3 decimal places, use pip multiplier of 1000
+            sl_pips = 544  # SL further away (increased from ~344 pips)
+            tp1_pips = 230  # TP1 close to entry (same as before)
+            tp2_pips = 460  # TP2 doubled from TP1
+            sl_distance = sl_pips / 1000
+            tp1_distance = tp1_pips / 1000
+            tp2_distance = tp2_pips / 1000
+        else:
+            # Other forex pairs: 5 decimal places, use pip multiplier of 10000
+            sl_pips = 544  # SL further away (increased from ~344 pips)
+            tp1_pips = 230  # TP1 close to entry (same as before)
+            tp2_pips = 460  # TP2 doubled from TP1
+            sl_distance = sl_pips / 10000
+            tp1_distance = tp1_pips / 10000
+            tp2_distance = tp2_pips / 10000
+        
         if signal_type == "BUY":
-            sl = round(entry * 0.997, 5)  # 0.3% SL (doubled from 0.15%)
-            tp1 = round(entry * 1.002, 5)  # 0.2% TP1 (doubled from 0.1%)
-            tp2 = round(entry * 1.004, 5)  # 0.4% TP2 (doubled from 0.2%)
+            sl = round(entry - sl_distance, 5)
+            tp1 = round(entry + tp1_distance, 5)
+            tp2 = round(entry + tp2_distance, 5)
         else:  # SELL
-            sl = round(entry * 1.003, 5)  # 0.3% SL (doubled from 0.15%)
-            tp1 = round(entry * 0.998, 5)  # 0.2% TP1 (doubled from 0.1%)
-            tp2 = round(entry * 0.996, 5)  # 0.4% TP2 (doubled from 0.2%)
+            sl = round(entry + sl_distance, 5)
+            tp1 = round(entry - tp1_distance, 5)
+            tp2 = round(entry - tp2_distance, 5)
     
     return {
         "pair": pair,
@@ -1375,9 +1399,9 @@ def generate_forex_additional_signal():
     
     # Calculate SL and TP with different ranges (more aggressive targets)
     if pair == "XAUUSD":
-        # Gold: Different ranges - 1.5-3% TP, 1-1.5% SL (single TP for XAUUSD)
-        tp_percent = random.uniform(0.015, 0.03)  # 1.5-3%
-        sl_percent = random.uniform(0.01, 0.015)  # 1-1.5%
+        # Gold: TP close to entry, SL further away
+        tp_percent = random.uniform(0.015, 0.03)  # 1.5-3% TP (same as before)
+        sl_percent = random.uniform(0.02, 0.03)  # 2-3% SL (increased, further away)
         
         if signal_type == "BUY":
             tp = round(entry * (1 + tp_percent), 2)
@@ -1395,15 +1419,33 @@ def generate_forex_additional_signal():
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
     else:
-        # Main forex pairs: Different TP/SL ranges (0.25% TP1, 0.5% TP2, 0.25% SL)
+        # Main forex pairs: TP1 close to entry, SL further away
+        # Calculate using pip distances for more control
+        if pair.endswith("JPY"):
+            # JPY pairs: 3 decimal places, use pip multiplier of 1000
+            sl_pips = 544  # SL further away
+            tp1_pips = 230  # TP1 close to entry
+            tp2_pips = 460  # TP2 doubled from TP1
+            sl_distance = sl_pips / 1000
+            tp1_distance = tp1_pips / 1000
+            tp2_distance = tp2_pips / 1000
+        else:
+            # Other forex pairs: 5 decimal places, use pip multiplier of 10000
+            sl_pips = 544  # SL further away
+            tp1_pips = 230  # TP1 close to entry
+            tp2_pips = 460  # TP2 doubled from TP1
+            sl_distance = sl_pips / 10000
+            tp1_distance = tp1_pips / 10000
+            tp2_distance = tp2_pips / 10000
+        
         if signal_type == "BUY":
-            sl = round(entry * 0.9975, 5)  # 0.25% SL
-            tp1 = round(entry * 1.0025, 5)  # 0.25% TP1
-            tp2 = round(entry * 1.005, 5)  # 0.5% TP2
+            sl = round(entry - sl_distance, 5)
+            tp1 = round(entry + tp1_distance, 5)
+            tp2 = round(entry + tp2_distance, 5)
         else:  # SELL
-            sl = round(entry * 1.0025, 5)  # 0.25% SL
-            tp1 = round(entry * 0.9975, 5)  # 0.25% TP1
-            tp2 = round(entry * 0.995, 5)  # 0.5% TP2
+            sl = round(entry + sl_distance, 5)
+            tp1 = round(entry - tp1_distance, 5)
+            tp2 = round(entry - tp2_distance, 5)
     
     return {
         "pair": pair,
@@ -1446,9 +1488,9 @@ def generate_forex_3tp_signal():
     
     # Calculate SL and 3 TPs based on real price with new ranges
     if pair == "XAUUSD":
-        # Gold: 1-2% SL, 1-2% TPs (randomized)
-        sl_percent = random.uniform(0.01, 0.02)  # 1-2% SL
-        tp1_percent = random.uniform(0.01, 0.02)  # 1-2% TP1
+        # Gold: TP1 close to entry, SL further away
+        sl_percent = random.uniform(0.015, 0.025)  # 1.5-2.5% SL (increased, further away)
+        tp1_percent = random.uniform(0.01, 0.02)  # 1-2% TP1 (same as before)
         tp2_percent = random.uniform(0.015, 0.025)  # 1.5-2.5% TP2
         tp3_percent = random.uniform(0.02, 0.03)  # 2-3% TP3
         
@@ -1463,17 +1505,39 @@ def generate_forex_3tp_signal():
             tp2 = round(entry * (1 - tp2_percent), 2)
             tp3 = round(entry * (1 - tp3_percent), 2)
     else:
-        # Main forex pairs: 0.2% TP1, 0.3% TP2, 0.4% TP3, 0.3% SL (doubled)
+        # Main forex pairs: 3 TPs - TP1 close to entry, SL further away
+        # Calculate using pip distances for more control
+        if pair.endswith("JPY"):
+            # JPY pairs: 3 decimal places, use pip multiplier of 1000
+            sl_pips = 544  # SL further away
+            tp1_pips = 230  # TP1 close to entry
+            tp2_pips = 345  # TP2 at 1.5x TP1
+            tp3_pips = 460  # TP3 at 2x TP1
+            sl_distance = sl_pips / 1000
+            tp1_distance = tp1_pips / 1000
+            tp2_distance = tp2_pips / 1000
+            tp3_distance = tp3_pips / 1000
+        else:
+            # Other forex pairs: 5 decimal places, use pip multiplier of 10000
+            sl_pips = 544  # SL further away
+            tp1_pips = 230  # TP1 close to entry
+            tp2_pips = 345  # TP2 at 1.5x TP1
+            tp3_pips = 460  # TP3 at 2x TP1
+            sl_distance = sl_pips / 10000
+            tp1_distance = tp1_pips / 10000
+            tp2_distance = tp2_pips / 10000
+            tp3_distance = tp3_pips / 10000
+        
         if signal_type == "BUY":
-            sl = round(entry * 0.997, 5)  # 0.3% SL (doubled from 0.15%)
-            tp1 = round(entry * 1.002, 5)  # 0.2% TP1 (doubled from 0.1%)
-            tp2 = round(entry * 1.003, 5)  # 0.3% TP2 (doubled from 0.15%)
-            tp3 = round(entry * 1.004, 5)  # 0.4% TP3 (doubled from 0.2%)
+            sl = round(entry - sl_distance, 5)
+            tp1 = round(entry + tp1_distance, 5)
+            tp2 = round(entry + tp2_distance, 5)
+            tp3 = round(entry + tp3_distance, 5)
         else:  # SELL
-            sl = round(entry * 1.003, 5)  # 0.3% SL (doubled from 0.15%)
-            tp1 = round(entry * 0.998, 5)  # 0.2% TP1 (doubled from 0.1%)
-            tp2 = round(entry * 0.997, 5)  # 0.3% TP2 (doubled from 0.15%)
-            tp3 = round(entry * 0.996, 5)  # 0.4% TP3 (doubled from 0.2%)
+            sl = round(entry + sl_distance, 5)
+            tp1 = round(entry - tp1_distance, 5)
+            tp2 = round(entry - tp2_distance, 5)
+            tp3 = round(entry - tp3_distance, 5)
     
     return {
         "pair": pair,
@@ -1506,7 +1570,10 @@ def get_all_active_pairs_across_channels():
         active_pairs.add(signal.get("pair"))
     
     # Add pairs from crypto channels
-    for signal in signals.get("crypto", []):
+    # Check both crypto channels
+    for signal in signals.get("crypto_lingrid", []):
+        active_pairs.add(signal.get("pair"))
+    for signal in signals.get("crypto_gainmuse", []):
         active_pairs.add(signal.get("pair"))
     
     # Add pairs from indexes channel
@@ -1516,9 +1583,12 @@ def get_all_active_pairs_across_channels():
     return active_pairs
 
 
-def generate_crypto_signal():
-    """Generate a crypto signal with real prices from Binance"""
-    # Check for active signals to avoid duplicates
+def generate_crypto_signal(channel="lingrid"):
+    """Generate a crypto signal with real prices from Binance
+    Args:
+        channel: "lingrid" or "gainmuse" - determines which channel's signals to check
+    """
+    # Check for active signals to avoid duplicates across both channels
     signals = load_signals()
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     
@@ -1526,19 +1596,26 @@ def generate_crypto_signal():
         active_crypto_pairs = []
         crypto_signals = []
     else:
-        active_crypto_pairs = [s["pair"] for s in signals.get("crypto", [])]
-        crypto_signals = signals.get("crypto", [])
+        # Check both channels for active pairs
+        active_crypto_pairs = []
+        active_crypto_pairs.extend([s["pair"] for s in signals.get("crypto_lingrid", [])])
+        active_crypto_pairs.extend([s["pair"] for s in signals.get("crypto_gainmuse", [])])
+        # Get signals for the specific channel to maintain ratio
+        if channel == "lingrid":
+            crypto_signals = signals.get("crypto_lingrid", [])
+        else:
+            crypto_signals = signals.get("crypto_gainmuse", [])
     
-    # Filter out pairs that already have active signals
+    # Filter out pairs that already have active signals in ANY channel
     available_pairs = [pair for pair in CRYPTO_PAIRS if pair not in active_crypto_pairs]
     
     if not available_pairs:
-        print("⚠️ All crypto pairs already have active signals today")
+        print(f"⚠️ All crypto pairs already have active signals today in {channel} channel")
         return None
     
     pair = random.choice(available_pairs)
     
-    # Maintain 73% BUY / 27% SELL ratio
+    # Maintain 73% BUY / 27% SELL ratio for this specific channel
     buy_count = len([s for s in crypto_signals if s.get("type") == "BUY"])
     total_crypto = len(crypto_signals)
     
@@ -1953,8 +2030,11 @@ async def send_forex_3tp_signal():
         return False
 
 
-async def send_crypto_signal():
-    """Send a crypto signal"""
+async def send_crypto_signal(channel="lingrid"):
+    """Send a crypto signal to a specific channel
+    Args:
+        channel: "lingrid" or "gainmuse" - determines which channel to send to
+    """
     try:
         # Check if enough time has passed since last signal
         if not can_send_signal_now():
@@ -1964,45 +2044,57 @@ async def send_crypto_signal():
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         
         if signals.get("date") != today:
-            signals = {"forex": [], "forex_3tp": [], "forex_additional": [], "crypto": [], "date": today}
+            signals = {"forex": [], "forex_3tp": [], "forex_additional": [], "crypto_lingrid": [], "crypto_gainmuse": [], "indexes": [], "date": today}
         
-        if len(signals.get("crypto", [])) >= MAX_CRYPTO_SIGNALS:
-            print(f"⚠️ Crypto signal limit reached: {len(signals['crypto'])}/{MAX_CRYPTO_SIGNALS}")
+        # Check limit for specific channel
+        if channel == "lingrid":
+            channel_signals = signals.get("crypto_lingrid", [])
+            max_signals = MAX_CRYPTO_SIGNALS_LINGRID
+            channel_id = CHANNEL_LINGRID_CRYPTO
+            channel_name = "Lingrid Crypto"
+        else:
+            channel_signals = signals.get("crypto_gainmuse", [])
+            max_signals = MAX_CRYPTO_SIGNALS_GAINMUSE
+            channel_id = CHANNEL_GAINMUSE
+            channel_name = "GainMuse Crypto"
+        
+        if len(channel_signals) >= max_signals:
+            print(f"⚠️ {channel_name} signal limit reached: {len(channel_signals)}/{max_signals}")
             return False
         
-        # Generate signal
-        signal = generate_crypto_signal()
+        # Generate signal for this channel
+        signal = generate_crypto_signal(channel)
         
         if signal is None:
-            print("❌ Could not generate crypto signal")
+            print(f"❌ Could not generate crypto signal for {channel_name}")
             return False
         
-        signals["crypto"].append(signal)
+        # Add to appropriate channel array
+        if channel == "lingrid":
+            signals["crypto_lingrid"].append(signal)
+        else:
+            signals["crypto_gainmuse"].append(signal)
         save_signals(signals)
         
-        # Send to both crypto channels
+        # Send to specific channel
         bot = Bot(token=BOT_TOKEN)
         message = format_crypto_signal(signal)
-        await bot.send_message(chat_id=CRYPTO_CHANNEL_LINGRID, text=message)
-        await bot.send_message(chat_id=CRYPTO_CHANNEL_GAINMUSE, text=message)
+        await bot.send_message(chat_id=channel_id, text=message)
         
-        # Save signal to channel files
-        # CRYPTO_CHANNEL_LINGRID = GainMuse, CRYPTO_CHANNEL_GAINMUSE = Lingrid Crypto
-        save_channel_signal(CHANNEL_GAINMUSE, signal)
-        save_channel_signal(CHANNEL_LINGRID_CRYPTO, signal)
+        # Save signal to channel file
+        save_channel_signal(channel_id, signal)
         
         # Update last signal time
         save_last_signal_time()
         
-        # Calculate distribution
-        crypto_signals = signals.get("crypto", [])
-        buy_count = len([s for s in crypto_signals if s.get("type") == "BUY"])
-        total_crypto = len(crypto_signals)
+        # Calculate distribution for this channel
+        buy_count = len([s for s in channel_signals if s.get("type") == "BUY"])
+        total_crypto = len(channel_signals)
         buy_ratio = (buy_count / total_crypto * 100) if total_crypto > 0 else 0
         
-        print(f"✅ Crypto signal sent: {signal['pair']} {signal['type']} at {signal['entry']}")
-        print(f"📊 Today's crypto signals: {len(signals['crypto'])}/{MAX_CRYPTO_SIGNALS}")
-        print(f"📈 Distribution: BUY {buy_count} ({buy_ratio:.1f}%), SELL {total_crypto - buy_count} ({100 - buy_ratio:.1f}%)")
+        print(f"✅ {channel_name} signal sent: {signal['pair']} {signal['type']} at {signal['entry']}")
+        print(f"📊 Today's {channel_name} signals: {len(channel_signals) + 1}/{max_signals}")
+        print(f"📈 Distribution: BUY {buy_count + (1 if signal['type'] == 'BUY' else 0)} ({buy_ratio:.1f}%), SELL {total_crypto - buy_count + (1 if signal['type'] == 'SELL' else 0)} ({100 - buy_ratio:.1f}%)")
         return True
         
     except Exception as e:
@@ -3311,8 +3403,8 @@ def automatic_signal_loop():
                 # Check if we're in trading hours (4 GMT - 23 GMT)
                 if not is_trading_hours():
                     print(f"🌙 Outside trading hours ({current_hour}:00 GMT). Market closed.")
-                    # Still check for TP hits
-                    await check_and_notify_tp_hits()
+                    # TP/SL monitoring disabled
+                    # await check_and_notify_tp_hits()  # DISABLED
                     
                     # Wait until trading hours start
                     if current_hour < 4:
@@ -3332,17 +3424,18 @@ def automatic_signal_loop():
                 today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
                 
                 if signals.get("date") != today:
-                    signals = {"forex": [], "forex_3tp": [], "forex_additional": [], "crypto": [], "indexes": [], "forwarded_forex": [], "tp_notifications": [], "date": today}
+                    signals = {"forex": [], "forex_3tp": [], "forex_additional": [], "crypto_lingrid": [], "crypto_gainmuse": [], "indexes": [], "forwarded_forex": [], "tp_notifications": [], "date": today}
                     save_signals(signals)
                     print(f"📅 New day: {today}")
                 
                 forex_count = len(signals.get("forex", []))
                 forex_3tp_count = len(signals.get("forex_3tp", []))
                 forex_additional_count = len(signals.get("forex_additional", []))
-                crypto_count = len(signals.get("crypto", []))
+                crypto_lingrid_count = len(signals.get("crypto_lingrid", []))
+                crypto_gainmuse_count = len(signals.get("crypto_gainmuse", []))
                 index_count = len(signals.get("indexes", []))
                 
-                print(f"📊 Current signals: Forex {forex_count}/{MAX_FOREX_SIGNALS}, Forex 3TP {forex_3tp_count}/{MAX_FOREX_3TP_SIGNALS}, Forex Additional {forex_additional_count}/{MAX_FOREX_ADDITIONAL_SIGNALS}, Crypto {crypto_count}/{MAX_CRYPTO_SIGNALS}, Indexes {index_count}/{MAX_INDEX_SIGNALS}")
+                print(f"📊 Current signals: Forex {forex_count}/{MAX_FOREX_SIGNALS}, Forex 3TP {forex_3tp_count}/{MAX_FOREX_3TP_SIGNALS}, Forex Additional {forex_additional_count}/{MAX_FOREX_ADDITIONAL_SIGNALS}, Crypto Lingrid {crypto_lingrid_count}/{MAX_CRYPTO_SIGNALS_LINGRID}, Crypto GainMuse {crypto_gainmuse_count}/{MAX_CRYPTO_SIGNALS_GAINMUSE}, Indexes {index_count}/{MAX_INDEX_SIGNALS}")
                 
                 # Only send one signal per iteration to ensure minimum 15-minute spacing
                 # Prioritize channels that haven't reached their limit
@@ -3372,13 +3465,21 @@ def automatic_signal_loop():
                     elif not success and not is_weekend():
                         print("⚠️ Could not send forex additional signal (all pairs may be active or waiting for interval)")
                 
-                # Send crypto signal if needed
-                if crypto_count < MAX_CRYPTO_SIGNALS and signals_sent == 0:
-                    success = await send_crypto_signal()
+                # Send crypto signal to Lingrid if needed
+                if crypto_lingrid_count < MAX_CRYPTO_SIGNALS_LINGRID and signals_sent == 0:
+                    success = await send_crypto_signal("lingrid")
                     if success:
                         signals_sent = 1
                     elif not success:
-                        print("⚠️ Could not send crypto signal (all pairs may be active or waiting for interval)")
+                        print("⚠️ Could not send crypto signal to Lingrid (all pairs may be active or waiting for interval)")
+                
+                # Send crypto signal to GainMuse if needed
+                if crypto_gainmuse_count < MAX_CRYPTO_SIGNALS_GAINMUSE and signals_sent == 0:
+                    success = await send_crypto_signal("gainmuse")
+                    if success:
+                        signals_sent = 1
+                    elif not success:
+                        print("⚠️ Could not send crypto signal to GainMuse (all pairs may be active or waiting for interval)")
                 
                 # Send index signal if needed (and under limit)
                 if index_count < MAX_INDEX_SIGNALS and signals_sent == 0:
@@ -3392,15 +3493,16 @@ def automatic_signal_loop():
                     # No signal sent - might be waiting for interval or all limits reached
                     print("⏸️ No signal sent this iteration (checking conditions...)")
                 
-                # Check for TP hits and send notifications
-                await check_and_notify_tp_hits()
+                # TP/SL monitoring disabled - bot should not calculate profits or send TP hit notifications
+                # await check_and_notify_tp_hits()  # DISABLED
                 
                 # Check if all signals sent for today
                 # Note: Index signals are optional (no strict limit), so we don't include them in the "all done" check
                 if (forex_count >= MAX_FOREX_SIGNALS and 
                     forex_3tp_count >= MAX_FOREX_3TP_SIGNALS and 
                     forex_additional_count >= MAX_FOREX_ADDITIONAL_SIGNALS and
-                    crypto_count >= MAX_CRYPTO_SIGNALS):
+                    crypto_lingrid_count >= MAX_CRYPTO_SIGNALS_LINGRID and
+                    crypto_gainmuse_count >= MAX_CRYPTO_SIGNALS_GAINMUSE):
                     print("✅ All signals sent for today. Waiting until tomorrow...")
                     # Wait until next day
                     tomorrow = datetime.now(timezone.utc) + timedelta(days=1)
@@ -3448,20 +3550,22 @@ def main():
     print("=" * 60)
     print("📱 Interactive features: /start command with buttons")
     print("🤖 Automatic features: Signal generation every 3-5 hours")
-    print("⏰ TP/SL Monitoring: Checking for TP/SL hits every 30 minutes")
+    print("⚠️ TP/SL Monitoring: DISABLED - no profit calculations or notifications")
     print("📁 Channel Results: Separate files for each channel")
     print("📊 Daily summaries: 14:30 GMT")
     print("📈 Weekly summaries: Friday 14:30 GMT")
     print("🔐 Authorized users:", ALLOWED_USERS)
+    print("📊 Signal limits: 5 forex per channel, 5 crypto per channel")
+    print("📅 Forex signals: No signals on weekends")
     print("=" * 60)
     
     # Start automatic signal generation in separate thread
     automatic_thread = threading.Thread(target=automatic_signal_loop, daemon=True)
     automatic_thread.start()
     
-    # Start 30-minute TP/SL check loop in separate thread
-    tp_check_thread = threading.Thread(target=hourly_tp_check_loop, daemon=True)
-    tp_check_thread.start()
+    # TP/SL monitoring disabled - bot should not calculate profits or send TP hit notifications
+    # tp_check_thread = threading.Thread(target=hourly_tp_check_loop, daemon=True)
+    # tp_check_thread.start()
     
     # Create application for interactive features
     application = Application.builder().token(BOT_TOKEN).build()
@@ -3473,7 +3577,7 @@ def main():
     print("✅ Working combined bot started successfully!")
     print("📱 Send /start to your bot to see the control panel")
     print("🤖 Automatic signal generation is running in background")
-    print("⏰ Hourly TP hit monitoring is running in background")
+    print("⚠️ TP/SL monitoring disabled - no profit calculations or notifications")
     
     # Start the interactive bot
     application.run_polling()
