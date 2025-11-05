@@ -697,34 +697,34 @@ async def check_and_notify_tp_hits():
             profit_percent = 0
             
             if not sl_hit:
-                if pair == "XAUUSD":
-                    # XAUUSD: Single TP
-                    tp = signal.get("tp", 0)
-                    if signal_type == "BUY" and current_price >= tp:
-                        tp_hit = "TP"
-                        profit_percent = ((tp - entry) / entry) * 100
-                    elif signal_type == "SELL" and current_price <= tp:
-                        tp_hit = "TP"
-                        profit_percent = ((entry - tp) / entry) * 100
-                else:
-                    # Main forex pairs: 2 TPs
-                    tp1 = signal.get("tp1", 0)
-                    tp2 = signal.get("tp2", 0)
-                    
-                    if signal_type == "BUY":
-                        if current_price >= tp2:
-                            tp_hit = "TP2"
-                            profit_percent = ((tp2 - entry) / entry) * 100
-                        elif current_price >= tp1:
-                            tp_hit = "TP1"
-                            profit_percent = ((tp1 - entry) / entry) * 100
-                    else:  # SELL
-                        if current_price <= tp2:
-                            tp_hit = "TP2"
-                            profit_percent = ((entry - tp2) / entry) * 100
-                        elif current_price <= tp1:
-                            tp_hit = "TP1"
-                            profit_percent = ((entry - tp1) / entry) * 100
+            if pair == "XAUUSD":
+                # XAUUSD: Single TP
+                tp = signal.get("tp", 0)
+                if signal_type == "BUY" and current_price >= tp:
+                    tp_hit = "TP"
+                    profit_percent = ((tp - entry) / entry) * 100
+                elif signal_type == "SELL" and current_price <= tp:
+                    tp_hit = "TP"
+                    profit_percent = ((entry - tp) / entry) * 100
+            else:
+                # Main forex pairs: 2 TPs
+                tp1 = signal.get("tp1", 0)
+                tp2 = signal.get("tp2", 0)
+                
+                if signal_type == "BUY":
+                    if current_price >= tp2:
+                        tp_hit = "TP2"
+                        profit_percent = ((tp2 - entry) / entry) * 100
+                    elif current_price >= tp1:
+                        tp_hit = "TP1"
+                        profit_percent = ((tp1 - entry) / entry) * 100
+                else:  # SELL
+                    if current_price <= tp2:
+                        tp_hit = "TP2"
+                        profit_percent = ((entry - tp2) / entry) * 100
+                    elif current_price <= tp1:
+                        tp_hit = "TP1"
+                        profit_percent = ((entry - tp1) / entry) * 100
             
             # Process SL hit
             if sl_hit and timestamp not in notifications_sent:
@@ -854,34 +854,34 @@ async def check_and_notify_tp_hits():
             profit_percent = 0
             
             if not sl_hit:
-                if pair == "XAUUSD":
-                    # XAUUSD: Single TP
-                    tp = signal.get("tp", 0)
-                    if signal_type == "BUY" and current_price >= tp:
-                        tp_hit = "TP"
-                        profit_percent = ((tp - entry) / entry) * 100
-                    elif signal_type == "SELL" and current_price <= tp:
-                        tp_hit = "TP"
-                        profit_percent = ((entry - tp) / entry) * 100
-                else:
-                    # Main forex pairs: 2 TPs
-                    tp1 = signal.get("tp1", 0)
-                    tp2 = signal.get("tp2", 0)
-                    
-                    if signal_type == "BUY":
-                        if current_price >= tp2:
-                            tp_hit = "TP2"
-                            profit_percent = ((tp2 - entry) / entry) * 100
-                        elif current_price >= tp1:
-                            tp_hit = "TP1"
-                            profit_percent = ((tp1 - entry) / entry) * 100
-                    else:  # SELL
-                        if current_price <= tp2:
-                            tp_hit = "TP2"
-                            profit_percent = ((entry - tp2) / entry) * 100
-                        elif current_price <= tp1:
-                            tp_hit = "TP1"
-                            profit_percent = ((entry - tp1) / entry) * 100
+            if pair == "XAUUSD":
+                # XAUUSD: Single TP
+                tp = signal.get("tp", 0)
+                if signal_type == "BUY" and current_price >= tp:
+                    tp_hit = "TP"
+                    profit_percent = ((tp - entry) / entry) * 100
+                elif signal_type == "SELL" and current_price <= tp:
+                    tp_hit = "TP"
+                    profit_percent = ((entry - tp) / entry) * 100
+            else:
+                # Main forex pairs: 2 TPs
+                tp1 = signal.get("tp1", 0)
+                tp2 = signal.get("tp2", 0)
+                
+                if signal_type == "BUY":
+                    if current_price >= tp2:
+                        tp_hit = "TP2"
+                        profit_percent = ((tp2 - entry) / entry) * 100
+                    elif current_price >= tp1:
+                        tp_hit = "TP1"
+                        profit_percent = ((tp1 - entry) / entry) * 100
+                else:  # SELL
+                    if current_price <= tp2:
+                        tp_hit = "TP2"
+                        profit_percent = ((entry - tp2) / entry) * 100
+                    elif current_price <= tp1:
+                        tp_hit = "TP1"
+                        profit_percent = ((entry - tp1) / entry) * 100
             
             # Process SL hit
             if sl_hit and timestamp not in notifications_sent:
@@ -1014,26 +1014,26 @@ async def check_and_notify_tp_hits():
             profit_percent = 0
             
             if not sl_hit:
-                if signal_type == "BUY":
-                    if current_price >= tp3:
-                        tp_hit = "TP3"
-                        profit_percent = ((tp3 - entry) / entry) * 100
-                    elif current_price >= tp2:
-                        tp_hit = "TP2"
-                        profit_percent = ((tp2 - entry) / entry) * 100
-                    elif current_price >= tp1:
-                        tp_hit = "TP1"
-                        profit_percent = ((tp1 - entry) / entry) * 100
-                else:  # SELL
-                    if current_price <= tp3:
-                        tp_hit = "TP3"
-                        profit_percent = ((entry - tp3) / entry) * 100
-                    elif current_price <= tp2:
-                        tp_hit = "TP2"
-                        profit_percent = ((entry - tp2) / entry) * 100
-                    elif current_price <= tp1:
-                        tp_hit = "TP1"
-                        profit_percent = ((entry - tp1) / entry) * 100
+            if signal_type == "BUY":
+                if current_price >= tp3:
+                    tp_hit = "TP3"
+                    profit_percent = ((tp3 - entry) / entry) * 100
+                elif current_price >= tp2:
+                    tp_hit = "TP2"
+                    profit_percent = ((tp2 - entry) / entry) * 100
+                elif current_price >= tp1:
+                    tp_hit = "TP1"
+                    profit_percent = ((tp1 - entry) / entry) * 100
+            else:  # SELL
+                if current_price <= tp3:
+                    tp_hit = "TP3"
+                    profit_percent = ((entry - tp3) / entry) * 100
+                elif current_price <= tp2:
+                    tp_hit = "TP2"
+                    profit_percent = ((entry - tp2) / entry) * 100
+                elif current_price <= tp1:
+                    tp_hit = "TP1"
+                    profit_percent = ((entry - tp1) / entry) * 100
             
             # Process SL hit
             if sl_hit and timestamp not in notifications_sent:
@@ -1148,26 +1148,26 @@ async def check_and_notify_tp_hits():
             profit_percent = 0
             
             if not sl_hit:
-                if signal_type == "BUY":
-                    if current_price >= tp3:
-                        tp_hit = "TP3"
-                        profit_percent = ((tp3 - entry) / entry) * 100
-                    elif current_price >= tp2:
-                        tp_hit = "TP2"
-                        profit_percent = ((tp2 - entry) / entry) * 100
-                    elif current_price >= tp1:
-                        tp_hit = "TP1"
-                        profit_percent = ((tp1 - entry) / entry) * 100
-                else:  # SELL
-                    if current_price <= tp3:
-                        tp_hit = "TP3"
-                        profit_percent = ((entry - tp3) / entry) * 100
-                    elif current_price <= tp2:
-                        tp_hit = "TP2"
-                        profit_percent = ((entry - tp2) / entry) * 100
-                    elif current_price <= tp1:
-                        tp_hit = "TP1"
-                        profit_percent = ((entry - tp1) / entry) * 100
+            if signal_type == "BUY":
+                if current_price >= tp3:
+                    tp_hit = "TP3"
+                    profit_percent = ((tp3 - entry) / entry) * 100
+                elif current_price >= tp2:
+                    tp_hit = "TP2"
+                    profit_percent = ((tp2 - entry) / entry) * 100
+                elif current_price >= tp1:
+                    tp_hit = "TP1"
+                    profit_percent = ((tp1 - entry) / entry) * 100
+            else:  # SELL
+                if current_price <= tp3:
+                    tp_hit = "TP3"
+                    profit_percent = ((entry - tp3) / entry) * 100
+                elif current_price <= tp2:
+                    tp_hit = "TP2"
+                    profit_percent = ((entry - tp2) / entry) * 100
+                elif current_price <= tp1:
+                    tp_hit = "TP1"
+                    profit_percent = ((entry - tp1) / entry) * 100
             
             # Process SL hit
             if sl_hit and timestamp not in notifications_sent:
@@ -1268,12 +1268,12 @@ async def check_and_notify_tp_hits():
             tp_hit = False
             profit_percent = 0
             if not sl_hit:
-                if signal_type == "BUY" and current_price >= tp:
-                    tp_hit = True
-                    profit_percent = ((tp - entry) / entry) * 100
-                elif signal_type == "SELL" and current_price <= tp:
-                    tp_hit = True
-                    profit_percent = ((entry - tp) / entry) * 100
+            if signal_type == "BUY" and current_price >= tp:
+                tp_hit = True
+                profit_percent = ((tp - entry) / entry) * 100
+            elif signal_type == "SELL" and current_price <= tp:
+                tp_hit = True
+                profit_percent = ((entry - tp) / entry) * 100
             
             # Process SL hit
             if sl_hit and timestamp not in notifications_sent:
@@ -1420,17 +1420,17 @@ def generate_forex_signal():
         # Calculate using pip distances for more control
         if pair.endswith("JPY"):
             # JPY pairs: 3 decimal places, use pip multiplier of 1000
-            sl_pips = 544  # SL further away (increased from ~344 pips)
-            tp1_pips = 230  # TP1 close to entry (same as before)
-            tp2_pips = 460  # TP2 doubled from TP1
+            sl_pips = random.uniform(50, 60)  # SL: 50-60 pips
+            tp1_pips = random.uniform(25, 35)  # TP1: 25-35 pips
+            tp2_pips = random.uniform(50, 60)  # TP2: 50-60 pips
             sl_distance = sl_pips / 1000
             tp1_distance = tp1_pips / 1000
             tp2_distance = tp2_pips / 1000
         else:
             # Other forex pairs: 5 decimal places, use pip multiplier of 10000
-            sl_pips = 544  # SL further away (increased from ~344 pips)
-            tp1_pips = 230  # TP1 close to entry (same as before)
-            tp2_pips = 460  # TP2 doubled from TP1
+            sl_pips = random.uniform(50, 60)  # SL: 50-60 pips
+            tp1_pips = random.uniform(25, 35)  # TP1: 25-35 pips
+            tp2_pips = random.uniform(50, 60)  # TP2: 50-60 pips
             sl_distance = sl_pips / 10000
             tp1_distance = tp1_pips / 10000
             tp2_distance = tp2_pips / 10000
@@ -1509,17 +1509,17 @@ def generate_forex_additional_signal():
         # Calculate using pip distances for more control
         if pair.endswith("JPY"):
             # JPY pairs: 3 decimal places, use pip multiplier of 1000
-            sl_pips = 544  # SL further away
-            tp1_pips = 230  # TP1 close to entry
-            tp2_pips = 460  # TP2 doubled from TP1
+            sl_pips = random.uniform(50, 60)  # SL: 50-60 pips
+            tp1_pips = random.uniform(25, 35)  # TP1: 25-35 pips
+            tp2_pips = random.uniform(50, 60)  # TP2: 50-60 pips
             sl_distance = sl_pips / 1000
             tp1_distance = tp1_pips / 1000
             tp2_distance = tp2_pips / 1000
         else:
             # Other forex pairs: 5 decimal places, use pip multiplier of 10000
-            sl_pips = 544  # SL further away
-            tp1_pips = 230  # TP1 close to entry
-            tp2_pips = 460  # TP2 doubled from TP1
+            sl_pips = random.uniform(50, 60)  # SL: 50-60 pips
+            tp1_pips = random.uniform(25, 35)  # TP1: 25-35 pips
+            tp2_pips = random.uniform(50, 60)  # TP2: 50-60 pips
             sl_distance = sl_pips / 10000
             tp1_distance = tp1_pips / 10000
             tp2_distance = tp2_pips / 10000
@@ -1595,20 +1595,20 @@ def generate_forex_3tp_signal():
         # Calculate using pip distances for more control
         if pair.endswith("JPY"):
             # JPY pairs: 3 decimal places, use pip multiplier of 1000
-            sl_pips = 544  # SL further away
-            tp1_pips = 230  # TP1 close to entry
-            tp2_pips = 345  # TP2 at 1.5x TP1
-            tp3_pips = 460  # TP3 at 2x TP1
+            sl_pips = random.uniform(50, 60)  # SL: 50-60 pips
+            tp1_pips = random.uniform(25, 35)  # TP1: 25-35 pips
+            tp2_pips = random.uniform(50, 60)  # TP2: 50-60 pips
+            tp3_pips = random.uniform(80, 110)  # TP3: 80-110 pips
             sl_distance = sl_pips / 1000
             tp1_distance = tp1_pips / 1000
             tp2_distance = tp2_pips / 1000
             tp3_distance = tp3_pips / 1000
         else:
             # Other forex pairs: 5 decimal places, use pip multiplier of 10000
-            sl_pips = 544  # SL further away
-            tp1_pips = 230  # TP1 close to entry
-            tp2_pips = 345  # TP2 at 1.5x TP1
-            tp3_pips = 460  # TP3 at 2x TP1
+            sl_pips = random.uniform(50, 60)  # SL: 50-60 pips
+            tp1_pips = random.uniform(25, 35)  # TP1: 25-35 pips
+            tp2_pips = random.uniform(50, 60)  # TP2: 50-60 pips
+            tp3_pips = random.uniform(80, 110)  # TP3: 80-110 pips
             sl_distance = sl_pips / 10000
             tp1_distance = tp1_pips / 10000
             tp2_distance = tp2_pips / 10000
@@ -2854,7 +2854,7 @@ def get_analytics_from_results(channel_id, days: int):
                 # Track highest TP
                 if highest_tp_result is None:
                     highest_tp_result = result
-                else:
+            else:
                     current_order = tp_order_map.get(hit_type, 0)
                     existing_order = tp_order_map.get(highest_tp_result.get("hit_type", ""), 0)
                     if current_order > existing_order:
@@ -2897,7 +2897,7 @@ def get_analytics_from_results(channel_id, days: int):
                     total_profit += profit_pips
                     profit_values.append(profit_pips)
                     signals_detail.append(f"✅ {pair} {hit_type}: +{profit_pips:.1f} pips")
-                else:
+        else:
                     loss_count += 1
                     loss_values.append(abs(profit_pips))
                     signals_detail.append(f"❌ {pair} {hit_type}: {profit_pips:.1f} pips")
@@ -3023,16 +3023,16 @@ async def handle_performance_report(query, context: ContextTypes.DEFAULT_TYPE, s
                 report += f"Average Loss: {performance['avg_loss']:+.1f} pips\n"
         else:
             # Crypto: percentage
-            report += f"Total Profit: {performance['total_profit']:+.2f}%\n"
-            report += f"Average per Signal: {performance['avg_profit_per_signal']:+.2f}%\n"
-            if performance['profit_signals'] > 0:
-                report += f"Average Win: {performance['avg_profit']:+.2f}%\n"
-            if performance['loss_signals'] > 0:
-                report += f"Average Loss: {performance['avg_loss']:+.2f}%\n"
-            if performance['profit_factor'] != float('inf'):
-                report += f"Profit Factor: {performance['profit_factor']:.2f}\n"
-            else:
-                report += "Profit Factor: ∞\n"
+        report += f"Total Profit: {performance['total_profit']:+.2f}%\n"
+        report += f"Average per Signal: {performance['avg_profit_per_signal']:+.2f}%\n"
+        if performance['profit_signals'] > 0:
+            report += f"Average Win: {performance['avg_profit']:+.2f}%\n"
+        if performance['loss_signals'] > 0:
+            report += f"Average Loss: {performance['avg_loss']:+.2f}%\n"
+        if performance['profit_factor'] != float('inf'):
+            report += f"Profit Factor: {performance['profit_factor']:.2f}\n"
+        else:
+            report += "Profit Factor: ∞\n"
         report += "\n"
         
         # Individual signal results (only for short periods)
