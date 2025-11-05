@@ -1,0 +1,91 @@
+syntax = "proto3";
+
+package spotware;
+
+// Common message wrapper
+message ProtoMessage {
+  string payloadType = 1;
+  int64 clientMsgId = 2;
+  bytes payload = 3;
+}
+
+// Application authentication
+message ProtoOAApplicationAuthReq {
+  string clientId = 1;
+  string clientSecret = 2;
+}
+
+message ProtoOAApplicationAuthRes {
+  int32 ctidTraderAccountId = 1;
+}
+
+// Account authentication
+message ProtoOAAccountAuthReq {
+  int32 ctidTraderAccountId = 1;
+  string accessToken = 2;
+}
+
+message ProtoOAAccountAuthRes {
+  int32 ctidTraderAccountId = 1;
+}
+
+// Get account list
+message ProtoOAGetAccountListByAccessTokenReq {
+  string accessToken = 1;
+}
+
+message ProtoOAGetAccountListByAccessTokenRes {
+  repeated ProtoOACtidTraderAccount ctidTraderAccount = 1;
+}
+
+message ProtoOACtidTraderAccount {
+  int32 ctidTraderAccountId = 1;
+  bool isLive = 2;
+  string traderLogin = 3;
+  string currency = 4;
+  string brokerName = 5;
+  int32 depositAssetId = 6;
+  int32 leverage = 7;
+  int64 balance = 8;
+  int32 nonWithdrawableBalance = 9;
+  int32 marginCallLevel = 10;
+  int32 brokerAccountType = 11;
+  string brokerAccountName = 12;
+  int64 registrationTimestamp = 13;
+  bool isLimitedRisk = 14;
+  int32 limitedRiskMarginCalculationStrategy = 15;
+  int32 moneyDigits = 16;
+}
+
+// New order
+message ProtoOANewOrderReq {
+  int32 ctidTraderAccountId = 1;
+  int32 symbolId = 2;
+  int32 orderType = 3;
+  int32 tradeSide = 4;
+  int64 volume = 5;
+  int64 limitPrice = 6;
+  int64 stopPrice = 7;
+  int64 stopLoss = 8;
+  int64 takeProfit = 9;
+  int64 expirationTimestamp = 10;
+  string comment = 11;
+}
+
+message ProtoOANewOrderRes {
+  int32 ctidTraderAccountId = 1;
+  int64 orderId = 2;
+  int32 symbolId = 3;
+  int32 orderType = 4;
+  int32 tradeSide = 5;
+  int64 volume = 6;
+  int64 limitPrice = 7;
+  int64 stopPrice = 8;
+  int64 stopLoss = 9;
+  int64 takeProfit = 10;
+  int64 expirationTimestamp = 11;
+  string comment = 12;
+}
+
+
+

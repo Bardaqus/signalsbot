@@ -1,39 +1,32 @@
 {
   "forex": [
     {
-      "pair": "AUDUSD",
+      "pair": "GBPUSD",
       "type": "SELL",
-      "entry": 0.654921643,
-      "sl": 0.65689,
-      "tp": 0.65361,
-      "timestamp": "2025-10-28T07:57:45.913999+00:00"
+      "entry": 1.302558068,
+      "sl": 1.35696,
+      "tp1": 1.27956,
+      "tp2": 1.25656,
+      "timestamp": "2025-11-05T14:02:51.371489+00:00"
     }
   ],
   "forex_3tp": [
     {
-      "pair": "GBPCAD",
-      "type": "SELL",
-      "entry": 1.866974143,
-      "sl": 1.87258,
-      "tp1": 1.86324,
-      "tp2": 1.86137,
-      "tp3": 1.85951,
-      "timestamp": "2025-10-28T07:57:46.521203+00:00"
-    }
-  ],
-  "crypto": [
-    {
-      "pair": "SOLUSDT",
+      "pair": "USDCAD",
       "type": "BUY",
-      "entry": 202.44,
-      "sl": 194.3424,
-      "tp1": 209.895125,
-      "tp2": 213.628964,
-      "tp3": 222.492817,
-      "timestamp": "2025-10-28T07:57:47.339064+00:00"
+      "entry": 1.412620252,
+      "sl": 1.4073,
+      "tp1": 1.41513,
+      "tp2": 1.41762,
+      "tp3": 1.42088,
+      "timestamp": "2025-11-05T14:45:48.870786+00:00"
     }
   ],
+  "forex_additional": [],
+  "crypto_lingrid": [],
+  "crypto_gainmuse": [],
+  "indexes": [],
   "forwarded_forex": [],
   "tp_notifications": [],
-  "date": "2025-10-28"
+  "date": "2025-11-05"
 }

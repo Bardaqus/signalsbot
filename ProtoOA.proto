@@ -1,0 +1,379 @@
+syntax = "proto3";
+
+package spotware;
+
+// Common message wrapper
+message ProtoMessage {
+  string payloadType = 1;
+  int64 clientMsgId = 2;
+  bytes payload = 3;
+}
+
+// Application authentication
+message ProtoOAApplicationAuthReq {
+  string clientId = 1;
+  string clientSecret = 2;
+}
+
+message ProtoOAApplicationAuthRes {
+  int32 ctidTraderAccountId = 1;
+}
+
+// Account authentication
+message ProtoOAAccountAuthReq {
+  int32 ctidTraderAccountId = 1;
+  string accessToken = 2;
+}
+
+message ProtoOAAccountAuthRes {
+  int32 ctidTraderAccountId = 1;
+}
+
+// Get account list
+message ProtoOAGetAccountListByAccessTokenReq {
+  string accessToken = 1;
+}
+
+message ProtoOAGetAccountListByAccessTokenRes {
+  repeated ProtoOACtidTraderAccount ctidTraderAccount = 1;
+}
+
+message ProtoOACtidTraderAccount {
+  int32 ctidTraderAccountId = 1;
+  bool isLive = 2;
+  string traderLogin = 3;
+  string currency = 4;
+  string brokerName = 5;
+  int32 depositAssetId = 6;
+  int32 leverage = 7;
+  int64 balance = 8;
+  int32 nonWithdrawableBalance = 9;
+  int32 marginCallLevel = 10;
+  int32 brokerAccountType = 11;
+  string brokerAccountName = 12;
+  int64 registrationTimestamp = 13;
+  bool isLimitedRisk = 14;
+  int32 limitedRiskMarginCalculationStrategy = 15;
+  int32 moneyDigits = 16;
+}
+
+// Symbols
+message ProtoOASymbolsListReq {
+  int32 ctidTraderAccountId = 1;
+  bool includeArchivedSymbols = 2;
+}
+
+message ProtoOASymbolsListRes {
+  int32 ctidTraderAccountId = 1;
+  repeated ProtoOALightSymbol symbol = 2;
+}
+
+message ProtoOALightSymbol {
+  int32 symbolId = 1;
+  string symbolName = 2;
+  bool enabled = 3;
+  int32 baseAssetId = 4;
+  int32 quoteAssetId = 5;
+  int32 symbolCategoryId = 6;
+  int32 digits = 7;
+  int32 baseAssetPrecision = 8;
+  int32 quoteAssetPrecision = 9;
+  int32 lotSize = 10;
+  int32 tickValue = 11;
+  int32 tickSize = 12;
+  int32 minLot = 13;
+  int32 maxLot = 14;
+  int32 stepLot = 15;
+  int32 lotStep = 16;
+  int32 maxPosition = 17;
+  int32 tradingMode = 18;
+  int32 stopOutLevel = 19;
+  int32 stopOutLevelType = 20;
+  int32 hedgingMode = 21;
+  int32 swapLong = 22;
+  int32 swapShort = 23;
+  int32 swapRollover3Days = 24;
+  int32 marginMode = 25;
+  int32 marginHedge = 26;
+  int32 marginHedgeMode = 27;
+  int32 marginCurrency = 28;
+  int32 marginCurrencyDigits = 29;
+  int32 marginCurrencyPrecision = 30;
+  int32 marginCurrencyStep = 31;
+  int32 marginCurrencyMinLot = 32;
+  int32 marginCurrencyMaxLot = 33;
+  int32 marginCurrencyStepLot = 34;
+  int32 marginCurrencyLotStep = 35;
+  int32 marginCurrencyMaxPosition = 36;
+  int32 marginCurrencyTradingMode = 37;
+  int32 marginCurrencyStopOutLevel = 38;
+  int32 marginCurrencyStopOutLevelType = 39;
+  int32 marginCurrencyHedgingMode = 40;
+  int32 marginCurrencySwapLong = 41;
+  int32 marginCurrencySwapShort = 42;
+  int32 marginCurrencySwapRollover3Days = 43;
+  int32 marginCurrencyMarginMode = 44;
+  int32 marginCurrencyMarginHedge = 45;
+  int32 marginCurrencyMarginHedgeMode = 46;
+  int32 marginCurrencyMarginCurrency = 47;
+  int32 marginCurrencyMarginCurrencyDigits = 48;
+  int32 marginCurrencyMarginCurrencyPrecision = 49;
+  int32 marginCurrencyMarginCurrencyStep = 50;
+  int32 marginCurrencyMarginCurrencyMinLot = 51;
+  int32 marginCurrencyMarginCurrencyMaxLot = 52;
+  int32 marginCurrencyMarginCurrencyStepLot = 53;
+  int32 marginCurrencyMarginCurrencyLotStep = 54;
+  int32 marginCurrencyMarginCurrencyMaxPosition = 55;
+  int32 marginCurrencyMarginCurrencyTradingMode = 56;
+  int32 marginCurrencyMarginCurrencyStopOutLevel = 57;
+  int32 marginCurrencyMarginCurrencyStopOutLevelType = 58;
+  int32 marginCurrencyMarginCurrencyHedgingMode = 59;
+  int32 marginCurrencyMarginCurrencySwapLong = 60;
+  int32 marginCurrencyMarginCurrencySwapShort = 61;
+  int32 marginCurrencyMarginCurrencySwapRollover3Days = 62;
+  int32 marginCurrencyMarginCurrencyMarginMode = 63;
+  int32 marginCurrencyMarginCurrencyMarginHedge = 64;
+  int32 marginCurrencyMarginCurrencyMarginHedgeMode = 65;
+  int32 marginCurrencyMarginCurrencyMarginCurrency = 66;
+  int32 marginCurrencyMarginCurrencyMarginCurrencyDigits = 67;
+  int32 marginCurrencyMarginCurrencyMarginCurrencyPrecision = 68;
+  int32 marginCurrencyMarginCurrencyMarginCurrencyStep = 69;
+  int32 marginCurrencyMarginCurrencyMarginCurrencyMinLot = 70;
+  int32 marginCurrencyMarginCurrencyMarginCurrencyMaxLot = 71;
+  int32 marginCurrencyMarginCurrencyMarginCurrencyStepLot = 72;
+  int32 marginCurrencyMarginCurrencyMarginCurrencyLotStep = 73;
+  int32 marginCurrencyMarginCurrencyMarginCurrencyMaxPosition = 74;
+  int32 marginCurrencyMarginCurrencyMarginCurrencyTradingMode = 75;
+  int32 marginCurrencyMarginCurrencyMarginCurrencyStopOutLevel = 76;
+  int32 marginCurrencyMarginCurrencyMarginCurrencyStopOutLevelType = 77;
+  int32 marginCurrencyMarginCurrencyMarginCurrencyHedgingMode = 78;
+  int32 marginCurrencyMarginCurrencyMarginCurrencySwapLong = 79;
+  int32 marginCurrencyMarginCurrencyMarginCurrencySwapShort = 80;
+  int32 marginCurrencyMarginCurrencyMarginCurrencySwapRollover3Days = 81;
+  int32 marginCurrencyMarginCurrencyMarginCurrencyMarginMode = 82;
+  int32 marginCurrencyMarginCurrencyMarginCurrencyMarginHedge = 83;
+  int32 marginCurrencyMarginCurrencyMarginCurrencyMarginHedgeMode = 84;
+  int32 marginCurrencyMarginCurrencyMarginCurrencyMarginCurrency = 85;
+  int32 marginCurrencyMarginCurrencyMarginCurrencyMarginCurrencyDigits = 86;
+  int32 marginCurrencyMarginCurrencyMarginCurrencyMarginCurrencyPrecision = 87;
+  int32 marginCurrencyMarginCurrencyMarginCurrencyMarginCurrencyStep = 88;
+  int32 marginCurrencyMarginCurrencyMarginCurrencyMarginCurrencyMinLot = 89;
+  int32 marginCurrencyMarginCurrencyMarginCurrencyMarginCurrencyMaxLot = 90;
+  int32 marginCurrencyMarginCurrencyMarginCurrencyMarginCurrencyStepLot = 91;
+  int32 marginCurrencyMarginCurrencyMarginCurrencyMarginCurrencyLotStep = 92;
+  int32 marginCurrencyMarginCurrencyMarginCurrencyMarginCurrencyMaxPosition = 93;
+  int32 marginCurrencyMarginCurrencyMarginCurrencyMarginCurrencyTradingMode = 94;
+  int32 marginCurrencyMarginCurrencyMarginCurrencyMarginCurrencyStopOutLevel = 95;
+  int32 marginCurrencyMarginCurrencyMarginCurrencyMarginCurrencyStopOutLevelType = 96;
+  int32 marginCurrencyMarginCurrencyMarginCurrencyMarginCurrencyHedgingMode = 97;
+  int32 marginCurrencyMarginCurrencyMarginCurrencyMarginCurrencySwapLong = 98;
+  int32 marginCurrencyMarginCurrencyMarginCurrencyMarginCurrencySwapShort = 99;
+  int32 marginCurrencyMarginCurrencyMarginCurrencyMarginCurrencySwapRollover3Days = 100;
+}
+
+// New order
+message ProtoOANewOrderReq {
+  int32 ctidTraderAccountId = 1;
+  int32 symbolId = 2;
+  int32 orderType = 3;
+  int32 tradeSide = 4;
+  int64 volume = 5;
+  int64 limitPrice = 6;
+  int64 stopPrice = 7;
+  int64 stopLoss = 8;
+  int64 takeProfit = 9;
+  int64 expirationTimestamp = 10;
+  string comment = 11;
+  int32 baseSlippagePrice = 12;
+  int32 slippageInPoints = 13;
+  int32 relativeStopLoss = 14;
+  int32 relativeTakeProfit = 15;
+  int32 isStopOut = 16;
+  int32 trailingStopLoss = 17;
+  int32 trailingStopLossStep = 18;
+  int32 trailingStopLossDistance = 19;
+  int32 trailingStopLossStepInPoints = 20;
+  int32 trailingStopLossDistanceInPoints = 21;
+  int32 trailingStopLossStepInPips = 22;
+  int32 trailingStopLossDistanceInPips = 23;
+  int32 trailingStopLossStepInTicks = 24;
+  int32 trailingStopLossDistanceInTicks = 25;
+  int32 trailingStopLossStepInPrice = 26;
+  int32 trailingStopLossDistanceInPrice = 27;
+  int32 trailingStopLossStepInPercent = 28;
+  int32 trailingStopLossDistanceInPercent = 29;
+  int32 trailingStopLossStepInPipsPercent = 30;
+  int32 trailingStopLossDistanceInPipsPercent = 31;
+  int32 trailingStopLossStepInTicksPercent = 32;
+  int32 trailingStopLossDistanceInTicksPercent = 33;
+  int32 trailingStopLossStepInPricePercent = 34;
+  int32 trailingStopLossDistanceInPricePercent = 35;
+  int32 trailingStopLossStepInPipsPercentPercent = 36;
+  int32 trailingStopLossDistanceInPipsPercentPercent = 37;
+  int32 trailingStopLossStepInTicksPercentPercent = 38;
+  int32 trailingStopLossDistanceInTicksPercentPercent = 39;
+  int32 trailingStopLossStepInPricePercentPercent = 40;
+  int32 trailingStopLossDistanceInPricePercentPercent = 41;
+  int32 trailingStopLossStepInPipsPercentPercentPercent = 42;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercent = 43;
+  int32 trailingStopLossStepInTicksPercentPercentPercent = 44;
+  int32 trailingStopLossDistanceInTicksPercentPercentPercent = 45;
+  int32 trailingStopLossStepInPricePercentPercentPercent = 46;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercent = 47;
+  int32 trailingStopLossStepInPipsPercentPercentPercentPercent = 48;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercent = 49;
+  int32 trailingStopLossStepInTicksPercentPercentPercentPercent = 50;
+  int32 trailingStopLossDistanceInTicksPercentPercentPercentPercent = 51;
+  int32 trailingStopLossStepInPricePercentPercentPercentPercent = 52;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercent = 53;
+  int32 trailingStopLossStepInPipsPercentPercentPercentPercentPercent = 54;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercent = 55;
+  int32 trailingStopLossStepInTicksPercentPercentPercentPercentPercent = 56;
+  int32 trailingStopLossDistanceInTicksPercentPercentPercentPercentPercent = 57;
+  int32 trailingStopLossStepInPricePercentPercentPercentPercentPercent = 58;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercent = 59;
+  int32 trailingStopLossStepInPipsPercentPercentPercentPercentPercentPercent = 60;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercentPercent = 61;
+  int32 trailingStopLossStepInTicksPercentPercentPercentPercentPercentPercent = 62;
+  int32 trailingStopLossDistanceInTicksPercentPercentPercentPercentPercentPercent = 63;
+  int32 trailingStopLossStepInPricePercentPercentPercentPercentPercent = 64;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercent = 65;
+  int32 trailingStopLossStepInPipsPercentPercentPercentPercentPercentPercent = 66;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercentPercent = 67;
+  int32 trailingStopLossStepInTicksPercentPercentPercentPercentPercentPercent = 68;
+  int32 trailingStopLossDistanceInTicksPercentPercentPercentPercentPercentPercent = 69;
+  int32 trailingStopLossStepInPricePercentPercentPercentPercentPercent = 70;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercent = 71;
+  int32 trailingStopLossStepInPipsPercentPercentPercentPercentPercentPercent = 72;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercentPercent = 73;
+  int32 trailingStopLossStepInTicksPercentPercentPercentPercentPercentPercent = 74;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercentPercent = 75;
+  int32 trailingStopLossStepInPricePercentPercentPercentPercentPercent = 76;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercent = 77;
+  int32 trailingStopLossStepInPipsPercentPercentPercentPercentPercentPercent = 78;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercentPercent = 79;
+  int32 trailingStopLossStepInTicksPercentPercentPercentPercentPercentPercent = 80;
+  int32 trailingStopLossDistanceInTicksPercentPercentPercentPercentPercentPercent = 81;
+  int32 trailingStopLossStepInPricePercentPercentPercentPercentPercent = 82;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercent = 83;
+  int32 trailingStopLossStepInPipsPercentPercentPercentPercentPercentPercent = 84;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercentPercent = 85;
+  int32 trailingStopLossStepInTicksPercentPercentPercentPercentPercentPercent = 86;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercentPercent = 87;
+  int32 trailingStopLossStepInTicksPercentPercentPercentPercentPercentPercent = 88;
+  int32 trailingStopLossDistanceInTicksPercentPercentPercentPercentPercentPercent = 89;
+  int32 trailingStopLossStepInPricePercentPercentPercentPercentPercent = 90;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercent = 91;
+  int32 trailingStopLossStepInPipsPercentPercentPercentPercentPercentPercent = 92;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercentPercent = 93;
+  int32 trailingStopLossStepInTicksPercentPercentPercentPercentPercentPercent = 94;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercentPercent = 95;
+  int32 trailingStopLossStepInPricePercentPercentPercentPercentPercent = 96;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercent = 97;
+  int32 trailingStopLossStepInPipsPercentPercentPercentPercentPercentPercent = 98;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercentPercent = 99;
+  int32 trailingStopLossStepInTicksPercentPercentPercentPercentPercentPercent = 100;
+}
+
+message ProtoOANewOrderRes {
+  int32 ctidTraderAccountId = 1;
+  int64 orderId = 2;
+  int32 symbolId = 3;
+  int32 orderType = 4;
+  int32 tradeSide = 5;
+  int64 volume = 6;
+  int64 limitPrice = 7;
+  int64 stopPrice = 8;
+  int64 stopLoss = 9;
+  int64 takeProfit = 10;
+  int64 expirationTimestamp = 11;
+  string comment = 12;
+  int32 baseSlippagePrice = 13;
+  int32 slippageInPoints = 14;
+  int32 relativeStopLoss = 15;
+  int32 relativeTakeProfit = 16;
+  int32 isStopOut = 17;
+  int32 trailingStopLoss = 18;
+  int32 trailingStopLossStep = 19;
+  int32 trailingStopLossDistance = 20;
+  int32 trailingStopLossStepInPoints = 21;
+  int32 trailingStopLossDistanceInPoints = 22;
+  int32 trailingStopLossStepInPips = 23;
+  int32 trailingStopLossDistanceInPips = 24;
+  int32 trailingStopLossStepInTicks = 25;
+  int32 trailingStopLossDistanceInTicks = 26;
+  int32 trailingStopLossStepInPrice = 27;
+  int32 trailingStopLossDistanceInPrice = 28;
+  int32 trailingStopLossStepInPercent = 29;
+  int32 trailingStopLossDistanceInPercent = 30;
+  int32 trailingStopLossStepInPipsPercent = 31;
+  int32 trailingStopLossDistanceInPipsPercent = 32;
+  int32 trailingStopLossStepInTicksPercent = 33;
+  int32 trailingStopLossDistanceInTicksPercent = 34;
+  int32 trailingStopLossStepInPricePercent = 35;
+  int32 trailingStopLossDistanceInPricePercent = 36;
+  int32 trailingStopLossStepInPipsPercentPercent = 37;
+  int32 trailingStopLossDistanceInPipsPercentPercent = 38;
+  int32 trailingStopLossStepInTicksPercentPercent = 39;
+  int32 trailingStopLossDistanceInTicksPercentPercent = 40;
+  int32 trailingStopLossStepInPricePercentPercent = 41;
+  int32 trailingStopLossDistanceInPricePercentPercent = 42;
+  int32 trailingStopLossStepInPipsPercentPercentPercent = 43;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercent = 44;
+  int32 trailingStopLossStepInTicksPercentPercentPercent = 45;
+  int32 trailingStopLossDistanceInTicksPercentPercentPercent = 46;
+  int32 trailingStopLossStepInPricePercentPercentPercent = 47;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercent = 48;
+  int32 trailingStopLossStepInPipsPercentPercentPercentPercent = 49;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercent = 50;
+  int32 trailingStopLossStepInTicksPercentPercentPercentPercent = 51;
+  int32 trailingStopLossDistanceInTicksPercentPercentPercentPercent = 52;
+  int32 trailingStopLossStepInPricePercentPercentPercentPercent = 53;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercent = 54;
+  int32 trailingStopLossStepInPipsPercentPercentPercentPercentPercent = 55;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercent = 56;
+  int32 trailingStopLossStepInTicksPercentPercentPercentPercentPercent = 57;
+  int32 trailingStopLossDistanceInTicksPercentPercentPercentPercentPercent = 58;
+  int32 trailingStopLossStepInPricePercentPercentPercentPercentPercent = 59;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercent = 60;
+  int32 trailingStopLossStepInPipsPercentPercentPercentPercentPercentPercent = 61;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercentPercent = 62;
+  int32 trailingStopLossStepInTicksPercentPercentPercentPercentPercentPercent = 63;
+  int32 trailingStopLossStepInPricePercentPercentPercentPercentPercent = 64;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercent = 65;
+  int32 trailingStopLossStepInPipsPercentPercentPercentPercentPercentPercent = 66;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercentPercent = 67;
+  int32 trailingStopLossStepInTicksPercentPercentPercentPercentPercentPercent = 68;
+  int32 trailingStopLossDistanceInTicksPercentPercentPercentPercentPercentPercent = 69;
+  int32 trailingStopLossStepInPricePercentPercentPercentPercentPercent = 70;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercent = 71;
+  int32 trailingStopLossStepInPipsPercentPercentPercentPercentPercentPercent = 72;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercentPercent = 73;
+  int32 trailingStopLossStepInTicksPercentPercentPercentPercentPercentPercent = 74;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercentPercent = 75;
+  int32 trailingStopLossStepInPricePercentPercentPercentPercentPercent = 76;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercent = 77;
+  int32 trailingStopLossStepInPipsPercentPercentPercentPercentPercentPercent = 78;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercentPercent = 79;
+  int32 trailingStopLossStepInTicksPercentPercentPercentPercentPercentPercent = 80;
+  int32 trailingStopLossDistanceInTicksPercentPercentPercentPercentPercentPercent = 81;
+  int32 trailingStopLossStepInPricePercentPercentPercentPercentPercent = 82;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercent = 83;
+  int32 trailingStopLossStepInPipsPercentPercentPercentPercentPercentPercent = 84;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercentPercent = 85;
+  int32 trailingStopLossStepInTicksPercentPercentPercentPercentPercentPercent = 86;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercentPercent = 87;
+  int32 trailingStopLossStepInTicksPercentPercentPercentPercentPercentPercent = 88;
+  int32 trailingStopLossDistanceInTicksPercentPercentPercentPercentPercentPercent = 89;
+  int32 trailingStopLossStepInPricePercentPercentPercentPercentPercent = 90;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercent = 91;
+  int32 trailingStopLossStepInPipsPercentPercentPercentPercentPercentPercent = 92;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercentPercent = 93;
+  int32 trailingStopLossStepInTicksPercentPercentPercentPercentPercentPercent = 94;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercentPercent = 95;
+  int32 trailingStopLossStepInPricePercentPercentPercentPercentPercent = 96;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercent = 97;
+  int32 trailingStopLossStepInPipsPercentPercentPercentPercentPercentPercent = 98;
+  int32 trailingStopLossDistanceInPipsPercentPercentPercentPercentPercentPercent = 99;
+  int32 trailingStopLossStepInTicksPercentPercentPercentPercentPercentPercent = 100;
+}

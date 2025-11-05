@@ -24,18 +24,18 @@ def patch_apscheduler_timezone():
     try:
         # Import apscheduler.util early and patch astimezone
         from apscheduler import util as apscheduler_util
-        
+
         # Save original function
         original_astimezone = apscheduler_util.astimezone
-        
+
         def patched_astimezone(tz):
             """Patched astimezone that converts zoneinfo to pytz"""
             if tz is None:
                 return pytz.UTC
-            # If already pytz, return as-is
+                # If already pytz, return as-is
             if isinstance(tz, pytz.BaseTzInfo):
                 return tz
-            # Convert zoneinfo to pytz if needed
+                # Convert zoneinfo to pytz if needed
             try:
                 if hasattr(tz, 'key'):  # zoneinfo.ZoneInfo has a 'key' attribute
                     return pytz.timezone(tz.key)
@@ -43,7 +43,7 @@ def patch_apscheduler_timezone():
                 pass
             # Fallback to UTC
             return pytz.UTC
-        
+
         # Replace the function
         apscheduler_util.astimezone = patched_astimezone
     except (ImportError, AttributeError):
@@ -229,7 +229,7 @@ def get_real_index_price(pair):
                         return float(price)
             except:
                 pass
-            
+
             # Try another source - using Alpha Vantage or similar
             # For now, return None if API fails (can be improved with actual API)
             print(f"❌ Could not get USOIL price - API not configured")
@@ -246,12 +246,12 @@ def get_real_index_price(pair):
                         return float(price)
             except:
                 pass
-            
+
             print(f"❌ Could not get BRENT price - API not configured")
             return None
-        
+
         return None
-        
+
     except Exception as e:
         print(f"❌ Error getting index price for {pair}: {e}")
         return None
@@ -341,12 +341,12 @@ def save_channel_last_signal_time(channel_id):
             data = json.load(f)
     except:
         data = {"channel_times": {}}
-    
+
     if "channel_times" not in data:
         data["channel_times"] = {}
-    
+
     data["channel_times"][channel_id] = current_time.isoformat()
-    
+
     with open(CHANNEL_LAST_SIGNAL_FILE, 'w') as f:
         json.dump(data, f, indent=2)
 
@@ -357,32 +357,32 @@ def can_send_signal_now(channel_id=None):
     - 2 hours since last signal from SAME channel (if channel_id provided)
     """
     current_time = datetime.now(timezone.utc)
-    
+
     # Check 5 minutes between different channels
     last_time = get_last_signal_time()
     if last_time is not None:
         time_diff = (current_time - last_time).total_seconds()
         min_interval_seconds = 5 * 60  # 5 minutes minimum between signals from different channels
-        
+
         if time_diff < min_interval_seconds:
             remaining_seconds = min_interval_seconds - time_diff
             remaining_minutes = remaining_seconds / 60
             print(f"⏰ Minimum 5-minute interval between channels not met. Wait {remaining_minutes:.1f} more minutes.")
             return False
-    
-    # Check 2 hours between same channel (if channel_id provided)
+
+            # Check 2 hours between same channel (if channel_id provided)
     if channel_id is not None:
         channel_last_time = get_channel_last_signal_time(channel_id)
         if channel_last_time is not None:
             time_diff = (current_time - channel_last_time).total_seconds()
             min_channel_interval_seconds = 2 * 60 * 60  # 2 hours minimum between signals from same channel
-            
+
             if time_diff < min_channel_interval_seconds:
                 remaining_seconds = min_channel_interval_seconds - time_diff
                 remaining_hours = remaining_seconds / 3600
                 print(f"⏰ Minimum 2-hour interval for this channel not met. Wait {remaining_hours:.2f} more hours.")
                 return False
-    
+
     return True
 
 
@@ -599,23 +599,23 @@ def save_channel_signal(channel_id, signal_data):
     """Save a signal to channel-specific file"""
     signals_file = CHANNEL_SIGNALS.get(channel_id, f"signals_{channel_id}.json")
     signals = load_channel_signals(channel_id)
-    
+
     # Add signal with metadata
     signal_entry = {
         **signal_data,
         "channel_id": channel_id,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
-    
+
     signals.append(signal_entry)
-    
+
     # Save to file
     data = {
         "channel_id": channel_id,
         "signals": signals,
         "last_updated": datetime.now(timezone.utc).isoformat()
     }
-    
+
     with open(signals_file, 'w') as f:
         json.dump(data, f, indent=2)
 
@@ -624,7 +624,7 @@ def save_channel_result(channel_id, result_data):
     """Save a result to channel-specific file with improved tracking"""
     results_file = CHANNEL_RESULTS.get(channel_id, f"results_{channel_id}.json")
     results = load_channel_results(channel_id)
-    
+
     # Check if we already have a result for this signal timestamp
     signal_timestamp = result_data.get("timestamp", "")
     existing_idx = None
@@ -632,12 +632,12 @@ def save_channel_result(channel_id, result_data):
         if existing.get("timestamp") == signal_timestamp:
             existing_idx = idx
             break
-    
+
     if existing_idx is not None:
         # Update existing result - apply logic: if TP hit then SL hit, keep the TP
         existing_result = results[existing_idx]
         new_hit_type = result_data.get("hit_type", "")
-        
+
         # Logic: If TP was hit and now SL hit, keep the TP
         if existing_result.get("hit_type", "").startswith("TP") and new_hit_type == "SL":
             # Keep the TP result, don't update
@@ -654,7 +654,7 @@ def save_channel_result(channel_id, result_data):
     else:
         # New result
         results.append(result_data)
-    
+
     with open(results_file, 'w') as f:
         json.dump(results, f, indent=2)
 
@@ -685,61 +685,63 @@ async def check_and_notify_tp_hits():
             if current_price is None:
                 continue
             
-            # Check for SL first (priority)
+                # Check for SL first (priority)
             sl_hit = False
             if signal_type == "BUY" and current_price <= sl:
-                sl_hit = True
+                    sl_hit = True
             elif signal_type == "SELL" and current_price >= sl:
-                sl_hit = True
-            
-            # Check for TP hits based on pair type (only if SL not hit)
+                    sl_hit = True
+
+                # Check for TP hits based on pair type (only if SL not hit)
             tp_hit = None
             profit_percent = 0
             
             if not sl_hit:
-            if pair == "XAUUSD":
-                # XAUUSD: Single TP
-                tp = signal.get("tp", 0)
-                if signal_type == "BUY" and current_price >= tp:
-                    tp_hit = "TP"
-                    profit_percent = ((tp - entry) / entry) * 100
-                elif signal_type == "SELL" and current_price <= tp:
-                    tp_hit = "TP"
-                    profit_percent = ((entry - tp) / entry) * 100
-            else:
-                # Main forex pairs: 2 TPs
-                tp1 = signal.get("tp1", 0)
-                tp2 = signal.get("tp2", 0)
-                
-                if signal_type == "BUY":
-                    if current_price >= tp2:
-                        tp_hit = "TP2"
-                        profit_percent = ((tp2 - entry) / entry) * 100
-                    elif current_price >= tp1:
-                        tp_hit = "TP1"
-                        profit_percent = ((tp1 - entry) / entry) * 100
-                else:  # SELL
-                    if current_price <= tp2:
-                        tp_hit = "TP2"
-                        profit_percent = ((entry - tp2) / entry) * 100
-                    elif current_price <= tp1:
-                        tp_hit = "TP1"
-                        profit_percent = ((entry - tp1) / entry) * 100
+
             
-            # Process SL hit
+                if pair == "XAUUSD":
+                    # XAUUSD: Single TP
+                    tp = signal.get("tp", 0)
+                    if signal_type == "BUY" and current_price >= tp:
+                        tp_hit = "TP"
+                        profit_percent = ((tp - entry) / entry) * 100
+                    elif signal_type == "SELL" and current_price <= tp:
+                        tp_hit = "TP"
+                        profit_percent = ((entry - tp) / entry) * 100
+                else:
+                    # Main forex pairs: 2 TPs
+                    tp1 = signal.get("tp1", 0)
+                    tp2 = signal.get("tp2", 0)
+                    
+                    if signal_type == "BUY":
+                        if current_price >= tp2:
+                            tp_hit = "TP2"
+                            profit_percent = ((tp2 - entry) / entry) * 100
+                        elif current_price >= tp1:
+                            tp_hit = "TP1"
+                            profit_percent = ((tp1 - entry) / entry) * 100
+                    else:  # SELL
+                        if current_price <= tp2:
+                            tp_hit = "TP2"
+                            profit_percent = ((entry - tp2) / entry) * 100
+                        elif current_price <= tp1:
+                            tp_hit = "TP1"
+                            profit_percent = ((entry - tp1) / entry) * 100
+            
+                            # Process SL hit
             if sl_hit and timestamp not in notifications_sent:
                 # Calculate loss in pips for forex
                 if pair.endswith("JPY"):
                     multiplier = 1000
                 else:
                     multiplier = 10000
-                
+
                 if signal_type == "BUY":
                     loss_pips = (sl - entry) * multiplier
                 else:  # SELL
                     loss_pips = (entry - sl) * multiplier
-                
-                # Save result to channel file
+
+                    # Save result to channel file
                 result_data = {
                     "pair": pair,
                     "type": signal_type,
@@ -753,10 +755,10 @@ async def check_and_notify_tp_hits():
                     "channel": FOREX_CHANNEL
                 }
                 save_channel_result(FOREX_CHANNEL, result_data)
-                
+
                 notifications_sent.append(timestamp)
                 print(f"❌ SL hit for {pair} {signal_type}: -{abs(loss_pips):.1f} pips (saved to results file)")
-            
+
             # Process TP hit
             elif tp_hit and timestamp not in notifications_sent:
                 # Calculate profit in pips for forex
@@ -808,7 +810,7 @@ async def check_and_notify_tp_hits():
                 else:
                     message = f"#{pair}: TP1 reached 🎯💰 +{profit_pips:.1f} pips (R/R 1:{rr_ratio:.1f})"
                 
-                # Save result to channel file
+                    # Save result to channel file
                 result_data = {
                     "pair": pair,
                     "type": signal_type,
@@ -823,7 +825,7 @@ async def check_and_notify_tp_hits():
                     "channel": FOREX_CHANNEL
                 }
                 save_channel_result(FOREX_CHANNEL, result_data)
-                
+
                 await bot.send_message(chat_id=FOREX_CHANNEL, text=message, parse_mode='Markdown')
                 notifications_sent.append(timestamp)
                 print(f"✅ {tp_hit} hit notification sent for {pair} {signal_type}: +{profit_pips:.1f} pips (saved to results file)")
@@ -842,27 +844,29 @@ async def check_and_notify_tp_hits():
             if current_price is None:
                 continue
             
-            # Check for SL first (priority)
+                # Check for SL first (priority)
             sl_hit = False
             if signal_type == "BUY" and current_price <= sl:
-                sl_hit = True
+                    sl_hit = True
             elif signal_type == "SELL" and current_price >= sl:
-                sl_hit = True
-            
-            # Check for TP hits based on pair type (only if SL not hit)
+                    sl_hit = True
+
+                # Check for TP hits based on pair type (only if SL not hit)
             tp_hit = None
             profit_percent = 0
             
             if not sl_hit:
-            if pair == "XAUUSD":
-                # XAUUSD: Single TP
-                tp = signal.get("tp", 0)
-                if signal_type == "BUY" and current_price >= tp:
-                    tp_hit = "TP"
-                    profit_percent = ((tp - entry) / entry) * 100
-                elif signal_type == "SELL" and current_price <= tp:
-                    tp_hit = "TP"
-                    profit_percent = ((entry - tp) / entry) * 100
+
+            
+                if pair == "XAUUSD":
+                    # XAUUSD: Single TP
+                    tp = signal.get("tp", 0)
+                    if signal_type == "BUY" and current_price >= tp:
+                        tp_hit = "TP"
+                        profit_percent = ((tp - entry) / entry) * 100
+                    elif signal_type == "SELL" and current_price <= tp:
+                        tp_hit = "TP"
+                        profit_percent = ((entry - tp) / entry) * 100
             else:
                 # Main forex pairs: 2 TPs
                 tp1 = signal.get("tp1", 0)
@@ -883,20 +887,20 @@ async def check_and_notify_tp_hits():
                         tp_hit = "TP1"
                         profit_percent = ((entry - tp1) / entry) * 100
             
-            # Process SL hit
+                        # Process SL hit
             if sl_hit and timestamp not in notifications_sent:
                 # Calculate loss in pips for forex additional
                 if pair.endswith("JPY"):
                     multiplier = 1000
                 else:
                     multiplier = 10000
-                
+
                 if signal_type == "BUY":
                     loss_pips = (sl - entry) * multiplier
                 else:  # SELL
                     loss_pips = (entry - sl) * multiplier
-                
-                # Save result to channel file
+
+                    # Save result to channel file
                 result_data = {
                     "pair": pair,
                     "type": signal_type,
@@ -910,10 +914,10 @@ async def check_and_notify_tp_hits():
                     "channel": FOREX_CHANNEL_ADDITIONAL
                 }
                 save_channel_result(FOREX_CHANNEL_ADDITIONAL, result_data)
-                
+
                 notifications_sent.append(timestamp)
                 print(f"❌ SL hit for additional {pair} {signal_type}: -{abs(loss_pips):.1f} pips (saved to results file)")
-            
+
             # Process TP hit
             elif tp_hit and timestamp not in notifications_sent:
                 # Calculate profit in pips for forex additional
@@ -965,7 +969,7 @@ async def check_and_notify_tp_hits():
                 else:
                     message = f"#{pair}: TP1 reached 🎯💰 +{profit_pips:.1f} pips (R/R 1:{rr_ratio:.1f})"
                 
-                # Save result to channel file
+                    # Save result to channel file
                 result_data = {
                     "pair": pair,
                     "type": signal_type,
@@ -980,7 +984,7 @@ async def check_and_notify_tp_hits():
                     "channel": FOREX_CHANNEL_ADDITIONAL
                 }
                 save_channel_result(FOREX_CHANNEL_ADDITIONAL, result_data)
-                
+
                 await bot.send_message(chat_id=FOREX_CHANNEL_ADDITIONAL, text=message, parse_mode='Markdown')
                 notifications_sent.append(timestamp)
                 print(f"✅ {tp_hit} hit notification sent for additional {pair} {signal_type}: +{profit_pips:.1f} pips (saved to results file)")
@@ -1002,70 +1006,70 @@ async def check_and_notify_tp_hits():
             if current_price is None:
                 continue
             
-            # Check for SL first (priority)
+                # Check for SL first (priority)
             sl_hit = False
             if signal_type == "BUY" and current_price <= sl:
-                sl_hit = True
+                    sl_hit = True
             elif signal_type == "SELL" and current_price >= sl:
-                sl_hit = True
-            
-            # Check for TP hits (only if SL not hit)
+                    sl_hit = True
+
+                # Check for TP hits (only if SL not hit)
             tp_hit = None
             profit_percent = 0
             
             if not sl_hit:
-            if signal_type == "BUY":
-                if current_price >= tp3:
-                    tp_hit = "TP3"
-                    profit_percent = ((tp3 - entry) / entry) * 100
-                elif current_price >= tp2:
-                    tp_hit = "TP2"
-                    profit_percent = ((tp2 - entry) / entry) * 100
-                elif current_price >= tp1:
-                    tp_hit = "TP1"
-                    profit_percent = ((tp1 - entry) / entry) * 100
-            else:  # SELL
-                if current_price <= tp3:
-                    tp_hit = "TP3"
-                    profit_percent = ((entry - tp3) / entry) * 100
-                elif current_price <= tp2:
-                    tp_hit = "TP2"
-                    profit_percent = ((entry - tp2) / entry) * 100
-                elif current_price <= tp1:
-                    tp_hit = "TP1"
-                    profit_percent = ((entry - tp1) / entry) * 100
-            
-            # Process SL hit
-            if sl_hit and timestamp not in notifications_sent:
-                # Calculate loss in pips for forex 3TP
-                if pair.endswith("JPY"):
-                    multiplier = 1000
-                else:
-                    multiplier = 10000
-                
                 if signal_type == "BUY":
-                    loss_pips = (sl - entry) * multiplier
+                    if current_price >= tp3:
+                        tp_hit = "TP3"
+                        profit_percent = ((tp3 - entry) / entry) * 100
+                    elif current_price >= tp2:
+                        tp_hit = "TP2"
+                        profit_percent = ((tp2 - entry) / entry) * 100
+                    elif current_price >= tp1:
+                        tp_hit = "TP1"
+                        profit_percent = ((tp1 - entry) / entry) * 100
                 else:  # SELL
-                    loss_pips = (entry - sl) * multiplier
-                
-                # Save result to channel file
-                result_data = {
-                    "pair": pair,
-                    "type": signal_type,
-                    "entry": entry,
-                    "sl": sl,
-                    "hit_type": "SL",
-                    "current_price": current_price,
-                    "loss_pips": loss_pips,
-                    "timestamp": timestamp,
-                    "hit_time": datetime.now(timezone.utc).isoformat(),
-                    "channel": FOREX_CHANNEL_3TP
-                }
-                save_channel_result(FOREX_CHANNEL_3TP, result_data)
-                
-                notifications_sent.append(timestamp)
-                print(f"❌ SL hit for 3TP {pair} {signal_type}: -{abs(loss_pips):.1f} pips (saved to results file)")
+                    if current_price <= tp3:
+                        tp_hit = "TP3"
+                        profit_percent = ((entry - tp3) / entry) * 100
+                    elif current_price <= tp2:
+                        tp_hit = "TP2"
+                        profit_percent = ((entry - tp2) / entry) * 100
+                    elif current_price <= tp1:
+                        tp_hit = "TP1"
+                        profit_percent = ((entry - tp1) / entry) * 100
             
+                    # Process SL hit
+                    if sl_hit and timestamp not in notifications_sent:
+                        # Calculate loss in pips for forex 3TP
+                        if pair.endswith("JPY"):
+                            multiplier = 1000
+                        else:
+                            multiplier = 10000
+
+                        if signal_type == "BUY":
+                            loss_pips = (sl - entry) * multiplier
+                        else:  # SELL
+                            loss_pips = (entry - sl) * multiplier
+
+                        # Save result to channel file
+                        result_data = {
+                            "pair": pair,
+                            "type": signal_type,
+                            "entry": entry,
+                            "sl": sl,
+                            "hit_type": "SL",
+                            "current_price": current_price,
+                            "loss_pips": loss_pips,
+                            "timestamp": timestamp,
+                            "hit_time": datetime.now(timezone.utc).isoformat(),
+                            "channel": FOREX_CHANNEL_3TP
+                        }
+                        save_channel_result(FOREX_CHANNEL_3TP, result_data)
+
+                        notifications_sent.append(timestamp)
+                        print(f"❌ SL hit for 3TP {pair} {signal_type}: -{abs(loss_pips):.1f} pips (saved to results file)")
+
             # Process TP hit
             elif tp_hit and timestamp not in notifications_sent:
                 # Calculate profit in pips for forex 3TP
@@ -1099,7 +1103,7 @@ async def check_and_notify_tp_hits():
                 else:  # TP1
                     message = f"📈 {pair} {signal_type} - TP1 reached! +{profit_pips:.1f} pips (R/R 1:{rr_ratio:.1f})"
                 
-                # Save result to channel file
+                    # Save result to channel file
                 result_data = {
                     "pair": pair,
                     "type": signal_type,
@@ -1114,7 +1118,7 @@ async def check_and_notify_tp_hits():
                     "channel": FOREX_CHANNEL_3TP
                 }
                 save_channel_result(FOREX_CHANNEL_3TP, result_data)
-                
+
                 await bot.send_message(chat_id=FOREX_CHANNEL_3TP, text=message, parse_mode='Markdown')
                 notifications_sent.append(timestamp)
                 print(f"✅ {tp_hit} hit notification sent for {pair} {signal_type}: +{profit_pips:.1f} pips (saved to results file)")
@@ -1136,49 +1140,49 @@ async def check_and_notify_tp_hits():
             if current_price is None:
                 continue
             
-            # Check for SL first (priority)
+                # Check for SL first (priority)
             sl_hit = False
             if signal_type == "BUY" and current_price <= sl:
-                sl_hit = True
+                    sl_hit = True
             elif signal_type == "SELL" and current_price >= sl:
-                sl_hit = True
-            
-            # Check for TP hits (only if SL not hit)
+                    sl_hit = True
+
+                # Check for TP hits (only if SL not hit)
             tp_hit = None
             profit_percent = 0
             
             if not sl_hit:
-            if signal_type == "BUY":
-                if current_price >= tp3:
-                    tp_hit = "TP3"
-                    profit_percent = ((tp3 - entry) / entry) * 100
-                elif current_price >= tp2:
-                    tp_hit = "TP2"
-                    profit_percent = ((tp2 - entry) / entry) * 100
-                elif current_price >= tp1:
-                    tp_hit = "TP1"
-                    profit_percent = ((tp1 - entry) / entry) * 100
-            else:  # SELL
-                if current_price <= tp3:
-                    tp_hit = "TP3"
-                    profit_percent = ((entry - tp3) / entry) * 100
-                elif current_price <= tp2:
-                    tp_hit = "TP2"
-                    profit_percent = ((entry - tp2) / entry) * 100
-                elif current_price <= tp1:
-                    tp_hit = "TP1"
-                    profit_percent = ((entry - tp1) / entry) * 100
-            
-            # Process SL hit
-            if sl_hit and timestamp not in notifications_sent:
-                # Calculate loss percentage for crypto
                 if signal_type == "BUY":
-                    loss_percent = ((sl - entry) / entry) * 100
+                    if current_price >= tp3:
+                        tp_hit = "TP3"
+                        profit_percent = ((tp3 - entry) / entry) * 100
+                    elif current_price >= tp2:
+                        tp_hit = "TP2"
+                        profit_percent = ((tp2 - entry) / entry) * 100
+                    elif current_price >= tp1:
+                        tp_hit = "TP1"
+                        profit_percent = ((tp1 - entry) / entry) * 100
                 else:  # SELL
-                    loss_percent = ((entry - sl) / entry) * 100
-                
-                # Save result to both crypto channel files
-                result_data_lingrid = {
+                    if current_price <= tp3:
+                        tp_hit = "TP3"
+                        profit_percent = ((entry - tp3) / entry) * 100
+                    elif current_price <= tp2:
+                        tp_hit = "TP2"
+                        profit_percent = ((entry - tp2) / entry) * 100
+                    elif current_price <= tp1:
+                        tp_hit = "TP1"
+                        profit_percent = ((entry - tp1) / entry) * 100
+            
+                    # Process SL hit
+                    if sl_hit and timestamp not in notifications_sent:
+                        # Calculate loss percentage for crypto
+                        if signal_type == "BUY":
+                            loss_percent = ((sl - entry) / entry) * 100
+                        else:  # SELL
+                            loss_percent = ((entry - sl) / entry) * 100
+
+                    # Save result to both crypto channel files
+                    result_data_lingrid = {
                     "pair": pair,
                     "type": signal_type,
                     "entry": entry,
@@ -1192,13 +1196,13 @@ async def check_and_notify_tp_hits():
                 }
                 result_data_gainmuse = result_data_lingrid.copy()
                 result_data_gainmuse["channel"] = CRYPTO_CHANNEL_GAINMUSE
-                
+
                 save_channel_result(CRYPTO_CHANNEL_LINGRID, result_data_lingrid)
                 save_channel_result(CRYPTO_CHANNEL_GAINMUSE, result_data_gainmuse)
-                
+
                 notifications_sent.append(timestamp)
                 print(f"❌ SL hit for {pair} {signal_type}: -{abs(loss_percent):.2f}% (saved to results files)")
-            
+
             # Process TP hit
             elif tp_hit and timestamp not in notifications_sent:
                 # Calculate R/R ratio for crypto
@@ -1217,7 +1221,7 @@ async def check_and_notify_tp_hits():
                 else:
                     message = f"#{pair}: TP{tp_hit[-1]} reached ⚡️ +{profit_percent:.1f}% (R/R 1:{rr_ratio:.1f})"
                 
-                # Save result to both crypto channel files
+                    # Save result to both crypto channel files
                 result_data_lingrid = {
                     "pair": pair,
                     "type": signal_type,
@@ -1233,10 +1237,10 @@ async def check_and_notify_tp_hits():
                 }
                 result_data_gainmuse = result_data_lingrid.copy()
                 result_data_gainmuse["channel"] = CRYPTO_CHANNEL_GAINMUSE
-                
+
                 save_channel_result(CRYPTO_CHANNEL_LINGRID, result_data_lingrid)
                 save_channel_result(CRYPTO_CHANNEL_GAINMUSE, result_data_gainmuse)
-                
+
                 await bot.send_message(chat_id=CRYPTO_CHANNEL_LINGRID, text=message, parse_mode='Markdown')
                 await bot.send_message(chat_id=CRYPTO_CHANNEL_GAINMUSE, text=message, parse_mode='Markdown')
                 notifications_sent.append(timestamp)
@@ -1257,23 +1261,23 @@ async def check_and_notify_tp_hits():
             if current_price is None:
                 continue
             
-            # Check for SL first (priority)
+                # Check for SL first (priority)
             sl_hit = False
             if signal_type == "BUY" and current_price <= sl:
-                sl_hit = True
+                    sl_hit = True
             elif signal_type == "SELL" and current_price >= sl:
-                sl_hit = True
-            
-            # Check for TP hit (only if SL not hit)
+                    sl_hit = True
+
+                # Check for TP hit (only if SL not hit)
             tp_hit = False
             profit_percent = 0
             if not sl_hit:
-            if signal_type == "BUY" and current_price >= tp:
-                tp_hit = True
-                profit_percent = ((tp - entry) / entry) * 100
-            elif signal_type == "SELL" and current_price <= tp:
-                tp_hit = True
-                profit_percent = ((entry - tp) / entry) * 100
+                if signal_type == "BUY" and current_price >= tp:
+                    tp_hit = True
+                    profit_percent = ((tp - entry) / entry) * 100
+                elif signal_type == "SELL" and current_price <= tp:
+                    tp_hit = True
+                    profit_percent = ((entry - tp) / entry) * 100
             
             # Process SL hit
             if sl_hit and timestamp not in notifications_sent:
@@ -1282,14 +1286,14 @@ async def check_and_notify_tp_hits():
                     multiplier = 1000
                 else:
                     multiplier = 10000
-                
+
                 if signal_type == "BUY":
                     loss_pips = (sl - entry) * multiplier
                 else:  # SELL
                     loss_pips = (entry - sl) * multiplier
-                
-                # Save result to channel file
-                result_data = {
+
+                    # Save result to channel file
+                    result_data = {
                     "pair": pair,
                     "type": signal_type,
                     "entry": entry,
@@ -1300,35 +1304,35 @@ async def check_and_notify_tp_hits():
                     "timestamp": timestamp,
                     "hit_time": datetime.now(timezone.utc).isoformat(),
                     "channel": "-1001286609636"
-                }
-                save_channel_result("-1001286609636", result_data)
-                
-                notifications_sent.append(timestamp)
-                print(f"❌ SL hit for forwarded {pair} {signal_type}: -{abs(loss_pips):.1f} pips (saved to results file)")
-            
-            # Process TP hit
+                    }
+                    save_channel_result("-1001286609636", result_data)
+
+                    notifications_sent.append(timestamp)
+                    print(f"❌ SL hit for forwarded {pair} {signal_type}: -{abs(loss_pips):.1f} pips (saved to results file)")
+
+                    # Process TP hit
             elif tp_hit and timestamp not in notifications_sent:
                 # Calculate profit in pips for forwarded forex
                 if pair.endswith("JPY"):
                     multiplier = 1000
                 else:
                     multiplier = 10000
-                
+
                 if signal_type == "BUY":
                     profit_pips = (tp - entry) * multiplier
                 else:  # SELL
                     profit_pips = (entry - tp) * multiplier
-                
-                # Calculate R/R ratio
+
+                    # Calculate R/R ratio
                 if signal_type == "BUY":
                     risk_pips = ((entry - sl) / entry) * 100
                     reward_pips = ((tp - entry) / entry) * 100
                 else:  # SELL
                     risk_pips = ((sl - entry) / entry) * 100
                     reward_pips = ((entry - tp) / entry) * 100
-                
+
                 rr_ratio = reward_pips / risk_pips if risk_pips > 0 else 0
-                
+
                 # Send TP hit notification to the forwarded channel (-1001286609636)
                 message = f"🎯 **TP HIT!**\n\n"
                 message += f"**{pair} {signal_type}**\n"
@@ -1337,7 +1341,7 @@ async def check_and_notify_tp_hits():
                 message += f"Current: {current_price:,.5f}\n"
                 message += f"**Profit: +{profit_pips:.1f} pips**\n\n"
                 message += f"⏰ Time: {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"
-                
+
                 # Save result to channel file
                 result_data = {
                     "pair": pair,
@@ -1434,7 +1438,7 @@ def generate_forex_signal():
             sl_distance = sl_pips / 10000
             tp1_distance = tp1_pips / 10000
             tp2_distance = tp2_pips / 10000
-        
+
         if signal_type == "BUY":
             sl = round(entry - sl_distance, 5)
             tp1 = round(entry + tp1_distance, 5)
@@ -1523,7 +1527,7 @@ def generate_forex_additional_signal():
             sl_distance = sl_pips / 10000
             tp1_distance = tp1_pips / 10000
             tp2_distance = tp2_pips / 10000
-        
+
         if signal_type == "BUY":
             sl = round(entry - sl_distance, 5)
             tp1 = round(entry + tp1_distance, 5)
@@ -1613,7 +1617,7 @@ def generate_forex_3tp_signal():
             tp1_distance = tp1_pips / 10000
             tp2_distance = tp2_pips / 10000
             tp3_distance = tp3_pips / 10000
-        
+
         if signal_type == "BUY":
             sl = round(entry - sl_distance, 5)
             tp1 = round(entry + tp1_distance, 5)
@@ -1641,12 +1645,12 @@ def get_all_active_pairs_across_channels():
     """Get all active pairs across all channels to prevent duplicates"""
     signals = load_signals()
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    
+
     if signals.get("date") != today:
         return set()
-    
+
     active_pairs = set()
-    
+
     # Add pairs from forex channels
     for signal in signals.get("forex", []):
         active_pairs.add(signal.get("pair"))
@@ -1654,18 +1658,18 @@ def get_all_active_pairs_across_channels():
         active_pairs.add(signal.get("pair"))
     for signal in signals.get("forex_additional", []):
         active_pairs.add(signal.get("pair"))
-    
+
     # Add pairs from crypto channels
     # Check both crypto channels
     for signal in signals.get("crypto_lingrid", []):
         active_pairs.add(signal.get("pair"))
     for signal in signals.get("crypto_gainmuse", []):
         active_pairs.add(signal.get("pair"))
-    
+
     # Add pairs from indexes channel
     for signal in signals.get("indexes", []):
         active_pairs.add(signal.get("pair"))
-    
+
     return active_pairs
 
 
@@ -1691,8 +1695,8 @@ def generate_crypto_signal(channel="lingrid"):
             crypto_signals = signals.get("crypto_lingrid", [])
         else:
             crypto_signals = signals.get("crypto_gainmuse", [])
-    
-    # Filter out pairs that already have active signals in ANY channel
+
+            # Filter out pairs that already have active signals in ANY channel
     available_pairs = [pair for pair in CRYPTO_PAIRS if pair not in active_crypto_pairs]
     
     if not available_pairs:
@@ -1744,49 +1748,49 @@ def generate_index_signal():
     """Generate an index signal (USOIL, BRENT, or XAUUSD) - only Buy now signals"""
     # Get all active pairs across all channels to ensure uniqueness
     all_active_pairs = get_all_active_pairs_across_channels()
-    
+
     # Check for active signals in indexes channel specifically
     signals = load_signals()
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    
+
     if signals.get("date") != today:
         active_index_pairs = []
     else:
         active_index_pairs = [s["pair"] for s in signals.get("indexes", [])]
-    
-    # Filter out pairs that are already active in indexes channel
-    # Also exclude pairs that are active in other channels (for uniqueness)
+
+        # Filter out pairs that are already active in indexes channel
+        # Also exclude pairs that are active in other channels (for uniqueness)
     available_pairs = [
         pair for pair in INDEX_PAIRS 
         if pair not in active_index_pairs and pair not in all_active_pairs
     ]
-    
+
     if not available_pairs:
         print("⚠️ All index pairs already have active signals today or are used in other channels")
         return None
-    
+
     pair = random.choice(available_pairs)
     signal_type = "Buy"  # Only Buy now signals
-    
+
     # Get real price
     if pair == "XAUUSD":
         entry = get_real_forex_price(pair)
     else:
         entry = get_real_index_price(pair)
-    
+
     if entry is None:
         print(f"❌ Could not get real price for {pair}, skipping signal")
         return None
-    
-    # Calculate SL and TP based on real price
-    # For indexes, use reasonable percentages: 1-3% TP, 1-2% SL
+
+        # Calculate SL and TP based on real price
+        # For indexes, use reasonable percentages: 1-3% TP, 1-2% SL
     if pair == "XAUUSD":
         # Gold: 1-2% TP, 1-2% SL
         tp_percent = random.uniform(0.01, 0.02)  # 1-2%
         sl_percent = random.uniform(0.01, 0.02)  # 1-2%
         tp = round(entry * (1 + tp_percent), 2)
         sl = round(entry * (1 - sl_percent), 2)
-        
+
         return {
             "pair": pair,
             "type": signal_type,
@@ -1801,7 +1805,7 @@ def generate_index_signal():
         sl_percent = random.uniform(0.01, 0.02)  # 1-2%
         tp = round(entry * (1 + tp_percent), 2)
         sl = round(entry * (1 - sl_percent), 2)
-        
+
         return {
             "pair": pair,
             "type": signal_type,
@@ -1905,10 +1909,10 @@ def format_index_signal(signal):
     """Format index signal message (oil and gold) - only Buy now signals"""
     pair = signal['pair']
     signal_type = signal['type']
-    
+
     # All index signals are "Buy now" - no entry price needed
     entry = "Buy now"
-    
+
     # Format based on pair type
     if pair == "XAUUSD":
         # Gold: 2 decimal places
@@ -1964,11 +1968,11 @@ async def send_forex_signal():
         if is_weekend():
             print("📅 Weekend detected - skipping forex signal")
             return False
-        
-        # Check if enough time has passed since last signal (5 min between channels, 2h for same channel)
+
+            # Check if enough time has passed since last signal (5 min between channels, 2h for same channel)
         if not can_send_signal_now(CHANNEL_LINGRID_FOREX):
             return False
-        
+
         signals = load_signals()
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         
@@ -1993,10 +1997,10 @@ async def send_forex_signal():
         bot = Bot(token=BOT_TOKEN)
         message = format_forex_signal(signal)
         await bot.send_message(chat_id=FOREX_CHANNEL, text=message)
-        
+
         # Save signal to channel file (FOREX_CHANNEL = Lingrid Forex)
         save_channel_signal(CHANNEL_LINGRID_FOREX, signal)
-        
+
         # Update last signal time (global and channel-specific)
         save_last_signal_time()
         save_channel_last_signal_time(CHANNEL_LINGRID_FOREX)
@@ -2017,12 +2021,12 @@ async def send_forex_additional_signal():
         if is_weekend():
             print("📅 Weekend detected - skipping forex additional signal")
             return False
-        
-        # Check if enough time has passed since last signal (5 min between channels, 2h for same channel)
-        # Note: FOREX_CHANNEL_ADDITIONAL is not in our main channels, using a placeholder
+
+            # Check if enough time has passed since last signal (5 min between channels, 2h for same channel)
+            # Note: FOREX_CHANNEL_ADDITIONAL is not in our main channels, using a placeholder
         if not can_send_signal_now(FOREX_CHANNEL_ADDITIONAL):
             return False
-        
+
         signals = load_signals()
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         
@@ -2047,7 +2051,7 @@ async def send_forex_additional_signal():
         bot = Bot(token=BOT_TOKEN)
         message = format_forex_signal(signal)
         await bot.send_message(chat_id=FOREX_CHANNEL_ADDITIONAL, text=message)
-        
+
         # Update last signal time (global and channel-specific)
         save_last_signal_time()
         save_channel_last_signal_time(FOREX_CHANNEL_ADDITIONAL)
@@ -2068,11 +2072,11 @@ async def send_forex_3tp_signal():
         if is_weekend():
             print("📅 Weekend detected - skipping forex 3TP signal")
             return False
-        
-        # Check if enough time has passed since last signal (5 min between channels, 2h for same channel)
+
+            # Check if enough time has passed since last signal (5 min between channels, 2h for same channel)
         if not can_send_signal_now(CHANNEL_DEGRAM):
             return False
-        
+
         signals = load_signals()
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         
@@ -2097,10 +2101,10 @@ async def send_forex_3tp_signal():
         bot = Bot(token=BOT_TOKEN)
         message = format_forex_3tp_signal(signal)
         await bot.send_message(chat_id=FOREX_CHANNEL_3TP, text=message)
-        
+
         # Save signal to channel file (FOREX_CHANNEL_3TP = DeGRAM)
         save_channel_signal(CHANNEL_DEGRAM, signal)
-        
+
         # Update last signal time (global and channel-specific)
         save_last_signal_time()
         save_channel_last_signal_time(CHANNEL_DEGRAM)
@@ -2127,37 +2131,37 @@ async def send_crypto_signal(channel="lingrid"):
         else:
             channel_id = CHANNEL_GAINMUSE
             channel_name = "GainMuse Crypto"
-        
-        # Check if enough time has passed since last signal (5 min between channels, 2h for same channel)
+
+            # Check if enough time has passed since last signal (5 min between channels, 2h for same channel)
         if not can_send_signal_now(channel_id):
             return False
-        
+
         signals = load_signals()
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         
         if signals.get("date") != today:
             signals = {"forex": [], "forex_3tp": [], "forex_additional": [], "crypto_lingrid": [], "crypto_gainmuse": [], "indexes": [], "date": today}
-        
-        # Check limit for specific channel
+
+            # Check limit for specific channel
         if channel == "lingrid":
             channel_signals = signals.get("crypto_lingrid", [])
             max_signals = MAX_CRYPTO_SIGNALS_LINGRID
         else:
             channel_signals = signals.get("crypto_gainmuse", [])
             max_signals = MAX_CRYPTO_SIGNALS_GAINMUSE
-        
+
         if len(channel_signals) >= max_signals:
             print(f"⚠️ {channel_name} signal limit reached: {len(channel_signals)}/{max_signals}")
             return False
         
-        # Generate signal for this channel
+            # Generate signal for this channel
         signal = generate_crypto_signal(channel)
         
         if signal is None:
             print(f"❌ Could not generate crypto signal for {channel_name}")
             return False
         
-        # Add to appropriate channel array
+            # Add to appropriate channel array
         if channel == "lingrid":
             signals["crypto_lingrid"].append(signal)
         else:
@@ -2168,14 +2172,14 @@ async def send_crypto_signal(channel="lingrid"):
         bot = Bot(token=BOT_TOKEN)
         message = format_crypto_signal(signal)
         await bot.send_message(chat_id=channel_id, text=message)
-        
+
         # Save signal to channel file
         save_channel_signal(channel_id, signal)
-        
+
         # Update last signal time (global and channel-specific)
         save_last_signal_time()
         save_channel_last_signal_time(channel_id)
-        
+
         # Calculate distribution for this channel
         buy_count = len([s for s in channel_signals if s.get("type") == "BUY"])
         total_crypto = len(channel_signals)
@@ -2198,51 +2202,51 @@ async def send_index_signal(signal_data=None):
         if is_weekend():
             print("📅 Weekend detected - skipping index signal")
             return False
-        
-        # Check if enough time has passed since last signal (only for automatic signals)
-        # 5 min between channels, 2h for same channel
+
+            # Check if enough time has passed since last signal (only for automatic signals)
+            # 5 min between channels, 2h for same channel
         if signal_data is None and not can_send_signal_now(CHANNEL_LINGRID_INDEXES):
             return False
-        
+
         signals = load_signals()
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        
+
         if signals.get("date") != today:
             signals = {"forex": [], "forex_3tp": [], "forex_additional": [], "crypto": [], "indexes": [], "date": today}
-        
-        # Generate signal if not provided
+
+            # Generate signal if not provided
         if signal_data is None:
             signal_data = generate_index_signal()
             if signal_data is None:
                 print("❌ Could not generate index signal")
                 return False
-        
-        # Ensure signal has timestamp
+
+                # Ensure signal has timestamp
         if "timestamp" not in signal_data:
             signal_data["timestamp"] = datetime.now(timezone.utc).isoformat()
-        
+
         signals["indexes"].append(signal_data)
         save_signals(signals)
-        
+
         # Send to channel
         bot = Bot(token=BOT_TOKEN)
         message = format_index_signal(signal_data)
         await bot.send_message(chat_id=CHANNEL_LINGRID_INDEXES, text=message)
-        
+
         # Save signal to channel file
         save_channel_signal(CHANNEL_LINGRID_INDEXES, signal_data)
-        
+
         # Update last signal time (global and channel-specific)
         save_last_signal_time()
         save_channel_last_signal_time(CHANNEL_LINGRID_INDEXES)
-        
+
         pair = signal_data.get('pair', 'Unknown')
         signal_type = signal_data.get('type', '')
-        
+
         print(f"✅ Index signal sent: {pair} {signal_type} Buy now")
         print(f"📊 Today's index signals: {len(signals['indexes'])}")
         return True
-        
+
     except Exception as e:
         print(f"❌ Error sending index signal: {e}")
         return False
@@ -2261,7 +2265,7 @@ async def send_manual_index_signals():
         }
         await send_index_signal(signal1)
         await asyncio.sleep(1)  # Small delay between signals
-        
+
         # Signal 2: BRENT Buy now, SL 62.50, TP 66.79
         signal2 = {
             "pair": "BRENT",
@@ -2272,7 +2276,7 @@ async def send_manual_index_signals():
         }
         await send_index_signal(signal2)
         await asyncio.sleep(1)
-        
+
         # Signal 3: USOIL Buy now (converted from Buy Stop), TP 62.80, SL 58.00
         # Note: Converted to "Buy now" as per requirements
         signal3 = {
@@ -2284,7 +2288,7 @@ async def send_manual_index_signals():
         }
         await send_index_signal(signal3)
         await asyncio.sleep(1)
-        
+
         # Note: Gold signals can be added here when provided
         # Example structure:
         # signal4 = {
@@ -2295,10 +2299,10 @@ async def send_manual_index_signals():
         #     "tp": 2680.00
         # }
         # await send_index_signal(signal4)
-        
+
         print("✅ All manual index signals sent successfully!")
         return True
-        
+
     except Exception as e:
         print(f"❌ Error sending manual index signals: {e}")
         return False
@@ -2647,7 +2651,7 @@ async def handle_crypto_signal_for_channel(query, context: ContextTypes.DEFAULT_
         bot = Bot(token=BOT_TOKEN)
         message = format_crypto_signal(signal)
         await bot.send_message(chat_id=channel_id, text=message)
-        
+
         # Save signal to channel file
         save_channel_signal(channel_id, signal)
         
@@ -2709,7 +2713,7 @@ async def handle_forex_signal(query, context: ContextTypes.DEFAULT_TYPE) -> None
         bot = Bot(token=BOT_TOKEN)
         message = format_forex_signal(signal)
         await bot.send_message(chat_id=FOREX_CHANNEL, text=message)
-        
+
         # Save signal to channel file (FOREX_CHANNEL = Lingrid Forex)
         save_channel_signal(CHANNEL_LINGRID_FOREX, signal)
         
@@ -2764,7 +2768,7 @@ async def handle_forex_3tp_signal(query, context: ContextTypes.DEFAULT_TYPE) -> 
         bot = Bot(token=BOT_TOKEN)
         message = format_forex_3tp_signal(signal)
         await bot.send_message(chat_id=FOREX_CHANNEL_3TP, text=message)
-        
+
         # Save signal to channel file (FOREX_CHANNEL_3TP = DeGRAM)
         save_channel_signal(CHANNEL_DEGRAM, signal)
         
@@ -2785,7 +2789,7 @@ async def handle_forex_3tp_signal(query, context: ContextTypes.DEFAULT_TYPE) -> 
 def get_analytics_from_results(channel_id, days: int):
     """Calculate analytics from saved result files with improved logic"""
     results = load_channel_results(channel_id)
-    
+
     if not results:
         return {
             "total_signals": 0,
@@ -2799,11 +2803,11 @@ def get_analytics_from_results(channel_id, days: int):
             "profit_factor": 0,
             "signals_detail": []
         }
-    
+
     # Filter by date range
     cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
     filtered_results = []
-    
+
     for result in results:
         try:
             hit_time = result.get("hit_time", "")
@@ -2813,7 +2817,7 @@ def get_analytics_from_results(channel_id, days: int):
                     filtered_results.append(result)
         except:
             continue
-    
+
     if not filtered_results:
         return {
             "total_signals": 0,
@@ -2827,7 +2831,7 @@ def get_analytics_from_results(channel_id, days: int):
             "profit_factor": 0,
             "signals_detail": []
         }
-    
+
     # Group results by timestamp (same signal)
     signal_groups = {}
     for result in filtered_results:
@@ -2835,19 +2839,19 @@ def get_analytics_from_results(channel_id, days: int):
         if timestamp not in signal_groups:
             signal_groups[timestamp] = []
         signal_groups[timestamp].append(result)
-    
+
     # Process each signal - apply logic: if TP hit then SL hit, count TP
     processed_signals = []
     for timestamp, group_results in signal_groups.items():
         # Sort by hit_time to get chronological order
         group_results.sort(key=lambda x: x.get("hit_time", ""))
-        
+
         # Find the best result (highest TP before SL, or SL if no TP)
         best_result = None
         highest_tp_result = None
         tp_order_map = {"TP1": 1, "TP2": 2, "TP3": 3, "TP": 1}
         sl_result = None
-        
+
         for result in group_results:
             hit_type = result.get("hit_type", "")
             if hit_type.startswith("TP"):
@@ -2859,20 +2863,20 @@ def get_analytics_from_results(channel_id, days: int):
                     existing_order = tp_order_map.get(highest_tp_result.get("hit_type", ""), 0)
                     if current_order > existing_order:
                         highest_tp_result = result
-            elif hit_type == "SL":
+            if hit_type == "SL":
                 sl_result = result
-        
-        # Logic: If any TP hit, use the highest TP (even if SL hit later)
-        # If no TP hit but SL hit, use SL
+
+                # Logic: If any TP hit, use the highest TP (even if SL hit later)
+                # If no TP hit but SL hit, use SL
         if highest_tp_result:
             best_result = highest_tp_result
         elif sl_result:
             best_result = sl_result
-        
+
         if best_result:
             processed_signals.append(best_result)
-    
-    # Calculate statistics
+
+            # Calculate statistics
     total_signals = len(processed_signals)
     profit_count = 0
     loss_count = 0
@@ -2880,14 +2884,14 @@ def get_analytics_from_results(channel_id, days: int):
     loss_values = []
     signals_detail = []
     total_profit = 0
-    
+
     # Determine if forex or crypto based on channel
     is_forex = channel_id in [FOREX_CHANNEL, FOREX_CHANNEL_3TP, FOREX_CHANNEL_ADDITIONAL, "-1001286609636"]
-    
+
     for result in processed_signals:
         pair = result.get("pair", "")
         hit_type = result.get("hit_type", "")
-        
+
         if is_forex:
             # Forex: calculate in pips
             if hit_type.startswith("TP"):
@@ -2897,11 +2901,11 @@ def get_analytics_from_results(channel_id, days: int):
                     total_profit += profit_pips
                     profit_values.append(profit_pips)
                     signals_detail.append(f"✅ {pair} {hit_type}: +{profit_pips:.1f} pips")
-        else:
+                else:
                     loss_count += 1
                     loss_values.append(abs(profit_pips))
                     signals_detail.append(f"❌ {pair} {hit_type}: {profit_pips:.1f} pips")
-            elif hit_type == "SL":
+            if hit_type == "SL":
                 loss_pips = result.get("loss_pips", 0)
                 loss_count += 1
                 total_profit += loss_pips  # negative
@@ -2920,23 +2924,23 @@ def get_analytics_from_results(channel_id, days: int):
                     loss_count += 1
                     loss_values.append(abs(profit_percent))
                     signals_detail.append(f"❌ {pair} {hit_type}: {profit_percent:.2f}%")
-            elif hit_type == "SL":
+            if hit_type == "SL":
                 loss_percent = result.get("loss_percent", 0)
                 loss_count += 1
                 total_profit += loss_percent  # negative
                 loss_values.append(abs(loss_percent))
                 signals_detail.append(f"❌ {pair} SL: -{abs(loss_percent):.2f}%")
-    
-    # Calculate final statistics
+
+                # Calculate final statistics
     avg_profit_per_signal = total_profit / total_signals if total_signals > 0 else 0
     win_rate = (profit_count / total_signals * 100) if total_signals > 0 else 0
     avg_profit = sum(profit_values) / len(profit_values) if profit_values else 0
     avg_loss = sum(loss_values) / len(loss_values) if loss_values else 0
-    
+
     total_profit_sum = sum(profit_values) if profit_values else 0
     total_loss_sum = sum(loss_values) if loss_values else 0
     profit_factor = total_profit_sum / total_loss_sum if total_loss_sum > 0 else float('inf')
-    
+
     return {
         "total_signals": total_signals,
         "profit_signals": profit_count,
@@ -2955,7 +2959,7 @@ def get_analytics_from_results(channel_id, days: int):
 async def handle_performance_report(query, context: ContextTypes.DEFAULT_TYPE, signal_type: str, days: int) -> None:
     """Handle performance report for specific signal type - using saved results"""
     await query.edit_message_text(f"🔄 Calculating {signal_type} performance for last {days} day(s) from saved results...")
-    
+
     try:
         # Map signal type to channel ID
         channel_id_map = {
@@ -2965,9 +2969,9 @@ async def handle_performance_report(query, context: ContextTypes.DEFAULT_TYPE, s
             "crypto_gainmuse": CRYPTO_CHANNEL_GAINMUSE,
             "crypto": CRYPTO_CHANNEL_LINGRID  # Default to lingrid
         }
-        
+
         channel_id = channel_id_map.get(signal_type)
-        
+
         # Channel names
         channel_names = {
             "forex": "Forex",
@@ -2976,14 +2980,14 @@ async def handle_performance_report(query, context: ContextTypes.DEFAULT_TYPE, s
             "crypto_gainmuse": "Crypto Gain Muse",
             "crypto": "Crypto"
         }
-        
+
         channel_name = channel_names.get(signal_type, signal_type)
-        
+
         if not channel_id:
             await query.edit_message_text("❌ Invalid signal type")
             return
         
-        # Calculate performance from saved results
+            # Calculate performance from saved results
         performance = get_analytics_from_results(channel_id, days)
         
         # Create back button
@@ -3023,16 +3027,16 @@ async def handle_performance_report(query, context: ContextTypes.DEFAULT_TYPE, s
                 report += f"Average Loss: {performance['avg_loss']:+.1f} pips\n"
         else:
             # Crypto: percentage
-        report += f"Total Profit: {performance['total_profit']:+.2f}%\n"
-        report += f"Average per Signal: {performance['avg_profit_per_signal']:+.2f}%\n"
-        if performance['profit_signals'] > 0:
-            report += f"Average Win: {performance['avg_profit']:+.2f}%\n"
-        if performance['loss_signals'] > 0:
-            report += f"Average Loss: {performance['avg_loss']:+.2f}%\n"
-        if performance['profit_factor'] != float('inf'):
-            report += f"Profit Factor: {performance['profit_factor']:.2f}\n"
-        else:
-            report += "Profit Factor: ∞\n"
+            report += f"Total Profit: {performance['total_profit']:+.2f}%\n"
+            report += f"Average per Signal: {performance['avg_profit_per_signal']:+.2f}%\n"
+            if performance['profit_signals'] > 0:
+                report += f"Average Win: {performance['avg_profit']:+.2f}%\n"
+            if performance['loss_signals'] > 0:
+                report += f"Average Loss: {performance['avg_loss']:+.2f}%\n"
+            if performance['profit_factor'] != float('inf'):
+                report += f"Profit Factor: {performance['profit_factor']:.2f}\n"
+            else:
+                report += "Profit Factor: ∞\n"
         report += "\n"
         
         # Individual signal results (only for short periods)
@@ -3518,9 +3522,9 @@ def automatic_signal_loop():
                 crypto_lingrid_count = len(signals.get("crypto_lingrid", []))
                 crypto_gainmuse_count = len(signals.get("crypto_gainmuse", []))
                 index_count = len(signals.get("indexes", []))
-                
+
                 print(f"📊 Current signals: Forex {forex_count}/{MAX_FOREX_SIGNALS}, Forex 3TP {forex_3tp_count}/{MAX_FOREX_3TP_SIGNALS}, Forex Additional {forex_additional_count}/{MAX_FOREX_ADDITIONAL_SIGNALS}, Crypto Lingrid {crypto_lingrid_count}/{MAX_CRYPTO_SIGNALS_LINGRID}, Crypto GainMuse {crypto_gainmuse_count}/{MAX_CRYPTO_SIGNALS_GAINMUSE}, Indexes {index_count}/{MAX_INDEX_SIGNALS}")
-                
+
                 # Only send one signal per iteration to ensure minimum 5-minute spacing between channels
                 # Prioritize channels that haven't reached their limit
                 signals_sent = 0
@@ -3548,40 +3552,40 @@ def automatic_signal_loop():
                         signals_sent = 1
                     elif not success and not is_weekend():
                         print("⚠️ Could not send forex additional signal (all pairs may be active or waiting for interval)")
-                
-                # Send crypto signal to Lingrid if needed
+
+                        # Send crypto signal to Lingrid if needed
                 if crypto_lingrid_count < MAX_CRYPTO_SIGNALS_LINGRID and signals_sent == 0:
                     success = await send_crypto_signal("lingrid")
                     if success:
                         signals_sent = 1
                     elif not success:
                         print("⚠️ Could not send crypto signal to Lingrid (all pairs may be active or waiting for interval)")
-                
-                # Send crypto signal to GainMuse if needed
+
+                        # Send crypto signal to GainMuse if needed
                 if crypto_gainmuse_count < MAX_CRYPTO_SIGNALS_GAINMUSE and signals_sent == 0:
                     success = await send_crypto_signal("gainmuse")
                     if success:
                         signals_sent = 1
                     elif not success:
                         print("⚠️ Could not send crypto signal to GainMuse (all pairs may be active or waiting for interval)")
-                
-                # Send index signal if needed (and under limit)
+
+                        # Send index signal if needed (and under limit)
                 if index_count < MAX_INDEX_SIGNALS and signals_sent == 0:
                     success = await send_index_signal()
                     if success:
                         signals_sent = 1
                     elif not success and not is_weekend():
                         print("⚠️ Could not send index signal (all pairs may be active, used in other channels, or waiting for interval)")
-                
+
                 if signals_sent == 0:
                     # No signal sent - might be waiting for interval or all limits reached
                     print("⏸️ No signal sent this iteration (checking conditions...)")
-                
-                # TP/SL monitoring disabled - bot should not calculate profits or send TP hit notifications
-                # await check_and_notify_tp_hits()  # DISABLED
+
+                    # TP/SL monitoring disabled - bot should not calculate profits or send TP hit notifications
+                    # await check_and_notify_tp_hits()  # DISABLED
                 
                 # Check if all signals sent for today
-                # Note: Index signals are optional (no strict limit), so we don't include them in the "all done" check
+                    # Note: Index signals are optional (no strict limit), so we don't include them in the "all done" check
                 if (forex_count >= MAX_FOREX_SIGNALS and 
                     forex_3tp_count >= MAX_FOREX_3TP_SIGNALS and 
                     forex_additional_count >= MAX_FOREX_ADDITIONAL_SIGNALS and
