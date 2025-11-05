@@ -14,6 +14,14 @@ import json
 import random
 import requests
 from datetime import datetime, timezone, timedelta
+import pytz
+# Fix APScheduler timezone issue: patch tzlocal before telegram imports
+try:
+    import tzlocal
+    # Replace get_localzone to return pytz.UTC instead of zoneinfo timezone
+    tzlocal.get_localzone = lambda: pytz.UTC
+except (ImportError, AttributeError):
+    pass
 from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 import threading
