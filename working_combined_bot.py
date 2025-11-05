@@ -89,7 +89,7 @@ MAX_FOREX_SIGNALS = 5  # Original forex channel
 MAX_FOREX_3TP_SIGNALS = 5  # New forex channel with 3 TPs (changed to 5)
 MAX_FOREX_ADDITIONAL_SIGNALS = 5  # Additional forex channel (different signals)
 MAX_CRYPTO_SIGNALS_LINGRID = 5  # Lingrid Crypto channel
-MAX_CRYPTO_SIGNALS_GAINMUSE = 5  # GainMuse Crypto channel
+MAX_CRYPTO_SIGNALS_GAINMUSE = 10  # GainMuse Crypto channel (increased to 10 signals per day)
 MAX_INDEX_SIGNALS = 10  # Index channel (no strict limit, but reasonable max)
 
 # Time intervals (in hours)
@@ -281,14 +281,14 @@ def save_last_signal_time():
 
 
 def can_send_signal_now():
-    """Check if enough time has passed since last signal (minimum 15 minutes)"""
+    """Check if enough time has passed since last signal from any channel (minimum 5 minutes)"""
     last_time = get_last_signal_time()
     if last_time is None:
         return True  # No previous signal, can send
     
     current_time = datetime.now(timezone.utc)
     time_diff = (current_time - last_time).total_seconds()
-    min_interval_seconds = 15 * 60  # 15 minutes
+    min_interval_seconds = 5 * 60  # 5 minutes minimum between signals from different channels
     
     if time_diff >= min_interval_seconds:
         return True
@@ -296,7 +296,7 @@ def can_send_signal_now():
     # Calculate remaining wait time
     remaining_seconds = min_interval_seconds - time_diff
     remaining_minutes = remaining_seconds / 60
-    print(f"⏰ Minimum 15-minute interval not met. Wait {remaining_minutes:.1f} more minutes.")
+    print(f"⏰ Minimum 5-minute interval between channels not met. Wait {remaining_minutes:.1f} more minutes.")
     return False
 
 
@@ -3437,7 +3437,7 @@ def automatic_signal_loop():
                 
                 print(f"📊 Current signals: Forex {forex_count}/{MAX_FOREX_SIGNALS}, Forex 3TP {forex_3tp_count}/{MAX_FOREX_3TP_SIGNALS}, Forex Additional {forex_additional_count}/{MAX_FOREX_ADDITIONAL_SIGNALS}, Crypto Lingrid {crypto_lingrid_count}/{MAX_CRYPTO_SIGNALS_LINGRID}, Crypto GainMuse {crypto_gainmuse_count}/{MAX_CRYPTO_SIGNALS_GAINMUSE}, Indexes {index_count}/{MAX_INDEX_SIGNALS}")
                 
-                # Only send one signal per iteration to ensure minimum 15-minute spacing
+                # Only send one signal per iteration to ensure minimum 5-minute spacing between channels
                 # Prioritize channels that haven't reached their limit
                 signals_sent = 0
                 
@@ -3511,14 +3511,14 @@ def automatic_signal_loop():
                     print(f"⏰ Waiting {wait_seconds/3600:.1f} hours until tomorrow...")
                     await asyncio.sleep(wait_seconds)
                 else:
-                    # Wait for next interval (but ensure minimum 15 minutes)
+                    # Wait for next interval (but ensure minimum 5 minutes between channels)
                     next_interval = get_next_interval()
                     # Also check if we need to wait for minimum spacing
                     last_time = get_last_signal_time()
                     if last_time:
                         current_time = datetime.now(timezone.utc)
                         time_since_last = (current_time - last_time).total_seconds()
-                        min_wait = 15 * 60  # 15 minutes in seconds
+                        min_wait = 5 * 60  # 5 minutes in seconds (minimum between channels)
                         if time_since_last < min_wait:
                             remaining = min_wait - time_since_last
                             # Use the longer of the two waits (interval or spacing)
