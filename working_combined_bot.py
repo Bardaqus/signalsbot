@@ -48,7 +48,8 @@ INDEX_PAIRS = ["USOIL", "BRENT", "XAUUSD"]  # Oil and Gold
 # Signal storage
 SIGNALS_FILE = "working_combined_signals.json"
 PERFORMANCE_FILE = "working_combined_performance.json"
-LAST_SIGNAL_TIME_FILE = "last_signal_time.json"  # Track last signal time for spacing
+LAST_SIGNAL_TIME_FILE = "last_signal_time.json"  # Track last signal time for spacing (global - 5 min between channels)
+CHANNEL_LAST_SIGNAL_FILE = "channel_last_signal_time.json"  # Track last signal time per channel (2h between same channel)
 
 # Channel definitions
 CHANNEL_DEGRAM = "-1001220540048"  # DeGRAM
@@ -273,31 +274,78 @@ def get_last_signal_time():
 
 
 def save_last_signal_time():
-    """Save the current time as the last signal time"""
+    """Save the current time as the last signal time (global - for 5 min between channels)"""
     current_time = datetime.now(timezone.utc)
     data = {"last_signal_time": current_time.isoformat()}
     with open(LAST_SIGNAL_TIME_FILE, 'w') as f:
         json.dump(data, f, indent=2)
 
 
-def can_send_signal_now():
-    """Check if enough time has passed since last signal from any channel (minimum 5 minutes)"""
-    last_time = get_last_signal_time()
-    if last_time is None:
-        return True  # No previous signal, can send
-    
+def get_channel_last_signal_time(channel_id):
+    """Get the timestamp of the last signal sent to a specific channel"""
+    try:
+        with open(CHANNEL_LAST_SIGNAL_FILE, 'r') as f:
+            data = json.load(f)
+            channel_times = data.get("channel_times", {})
+            last_time_str = channel_times.get(channel_id, "")
+            if last_time_str:
+                return datetime.fromisoformat(last_time_str.replace("Z", "+00:00"))
+            return None
+    except:
+        return None
+
+
+def save_channel_last_signal_time(channel_id):
+    """Save the current time as the last signal time for a specific channel (for 2h between same channel)"""
     current_time = datetime.now(timezone.utc)
-    time_diff = (current_time - last_time).total_seconds()
-    min_interval_seconds = 5 * 60  # 5 minutes minimum between signals from different channels
+    try:
+        with open(CHANNEL_LAST_SIGNAL_FILE, 'r') as f:
+            data = json.load(f)
+    except:
+        data = {"channel_times": {}}
     
-    if time_diff >= min_interval_seconds:
-        return True
+    if "channel_times" not in data:
+        data["channel_times"] = {}
     
-    # Calculate remaining wait time
-    remaining_seconds = min_interval_seconds - time_diff
-    remaining_minutes = remaining_seconds / 60
-    print(f"⏰ Minimum 5-minute interval between channels not met. Wait {remaining_minutes:.1f} more minutes.")
-    return False
+    data["channel_times"][channel_id] = current_time.isoformat()
+    
+    with open(CHANNEL_LAST_SIGNAL_FILE, 'w') as f:
+        json.dump(data, f, indent=2)
+
+
+def can_send_signal_now(channel_id=None):
+    """Check if enough time has passed:
+    - 5 minutes since last signal from ANY channel (different channels)
+    - 2 hours since last signal from SAME channel (if channel_id provided)
+    """
+    current_time = datetime.now(timezone.utc)
+    
+    # Check 5 minutes between different channels
+    last_time = get_last_signal_time()
+    if last_time is not None:
+        time_diff = (current_time - last_time).total_seconds()
+        min_interval_seconds = 5 * 60  # 5 minutes minimum between signals from different channels
+        
+        if time_diff < min_interval_seconds:
+            remaining_seconds = min_interval_seconds - time_diff
+            remaining_minutes = remaining_seconds / 60
+            print(f"⏰ Minimum 5-minute interval between channels not met. Wait {remaining_minutes:.1f} more minutes.")
+            return False
+    
+    # Check 2 hours between same channel (if channel_id provided)
+    if channel_id is not None:
+        channel_last_time = get_channel_last_signal_time(channel_id)
+        if channel_last_time is not None:
+            time_diff = (current_time - channel_last_time).total_seconds()
+            min_channel_interval_seconds = 2 * 60 * 60  # 2 hours minimum between signals from same channel
+            
+            if time_diff < min_channel_interval_seconds:
+                remaining_seconds = min_channel_interval_seconds - time_diff
+                remaining_hours = remaining_seconds / 3600
+                print(f"⏰ Minimum 2-hour interval for this channel not met. Wait {remaining_hours:.2f} more hours.")
+                return False
+    
+    return True
 
 
 def load_performance():
@@ -611,34 +659,34 @@ async def check_and_notify_tp_hits():
             profit_percent = 0
             
             if not sl_hit:
-                if pair == "XAUUSD":
-                    # XAUUSD: Single TP
-                    tp = signal.get("tp", 0)
-                    if signal_type == "BUY" and current_price >= tp:
-                        tp_hit = "TP"
-                        profit_percent = ((tp - entry) / entry) * 100
-                    elif signal_type == "SELL" and current_price <= tp:
-                        tp_hit = "TP"
-                        profit_percent = ((entry - tp) / entry) * 100
-                else:
-                    # Main forex pairs: 2 TPs
-                    tp1 = signal.get("tp1", 0)
-                    tp2 = signal.get("tp2", 0)
-                    
-                    if signal_type == "BUY":
-                        if current_price >= tp2:
-                            tp_hit = "TP2"
-                            profit_percent = ((tp2 - entry) / entry) * 100
-                        elif current_price >= tp1:
-                            tp_hit = "TP1"
-                            profit_percent = ((tp1 - entry) / entry) * 100
-                    else:  # SELL
-                        if current_price <= tp2:
-                            tp_hit = "TP2"
-                            profit_percent = ((entry - tp2) / entry) * 100
-                        elif current_price <= tp1:
-                            tp_hit = "TP1"
-                            profit_percent = ((entry - tp1) / entry) * 100
+            if pair == "XAUUSD":
+                # XAUUSD: Single TP
+                tp = signal.get("tp", 0)
+                if signal_type == "BUY" and current_price >= tp:
+                    tp_hit = "TP"
+                    profit_percent = ((tp - entry) / entry) * 100
+                elif signal_type == "SELL" and current_price <= tp:
+                    tp_hit = "TP"
+                    profit_percent = ((entry - tp) / entry) * 100
+            else:
+                # Main forex pairs: 2 TPs
+                tp1 = signal.get("tp1", 0)
+                tp2 = signal.get("tp2", 0)
+                
+                if signal_type == "BUY":
+                    if current_price >= tp2:
+                        tp_hit = "TP2"
+                        profit_percent = ((tp2 - entry) / entry) * 100
+                    elif current_price >= tp1:
+                        tp_hit = "TP1"
+                        profit_percent = ((tp1 - entry) / entry) * 100
+                else:  # SELL
+                    if current_price <= tp2:
+                        tp_hit = "TP2"
+                        profit_percent = ((entry - tp2) / entry) * 100
+                    elif current_price <= tp1:
+                        tp_hit = "TP1"
+                        profit_percent = ((entry - tp1) / entry) * 100
             
             # Process SL hit
             if sl_hit and timestamp not in notifications_sent:
@@ -768,34 +816,34 @@ async def check_and_notify_tp_hits():
             profit_percent = 0
             
             if not sl_hit:
-                if pair == "XAUUSD":
-                    # XAUUSD: Single TP
-                    tp = signal.get("tp", 0)
-                    if signal_type == "BUY" and current_price >= tp:
-                        tp_hit = "TP"
-                        profit_percent = ((tp - entry) / entry) * 100
-                    elif signal_type == "SELL" and current_price <= tp:
-                        tp_hit = "TP"
-                        profit_percent = ((entry - tp) / entry) * 100
-                else:
-                    # Main forex pairs: 2 TPs
-                    tp1 = signal.get("tp1", 0)
-                    tp2 = signal.get("tp2", 0)
-                    
-                    if signal_type == "BUY":
-                        if current_price >= tp2:
-                            tp_hit = "TP2"
-                            profit_percent = ((tp2 - entry) / entry) * 100
-                        elif current_price >= tp1:
-                            tp_hit = "TP1"
-                            profit_percent = ((tp1 - entry) / entry) * 100
-                    else:  # SELL
-                        if current_price <= tp2:
-                            tp_hit = "TP2"
-                            profit_percent = ((entry - tp2) / entry) * 100
-                        elif current_price <= tp1:
-                            tp_hit = "TP1"
-                            profit_percent = ((entry - tp1) / entry) * 100
+            if pair == "XAUUSD":
+                # XAUUSD: Single TP
+                tp = signal.get("tp", 0)
+                if signal_type == "BUY" and current_price >= tp:
+                    tp_hit = "TP"
+                    profit_percent = ((tp - entry) / entry) * 100
+                elif signal_type == "SELL" and current_price <= tp:
+                    tp_hit = "TP"
+                    profit_percent = ((entry - tp) / entry) * 100
+            else:
+                # Main forex pairs: 2 TPs
+                tp1 = signal.get("tp1", 0)
+                tp2 = signal.get("tp2", 0)
+                
+                if signal_type == "BUY":
+                    if current_price >= tp2:
+                        tp_hit = "TP2"
+                        profit_percent = ((tp2 - entry) / entry) * 100
+                    elif current_price >= tp1:
+                        tp_hit = "TP1"
+                        profit_percent = ((tp1 - entry) / entry) * 100
+                else:  # SELL
+                    if current_price <= tp2:
+                        tp_hit = "TP2"
+                        profit_percent = ((entry - tp2) / entry) * 100
+                    elif current_price <= tp1:
+                        tp_hit = "TP1"
+                        profit_percent = ((entry - tp1) / entry) * 100
             
             # Process SL hit
             if sl_hit and timestamp not in notifications_sent:
@@ -928,26 +976,26 @@ async def check_and_notify_tp_hits():
             profit_percent = 0
             
             if not sl_hit:
-                if signal_type == "BUY":
-                    if current_price >= tp3:
-                        tp_hit = "TP3"
-                        profit_percent = ((tp3 - entry) / entry) * 100
-                    elif current_price >= tp2:
-                        tp_hit = "TP2"
-                        profit_percent = ((tp2 - entry) / entry) * 100
-                    elif current_price >= tp1:
-                        tp_hit = "TP1"
-                        profit_percent = ((tp1 - entry) / entry) * 100
-                else:  # SELL
-                    if current_price <= tp3:
-                        tp_hit = "TP3"
-                        profit_percent = ((entry - tp3) / entry) * 100
-                    elif current_price <= tp2:
-                        tp_hit = "TP2"
-                        profit_percent = ((entry - tp2) / entry) * 100
-                    elif current_price <= tp1:
-                        tp_hit = "TP1"
-                        profit_percent = ((entry - tp1) / entry) * 100
+            if signal_type == "BUY":
+                if current_price >= tp3:
+                    tp_hit = "TP3"
+                    profit_percent = ((tp3 - entry) / entry) * 100
+                elif current_price >= tp2:
+                    tp_hit = "TP2"
+                    profit_percent = ((tp2 - entry) / entry) * 100
+                elif current_price >= tp1:
+                    tp_hit = "TP1"
+                    profit_percent = ((tp1 - entry) / entry) * 100
+            else:  # SELL
+                if current_price <= tp3:
+                    tp_hit = "TP3"
+                    profit_percent = ((entry - tp3) / entry) * 100
+                elif current_price <= tp2:
+                    tp_hit = "TP2"
+                    profit_percent = ((entry - tp2) / entry) * 100
+                elif current_price <= tp1:
+                    tp_hit = "TP1"
+                    profit_percent = ((entry - tp1) / entry) * 100
             
             # Process SL hit
             if sl_hit and timestamp not in notifications_sent:
@@ -1062,26 +1110,26 @@ async def check_and_notify_tp_hits():
             profit_percent = 0
             
             if not sl_hit:
-                if signal_type == "BUY":
-                    if current_price >= tp3:
-                        tp_hit = "TP3"
-                        profit_percent = ((tp3 - entry) / entry) * 100
-                    elif current_price >= tp2:
-                        tp_hit = "TP2"
-                        profit_percent = ((tp2 - entry) / entry) * 100
-                    elif current_price >= tp1:
-                        tp_hit = "TP1"
-                        profit_percent = ((tp1 - entry) / entry) * 100
-                else:  # SELL
-                    if current_price <= tp3:
-                        tp_hit = "TP3"
-                        profit_percent = ((entry - tp3) / entry) * 100
-                    elif current_price <= tp2:
-                        tp_hit = "TP2"
-                        profit_percent = ((entry - tp2) / entry) * 100
-                    elif current_price <= tp1:
-                        tp_hit = "TP1"
-                        profit_percent = ((entry - tp1) / entry) * 100
+            if signal_type == "BUY":
+                if current_price >= tp3:
+                    tp_hit = "TP3"
+                    profit_percent = ((tp3 - entry) / entry) * 100
+                elif current_price >= tp2:
+                    tp_hit = "TP2"
+                    profit_percent = ((tp2 - entry) / entry) * 100
+                elif current_price >= tp1:
+                    tp_hit = "TP1"
+                    profit_percent = ((tp1 - entry) / entry) * 100
+            else:  # SELL
+                if current_price <= tp3:
+                    tp_hit = "TP3"
+                    profit_percent = ((entry - tp3) / entry) * 100
+                elif current_price <= tp2:
+                    tp_hit = "TP2"
+                    profit_percent = ((entry - tp2) / entry) * 100
+                elif current_price <= tp1:
+                    tp_hit = "TP1"
+                    profit_percent = ((entry - tp1) / entry) * 100
             
             # Process SL hit
             if sl_hit and timestamp not in notifications_sent:
@@ -1182,12 +1230,12 @@ async def check_and_notify_tp_hits():
             tp_hit = False
             profit_percent = 0
             if not sl_hit:
-                if signal_type == "BUY" and current_price >= tp:
-                    tp_hit = True
-                    profit_percent = ((tp - entry) / entry) * 100
-                elif signal_type == "SELL" and current_price <= tp:
-                    tp_hit = True
-                    profit_percent = ((entry - tp) / entry) * 100
+            if signal_type == "BUY" and current_price >= tp:
+                tp_hit = True
+                profit_percent = ((tp - entry) / entry) * 100
+            elif signal_type == "SELL" and current_price <= tp:
+                tp_hit = True
+                profit_percent = ((entry - tp) / entry) * 100
             
             # Process SL hit
             if sl_hit and timestamp not in notifications_sent:
@@ -1728,8 +1776,8 @@ def generate_index_signal():
             "entry": None,  # "Buy now" - no entry price
             "sl": sl,
             "tp": tp,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
 
 
 def format_forex_signal(signal):
@@ -1885,8 +1933,8 @@ async def send_forex_signal():
             print("📅 Weekend detected - skipping forex signal")
             return False
         
-        # Check if enough time has passed since last signal
-        if not can_send_signal_now():
+        # Check if enough time has passed since last signal (5 min between channels, 2h for same channel)
+        if not can_send_signal_now(CHANNEL_LINGRID_FOREX):
             return False
         
         signals = load_signals()
@@ -1917,8 +1965,9 @@ async def send_forex_signal():
         # Save signal to channel file (FOREX_CHANNEL = Lingrid Forex)
         save_channel_signal(CHANNEL_LINGRID_FOREX, signal)
         
-        # Update last signal time
+        # Update last signal time (global and channel-specific)
         save_last_signal_time()
+        save_channel_last_signal_time(CHANNEL_LINGRID_FOREX)
         
         print(f"✅ Forex signal sent: {signal['pair']} {signal['type']} at {signal['entry']}")
         print(f"📊 Today's forex signals: {len(signals['forex'])}/{MAX_FOREX_SIGNALS}")
@@ -1937,8 +1986,9 @@ async def send_forex_additional_signal():
             print("📅 Weekend detected - skipping forex additional signal")
             return False
         
-        # Check if enough time has passed since last signal
-        if not can_send_signal_now():
+        # Check if enough time has passed since last signal (5 min between channels, 2h for same channel)
+        # Note: FOREX_CHANNEL_ADDITIONAL is not in our main channels, using a placeholder
+        if not can_send_signal_now(FOREX_CHANNEL_ADDITIONAL):
             return False
         
         signals = load_signals()
@@ -1966,8 +2016,9 @@ async def send_forex_additional_signal():
         message = format_forex_signal(signal)
         await bot.send_message(chat_id=FOREX_CHANNEL_ADDITIONAL, text=message)
         
-        # Update last signal time
+        # Update last signal time (global and channel-specific)
         save_last_signal_time()
+        save_channel_last_signal_time(FOREX_CHANNEL_ADDITIONAL)
         
         print(f"✅ Forex additional signal sent: {signal['pair']} {signal['type']} at {signal['entry']}")
         print(f"📊 Today's forex additional signals: {len(signals['forex_additional'])}/{MAX_FOREX_ADDITIONAL_SIGNALS}")
@@ -1986,8 +2037,8 @@ async def send_forex_3tp_signal():
             print("📅 Weekend detected - skipping forex 3TP signal")
             return False
         
-        # Check if enough time has passed since last signal
-        if not can_send_signal_now():
+        # Check if enough time has passed since last signal (5 min between channels, 2h for same channel)
+        if not can_send_signal_now(CHANNEL_DEGRAM):
             return False
         
         signals = load_signals()
@@ -2018,8 +2069,9 @@ async def send_forex_3tp_signal():
         # Save signal to channel file (FOREX_CHANNEL_3TP = DeGRAM)
         save_channel_signal(CHANNEL_DEGRAM, signal)
         
-        # Update last signal time
+        # Update last signal time (global and channel-specific)
         save_last_signal_time()
+        save_channel_last_signal_time(CHANNEL_DEGRAM)
         
         print(f"✅ Forex 3TP signal sent: {signal['pair']} {signal['type']} at {signal['entry']}")
         print(f"📊 Today's forex 3TP signals: {len(signals['forex_3tp'])}/{MAX_FOREX_3TP_SIGNALS}")
@@ -2036,8 +2088,16 @@ async def send_crypto_signal(channel="lingrid"):
         channel: "lingrid" or "gainmuse" - determines which channel to send to
     """
     try:
-        # Check if enough time has passed since last signal
-        if not can_send_signal_now():
+        # Determine which channel to send to
+        if channel == "lingrid":
+            channel_id = CHANNEL_LINGRID_CRYPTO
+            channel_name = "Lingrid Crypto"
+        else:
+            channel_id = CHANNEL_GAINMUSE
+            channel_name = "GainMuse Crypto"
+        
+        # Check if enough time has passed since last signal (5 min between channels, 2h for same channel)
+        if not can_send_signal_now(channel_id):
             return False
         
         signals = load_signals()
@@ -2050,13 +2110,9 @@ async def send_crypto_signal(channel="lingrid"):
         if channel == "lingrid":
             channel_signals = signals.get("crypto_lingrid", [])
             max_signals = MAX_CRYPTO_SIGNALS_LINGRID
-            channel_id = CHANNEL_LINGRID_CRYPTO
-            channel_name = "Lingrid Crypto"
         else:
             channel_signals = signals.get("crypto_gainmuse", [])
             max_signals = MAX_CRYPTO_SIGNALS_GAINMUSE
-            channel_id = CHANNEL_GAINMUSE
-            channel_name = "GainMuse Crypto"
         
         if len(channel_signals) >= max_signals:
             print(f"⚠️ {channel_name} signal limit reached: {len(channel_signals)}/{max_signals}")
@@ -2084,8 +2140,9 @@ async def send_crypto_signal(channel="lingrid"):
         # Save signal to channel file
         save_channel_signal(channel_id, signal)
         
-        # Update last signal time
+        # Update last signal time (global and channel-specific)
         save_last_signal_time()
+        save_channel_last_signal_time(channel_id)
         
         # Calculate distribution for this channel
         buy_count = len([s for s in channel_signals if s.get("type") == "BUY"])
@@ -2111,7 +2168,8 @@ async def send_index_signal(signal_data=None):
             return False
         
         # Check if enough time has passed since last signal (only for automatic signals)
-        if signal_data is None and not can_send_signal_now():
+        # 5 min between channels, 2h for same channel
+        if signal_data is None and not can_send_signal_now(CHANNEL_LINGRID_INDEXES):
             return False
         
         signals = load_signals()
@@ -2142,8 +2200,9 @@ async def send_index_signal(signal_data=None):
         # Save signal to channel file
         save_channel_signal(CHANNEL_LINGRID_INDEXES, signal_data)
         
-        # Update last signal time
+        # Update last signal time (global and channel-specific)
         save_last_signal_time()
+        save_channel_last_signal_time(CHANNEL_LINGRID_INDEXES)
         
         pair = signal_data.get('pair', 'Unknown')
         signal_type = signal_data.get('type', '')
@@ -2763,7 +2822,7 @@ def get_analytics_from_results(channel_id, days: int):
                 # Track highest TP
                 if highest_tp_result is None:
                     highest_tp_result = result
-                else:
+            else:
                     current_order = tp_order_map.get(hit_type, 0)
                     existing_order = tp_order_map.get(highest_tp_result.get("hit_type", ""), 0)
                     if current_order > existing_order:
@@ -2806,7 +2865,7 @@ def get_analytics_from_results(channel_id, days: int):
                     total_profit += profit_pips
                     profit_values.append(profit_pips)
                     signals_detail.append(f"✅ {pair} {hit_type}: +{profit_pips:.1f} pips")
-                else:
+        else:
                     loss_count += 1
                     loss_values.append(abs(profit_pips))
                     signals_detail.append(f"❌ {pair} {hit_type}: {profit_pips:.1f} pips")
@@ -2932,12 +2991,12 @@ async def handle_performance_report(query, context: ContextTypes.DEFAULT_TYPE, s
                 report += f"Average Loss: {performance['avg_loss']:+.1f} pips\n"
         else:
             # Crypto: percentage
-            report += f"Total Profit: {performance['total_profit']:+.2f}%\n"
-            report += f"Average per Signal: {performance['avg_profit_per_signal']:+.2f}%\n"
-            if performance['profit_signals'] > 0:
-                report += f"Average Win: {performance['avg_profit']:+.2f}%\n"
-            if performance['loss_signals'] > 0:
-                report += f"Average Loss: {performance['avg_loss']:+.2f}%\n"
+        report += f"Total Profit: {performance['total_profit']:+.2f}%\n"
+        report += f"Average per Signal: {performance['avg_profit_per_signal']:+.2f}%\n"
+        if performance['profit_signals'] > 0:
+            report += f"Average Win: {performance['avg_profit']:+.2f}%\n"
+        if performance['loss_signals'] > 0:
+            report += f"Average Loss: {performance['avg_loss']:+.2f}%\n"
         if performance['profit_factor'] != float('inf'):
             report += f"Profit Factor: {performance['profit_factor']:.2f}\n"
         else:
@@ -3384,17 +3443,12 @@ def hourly_tp_check_loop():
 def automatic_signal_loop():
     """Automatic signal generation loop (runs in separate thread)"""
     print("🤖 Starting automatic signal generation loop...")
-    print("⏰ Waiting initial delay before sending first signals...")
+    print("🚀 Bot will start sending signals immediately (no initial delay)")
     
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
     async def async_loop():
-        # Wait for initial interval before sending first signals (don't send on startup)
-        first_interval = get_next_interval()
-        print(f"⏰ Waiting {first_interval/3600:.1f} hours before first signal...")
-        await asyncio.sleep(first_interval)
-        
         while True:
             try:
                 current_time = datetime.now(timezone.utc)
@@ -3511,21 +3565,11 @@ def automatic_signal_loop():
                     print(f"⏰ Waiting {wait_seconds/3600:.1f} hours until tomorrow...")
                     await asyncio.sleep(wait_seconds)
                 else:
-                    # Wait for next interval (but ensure minimum 5 minutes between channels)
-                    next_interval = get_next_interval()
-                    # Also check if we need to wait for minimum spacing
-                    last_time = get_last_signal_time()
-                    if last_time:
-                        current_time = datetime.now(timezone.utc)
-                        time_since_last = (current_time - last_time).total_seconds()
-                        min_wait = 5 * 60  # 5 minutes in seconds (minimum between channels)
-                        if time_since_last < min_wait:
-                            remaining = min_wait - time_since_last
-                            # Use the longer of the two waits (interval or spacing)
-                            next_interval = max(next_interval, remaining)
-                    
-                    print(f"⏰ Waiting {next_interval/3600:.1f} hours until next signal check...")
-                    await asyncio.sleep(next_interval)
+                    # Check frequently (every 1-2 minutes) to see if we can send signals
+                    # Timing rules (2h same channel, 5min different channels) are enforced in can_send_signal_now()
+                    check_interval = random.randint(60, 120)  # 1-2 minutes
+                    print(f"⏰ Checking again in {check_interval} seconds...")
+                    await asyncio.sleep(check_interval)
                 
                 # Check if it's time for daily summary (14:30 GMT)
                 now = datetime.now(timezone.utc)
