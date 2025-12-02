@@ -1,0 +1,30 @@
+{
+  "forex": [],
+  "crypto": [
+    {
+      "pair": "XRPUSDT",
+      "type": "BUY",
+      "entry": 2.5633,
+      "sl": 2.512034,
+      "tp1": 2.614566,
+      "tp2": 2.665832,
+      "tp3": 2.717098,
+      "timestamp": "2025-10-30T09:23:16.601993+00:00",
+      "channel": "-1002978318746",
+      "status": "ACTIVE",
+      "hits": {
+        "tp1": false,
+        "tp2": false,
+        "tp3": false,
+        "sl": false
+      },
+      "notified": {
+        "tp1": false,
+        "tp2": false,
+        "tp3": false,
+        "sl": false
+      }
+    }
+  ],
+  "date": "2025-10-30"
+}
