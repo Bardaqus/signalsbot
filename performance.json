@@ -1,0 +1,64 @@
+{
+  "completed_signals": [
+    {
+      "symbol": "USDJPY",
+      "type": "BUY",
+      "entry": 150.647,
+      "exit_price": 150.717,
+      "profit_pct": 0.04646624227500156,
+      "status": "hit_tp",
+      "timestamp": "2025-10-20T17:14:49.520397+00:00",
+      "date": "2025-10-20"
+    },
+    {
+      "symbol": "USDJPY",
+      "type": "BUY",
+      "entry": 150.643,
+      "exit_price": 150.762,
+      "profit_pct": 0.07899470934593693,
+      "status": "hit_tp",
+      "timestamp": "2025-10-20T17:30:09.393080+00:00",
+      "date": "2025-10-20"
+    },
+    {
+      "symbol": "USDJPY",
+      "type": "BUY",
+      "entry": 151.168,
+      "exit_price": 151.117,
+      "profit_pct": -0.03373729889924861,
+      "status": "hit_sl",
+      "timestamp": "2025-10-21T04:59:26.280631+00:00",
+      "date": "2025-10-21"
+    },
+    {
+      "symbol": "USDCHF",
+      "type": "BUY",
+      "entry": 0.7932,
+      "exit_price": 0.7929,
+      "profit_pct": -0.037821482602113835,
+      "status": "hit_sl",
+      "timestamp": "2025-10-21T05:04:54.588923+00:00",
+      "date": "2025-10-21"
+    },
+    {
+      "symbol": "GBPUSD",
+      "type": "BUY",
+      "entry": 1.3392,
+      "exit_price": 1.3389,
+      "profit_pct": -0.022401433691753805,
+      "status": "hit_sl",
+      "timestamp": "2025-10-21T05:10:02.710961+00:00",
+      "date": "2025-10-21"
+    },
+    {
+      "symbol": "USDJPY",
+      "type": "BUY",
+      "entry": 151.117,
+      "exit_price": 151.226,
+      "profit_pct": 0.07212954201050105,
+      "status": "hit_tp",
+      "timestamp": "2025-10-21T05:10:03.950824+00:00",
+      "date": "2025-10-21"
+    }
+  ]
+}

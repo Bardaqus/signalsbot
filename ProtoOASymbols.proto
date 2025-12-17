@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+package spotware;
+
+// Symbols List Request
+message ProtoOASymbolsListReq {
+  int32 ctidTraderAccountId = 1;
+  bool includeArchivedSymbols = 2;
+}
+
+// Symbols List Response
+message ProtoOASymbolsListRes {
+  int32 ctidTraderAccountId = 1;
+  repeated ProtoOALightSymbol symbol = 2;
+}
+
+// Light Symbol (minimal symbol info)
+message ProtoOALightSymbol {
+  int32 symbolId = 1;
+  string symbolName = 2;
+  bool enabled = 3;
+  int32 baseAssetId = 4;
+  int32 quoteAssetId = 5;
+  int32 symbolCategoryId = 6;
+  int32 digits = 7;
+  int32 baseAssetPrecision = 8;
+  int32 quoteAssetPrecision = 9;
+  int32 lotSize = 10;
+  int32 tickValue = 11;
+  int32 tickSize = 12;
+  int32 minLot = 13;
+  int32 maxLot = 14;
+  int32 stepLot = 15;
+  int32 lotStep = 16;
+  int32 maxPosition = 17;
+  int32 tradingMode = 18;
+  int32 stopOutLevel = 19;
+  int32 stopOutLevelType = 20;
+  int32 hedgingMode = 21;
+  int32 swapLong = 22;
+  int32 swapShort = 23;
+  int32 swapRollover3Days = 24;
+  int32 marginMode = 25;
+  int32 marginHedge = 26;
+  int32 marginHedgeMode = 27;
+  int32 marginCurrency = 28;
+  int32 marginCurrencyDigits = 29;
+  int32 marginCurrencyPrecision = 30;
+  int32 marginCurrencyStep = 31;
+  int32 marginCurrencyMinLot = 32;
+  int32 marginCurrencyMaxLot = 33;
+  int32 marginCurrencyStepLot = 34;
+  int32 marginCurrencyLotStep = 35;
+  int32 marginCurrencyMaxPosition = 36;
+  int32 marginCurrencyTradingMode = 37;
+  int32 marginCurrencyStopOutLevel = 38;
+  int32 marginCurrencyStopOutLevelType = 39;
+  int32 marginCurrencyHedgingMode = 40;
+  int32 marginCurrencySwapLong = 41;
+  int32 marginCurrencySwapShort = 42;
+  int32 marginCurrencySwapRollover3Days = 43;
+}
+
