@@ -162,7 +162,9 @@ class SignalRejectReason(Enum):
     PARTIAL_TICK = "PARTIAL_TICK"  # Partial tick received, waiting for merge
     EXCEPTION = "EXCEPTION"  # Exception occurred
     GENERATION_FAILED = "GENERATION_FAILED"  # Signal generation failed
-    CONFIG_INVALID_DEMO_ACCOUNT_ID = "CONFIG_INVALID_DEMO_ACCOUNT_ID"  # DEMO_ACCOUNT_ID is invalid/not numeric
+    CONFIG_INVALID_DEMO_ACCOUNT_ID = "CONFIG_INVALID_DEMO_ACCOUNT_ID"  # DEMO_ACCOUNT_ID is invalid/not numeric (deprecated, use CONFIG_INVALID_ACCOUNT_ID)
+    CONFIG_INVALID_ACCOUNT_ID = "CONFIG_INVALID_ACCOUNT_ID"  # CTRADER_ACCOUNT_ID is invalid/not numeric or placeholder
+    PRICE_UNAVAILABLE_CTRADER_ONLY = "PRICE_UNAVAILABLE_CTRADER_ONLY"  # Gold price unavailable, cTrader only mode
 
 
 def parse_int_env(name: str, value: str) -> Optional[int]:
@@ -204,42 +206,147 @@ _gold_symbol_resolved = None  # Resolved symbol name and ID
 
 
 def get_real_forex_price(pair):
-    """Get real forex price from real-time API"""
+    """Get real forex price from real-time API with detailed logging"""
     try:
         if pair == "XAUUSD":
-            # Gold price from a free API
-            url = "https://api.metals.live/v1/spot/gold"
+            # Import robust HTTP client
             try:
-                response = requests.get(url, timeout=10)
-                if response.status_code == 200:
-                    data = response.json()
-                    return float(data.get("price", 0))
-            except:
-                # Try alternative gold API
-                url = "https://api.goldapi.io/api/XAU/USD"
-                headers = {"x-access-token": "goldapi-1234567890abcdef"}
+                from http_client import get_http_session, log_request_error
+                session = get_http_session()
+            except ImportError:
+                # Fallback to basic requests if http_client not available
+                session = requests.Session()
+                def log_request_error(name, url, exc, sess):
+                    return f"{name}: {type(exc).__name__} - {str(exc)[:100]}"
+            
+            # STRICT: Check if cTrader-only mode is enabled - NEVER call external APIs for gold (Config imported at module level)
+            gold_ctrader_only = Config.GOLD_CTRADER_ONLY
+            
+            if gold_ctrader_only:
+                # Strict cTrader only - NEVER call external APIs
+                # Check if cTrader streamer is available
+                global _gold_ctrader_streamer, _gold_symbol_resolved
+                if not _gold_ctrader_streamer:
+                    reason = "ctrader_unavailable"
+                    message = "cTrader streamer not initialized"
+                elif not _gold_symbol_resolved:
+                    reason = "ctrader_unavailable"
+                    message = "Symbol not resolved (XAUUSD not found)"
+                else:
+                    # Check if we have quotes
+                    symbol_name, _ = _gold_symbol_resolved
+                    quote_cache = _gold_quote_cache.get(symbol_name.upper(), {})
+                    if not quote_cache.get("bid") or not quote_cache.get("ask"):
+                        reason = "ctrader_no_quotes"
+                        message = "No quotes received from cTrader"
+                    else:
+                        reason = "ctrader_unavailable"
+                        message = "Unknown cTrader issue"
+                
+                return None, "PRICE_UNAVAILABLE_CTRADER_ONLY", {
+                    "reason": reason,
+                    "message": message,
+                    "gold_ctrader_only": True
+                }
+            
+            # Only reach here if GOLD_CTRADER_ONLY=false (fallback mode)
+            # Gold price from external APIs with detailed logging
+            providers = [
+                {
+                    "name": "metals.live (gold)",
+                    "url": "https://api.metals.live/v1/spot/gold",
+                    "headers": None,
+                },
+                {
+                    "name": "goldapi.io",
+                    "url": "https://api.goldapi.io/api/XAU/USD",
+                    "headers": {"x-access-token": "goldapi-1234567890abcdef"},
+                },
+                {
+                    "name": "metals.live (silver estimate)",
+                    "url": "https://api.metals.live/v1/spot/silver",
+                    "headers": None,
+                    "estimate_gold": True  # Estimate gold as 80x silver
+                }
+            ]
+            
+            errors = []
+            for provider in providers:
                 try:
-                    response = requests.get(url, headers=headers, timeout=10)
+                    print(f"[GOLD_PRICE] Trying {provider['name']}...")
+                    print(f"   URL: {provider['url']}")
+                    
+                    response = session.get(
+                        provider['url'], 
+                        headers=provider.get('headers'),
+                        timeout=(5, 10)
+                    )
+                    
+                    print(f"   Status: {response.status_code}")
+                    
                     if response.status_code == 200:
                         data = response.json()
-                        return float(data.get("price", 0))
-                except:
-                    # Try another gold API
-                    url = "https://api.metals.live/v1/spot/silver"
-                    try:
-                        response = requests.get(url, timeout=10)
-                        if response.status_code == 200:
-                            data = response.json()
-                            # Use silver price as reference and estimate gold (roughly 80x silver)
+                        response_preview = str(data)[:200]
+                        print(f"   Response preview: {response_preview}")
+                        
+                        if provider.get('estimate_gold'):
+                            # Estimate gold from silver
                             silver_price = float(data.get("price", 0))
                             if silver_price > 0:
-                                return round(silver_price * 80, 2)
-                    except:
-                        pass
-                    
-                    # If all APIs fail, return None instead of random price
-                    print(f"❌ All gold price APIs failed for {pair}")
-                    return None
+                                gold_price = round(silver_price * 80, 2)
+                                print(f"   ✅ Success: Estimated gold price = {gold_price} (from silver {silver_price})")
+                                return gold_price
+                        else:
+                            price = float(data.get("price", 0))
+                            if price > 0:
+                                print(f"   ✅ Success: Gold price = {price}")
+                                return price
+                            else:
+                                errors.append(f"{provider['name']}: price=0 in response")
+                    else:
+                        response_preview = response.text[:200] if hasattr(response, 'text') else str(response)[:200]
+                        errors.append(f"{provider['name']}: HTTP {response.status_code} - {response_preview}")
+                        print(f"   ❌ Failed: HTTP {response.status_code}")
+                        print(f"   Response: {response_preview}")
+                        
+                except requests.exceptions.SSLError as e:
+                    error_msg = log_request_error(provider['name'], provider['url'], e, session)
+                    errors.append(error_msg)
+                    print(f"   ❌ Failed: {error_msg}")
+                except requests.exceptions.ConnectionError as e:
+                    error_msg = log_request_error(provider['name'], provider['url'], e, session)
+                    errors.append(error_msg)
+                    print(f"   ❌ Failed: {error_msg}")
+                except requests.exceptions.Timeout as e:
+                    error_msg = log_request_error(provider['name'], provider['url'], e, session)
+                    errors.append(error_msg)
+                    print(f"   ❌ Failed: {error_msg}")
+                except Exception as e:
+                    error_msg = log_request_error(provider['name'], provider['url'], e, session)
+                    errors.append(error_msg)
+                    print(f"   ❌ Failed: {error_msg}")
+            
+            # All providers failed
+            if len(providers) == 0:
+                print("❌ [GOLD_PRICE] CONFIG_NO_GOLD_PRICE_PROVIDERS: No gold price providers configured")
+                return None
+            
+            # Determine reason code
+            has_ssl_errors = any('SSL' in err or 'SSLError' in err for err in errors)
+            has_connection_errors = any('Connection' in err or 'ConnectionError' in err for err in errors)
+            
+            if has_ssl_errors:
+                reason_code = "NETWORK_SSL_ERROR"
+            elif has_connection_errors:
+                reason_code = "NETWORK_CONNECTION_ERROR"
+            else:
+                reason_code = "PROVIDERS_UNAVAILABLE"
+            
+            print(f"❌ [GOLD_PRICE] All {len(providers)} gold price providers failed:")
+            for error in errors:
+                print(f"   - {error}")
+            print(f"   Reason: {reason_code} (all {len(providers)} providers unavailable)")
+            return None
         else:
             # Forex pairs from a free API
             url = f"https://api.fxratesapi.com/latest?base={pair[:3]}&symbols={pair[3:]}"
@@ -2247,9 +2354,25 @@ def generate_index_signal():
     if entry is None:
         print(f"❌ Could not get real price for {pair}, skipping signal")
         return None
+    
+    # Strict type check: entry must be float or int
+    if not isinstance(entry, (int, float)):
+        print(f"❌ Invalid price type for {pair}: got {type(entry).__name__}, expected float/int. Value: {repr(entry)}")
+        return None
+    
+    # Ensure entry is float
+    try:
+        entry = float(entry)
+    except (ValueError, TypeError) as e:
+        print(f"❌ Cannot convert price to float for {pair}: {e}. Value: {repr(entry)}")
+        return None
+    
+    if entry <= 0:
+        print(f"❌ Invalid price value for {pair}: {entry} (must be > 0)")
+        return None
 
-        # Calculate SL and TP based on real price
-        # For indexes, use reasonable percentages: 1-3% TP, 1-2% SL
+    # Calculate SL and TP based on real price
+    # For indexes, use reasonable percentages: 1-3% TP, 1-2% SL
     if pair == "XAUUSD":
         # Gold: 1-2% TP, 1-2% SL
         tp_percent = random.uniform(0.01, 0.02)  # 1-2%
@@ -2801,28 +2924,64 @@ def resolve_symbol_for_gold(streamer) -> Optional[Tuple[str, int]]:
         return None
 
 
+# Global flag to disable gold loop if config is invalid
+_gold_ctrader_disabled = False
+_gold_ctrader_disable_reason = None
+
 async def init_gold_ctrader_streamer():
     """Initialize cTrader streamer for gold quotes"""
-    global _gold_ctrader_streamer, _gold_symbol_resolved
+    global _gold_ctrader_streamer, _gold_symbol_resolved, _gold_ctrader_disabled, _gold_ctrader_disable_reason
+    
+    # Config is imported at module level (line 24: from config import Config)
+    # Ensure Config is accessible (protection against import errors)
+    # DO NOT create local variable Config - use global import only
+    try:
+        # Test access to Config (from global import)
+        _ = Config.GOLD_CTRADER_ONLY
+    except (NameError, AttributeError) as import_err:
+        error_msg = f"CONFIG_IMPORT_ERROR: Failed to access Config: {import_err}"
+        print(f"[GOLD_CTRADER] {error_msg}")
+        print(f"   → Cannot initialize cTrader streamer without Config")
+        print(f"   → Make sure 'from config import Config' is at module level")
+        _gold_ctrader_disabled = True
+        _gold_ctrader_disable_reason = error_msg
+        return False
     
     try:
-        # Check if cTrader credentials are available (basic check)
-        if not all([Config.CTRADER_ACCESS_TOKEN, Config.CTRADER_CLIENT_ID, Config.CTRADER_CLIENT_SECRET, Config.DEMO_ACCOUNT_ID]):
-            print("⚠️ [GOLD_CTRADER] cTrader credentials not configured, will use external APIs")
+        # Validate account ID FIRST (before creating config)
+        try:
+            account_id = Config.get_account_id_or_raise()
+        except ValueError as e:
+            error_msg = f"CONFIG_INVALID_ACCOUNT_ID: {e}"
+            print(f"[GOLD_CTRADER] {error_msg}")
+            print(f"   → Set CTRADER_ACCOUNT_ID in .env (e.g., CTRADER_ACCOUNT_ID=44749280)")
+            print(f"   → Gold streamer DISABLED - will not attempt to connect")
+            _gold_ctrader_disabled = True
+            _gold_ctrader_disable_reason = error_msg
             return False
         
-        # Validate and parse DEMO_ACCOUNT_ID
-        try:
-            account_id = parse_int_env("DEMO_ACCOUNT_ID", Config.DEMO_ACCOUNT_ID)
-            if account_id is None:
-                print(f"❌ [GOLD_CTRADER] CONFIG_INVALID_DEMO_ACCOUNT_ID: DEMO_ACCOUNT_ID is empty or not set.")
-                print(f"   → Set DEMO_ACCOUNT_ID in .env or config_live.env to your cTrader account id (e.g., DEMO_ACCOUNT_ID=123456789)")
-                print(f"   → Falling back to external APIs")
-                return False
-        except ValueError as ve:
-            print(f"❌ [GOLD_CTRADER] CONFIG_INVALID_DEMO_ACCOUNT_ID: {str(ve)}")
-            print(f"   → Set DEMO_ACCOUNT_ID in .env or config_live.env to your cTrader account id (e.g., DEMO_ACCOUNT_ID=123456789)")
-            print(f"   → Falling back to external APIs")
+        # Check if cTrader credentials are available (basic check)
+        ctrader_config = Config.get_ctrader_config()
+        if not all([ctrader_config.access_token, ctrader_config.client_id, ctrader_config.client_secret]):
+            error_msg = "CONFIG_MISSING_CREDENTIALS: cTrader credentials not configured"
+            print(f"[GOLD_CTRADER] {error_msg}")
+            print(f"   → Gold streamer DISABLED - will not attempt to connect")
+            _gold_ctrader_disabled = True
+            _gold_ctrader_disable_reason = error_msg
+            return False
+        
+        # Validate account ID from config matches
+        if ctrader_config.account_id != account_id or ctrader_config.account_id <= 0:
+            error_msg = f"CONFIG_INVALID_ACCOUNT_ID: Account ID mismatch or invalid (got {ctrader_config.account_id}, expected {account_id})"
+            print(f"[GOLD_CTRADER] {error_msg}")
+            print(f"   → Gold streamer DISABLED - will not attempt to connect")
+            _gold_ctrader_disabled = True
+            _gold_ctrader_disable_reason = error_msg
+            return False
+        
+        # Validate required credentials
+        if not all([ctrader_config.access_token, ctrader_config.client_id, ctrader_config.client_secret]):
+            print("⚠️ [GOLD_CTRADER] cTrader credentials not configured, will use external APIs")
             return False
         
         from ctrader_stream import CTraderStreamer
@@ -2831,13 +2990,12 @@ async def init_gold_ctrader_streamer():
         logger_backend = getattr(ctrader_stream, '_logger_backend', 'unknown')
         print(f"🔌 [GOLD_CTRADER] Initializing cTrader streamer for gold...")
         print(f"📊 [GOLD_CTRADER] Using logger backend: {logger_backend}")
-        print(f"📊 [GOLD_CTRADER] Using account_id={account_id}")
-        _gold_ctrader_streamer = CTraderStreamer(
-            access_token=Config.CTRADER_ACCESS_TOKEN,
-            client_id=Config.CTRADER_CLIENT_ID,
-            client_secret=Config.CTRADER_CLIENT_SECRET,
-            account_id=account_id
-        )
+        
+        # Log config safely (shows source: HARDCODED or ENV)
+        Config.log_config_safe()
+        
+        # Initialize streamer (will use config values if not provided)
+        _gold_ctrader_streamer = CTraderStreamer()
         
         # Set quote callback
         def on_gold_quote(symbol_name: str, bid: float, ask: float, timestamp: int):
@@ -2881,29 +3039,54 @@ async def init_gold_ctrader_streamer():
         
         _gold_ctrader_streamer.set_on_quote(on_gold_quote)
         
-        # Start connection
-        print("🔌 [GOLD_CTRADER] Connecting to cTrader...")
-        await _gold_ctrader_streamer.start()
-        
-        # Wait for symbols list
-        print("⏳ [GOLD_CTRADER] Waiting for symbols list (5 seconds)...")
-        await asyncio.sleep(5)
-        
-        # Resolve gold symbol
-        _gold_symbol_resolved = resolve_symbol_for_gold(_gold_ctrader_streamer)
-        if not _gold_symbol_resolved:
-            print("❌ [GOLD_CTRADER] Could not resolve gold symbol")
+        # Start connection (includes TCP precheck, connection, auth, symbol resolution, subscription, and first tick)
+        print("[GOLD_CTRADER] Connecting to cTrader...")
+        try:
+            await _gold_ctrader_streamer.start()
+            
+            # Extract resolved symbol info
+            if hasattr(_gold_ctrader_streamer, 'gold_symbol_name') and hasattr(_gold_ctrader_streamer, 'gold_symbol_id'):
+                symbol_name = _gold_ctrader_streamer.gold_symbol_name
+                symbol_id = _gold_ctrader_streamer.gold_symbol_id
+                _gold_symbol_resolved = (symbol_name, symbol_id)
+                print(f"[GOLD_CTRADER] Gold symbol resolved: {symbol_name} (ID: {symbol_id})")
+        except Exception as e:
+            # Import CTraderStreamerError if available
+            from ctrader_stream import CTraderStreamerError
+            if isinstance(e, CTraderStreamerError):
+                print(f"[GOLD_CTRADER] Error initializing cTrader streamer: {e.reason_code}")
+                print(f"   → {e.message}")
+                
+                # Check if external fallback is allowed (Config is already imported at function start)
+                if Config.GOLD_CTRADER_ONLY:
+                    print(f"   → GOLD_CTRADER_ONLY=true, external APIs disabled")
+                else:
+                    print(f"   → Falling back to external APIs (GOLD_CTRADER_ONLY=false)")
+            else:
+                print(f"[GOLD_CTRADER] Error initializing cTrader streamer: {type(e).__name__}")
+                print(f"   → {str(e)}")
+                import traceback
+                print(f"   → Full traceback:")
+                traceback.print_exc()
+                
+                # Check if external fallback is allowed (Config is already imported at function start)
+                if Config.GOLD_CTRADER_ONLY:
+                    print(f"   → GOLD_CTRADER_ONLY=true, external APIs disabled")
+                else:
+                    print(f"   → Falling back to external APIs (GOLD_CTRADER_ONLY=false)")
+            
             return False
         
-        symbol_name, symbol_id = _gold_symbol_resolved
-        print(f"✅ [GOLD_CTRADER] Resolved gold symbol: {symbol_name} (ID: {symbol_id})")
-        
-        # Subscribe to gold quotes
-        print(f"📡 [GOLD_CTRADER] Subscribing to {symbol_name}...")
-        success = await _gold_ctrader_streamer.subscribe(symbol_name)
-        if not success:
-            print(f"❌ [GOLD_CTRADER] Failed to subscribe to {symbol_name}")
-            return False
+        # Symbol resolution and subscription is now handled inside start() method
+        # The streamer will automatically resolve gold symbol and subscribe
+        # We just need to extract the resolved symbol after start() completes
+        if hasattr(_gold_ctrader_streamer, 'gold_symbol_name') and hasattr(_gold_ctrader_streamer, 'gold_symbol_id'):
+            symbol_name = _gold_ctrader_streamer.gold_symbol_name
+            symbol_id = _gold_ctrader_streamer.gold_symbol_id
+            _gold_symbol_resolved = (symbol_name, symbol_id)
+            print(f"[GOLD_CTRADER] Gold symbol resolved: {symbol_name} (ID: {symbol_id})")
+        else:
+            print("[GOLD_CTRADER] Warning: Symbol resolution completed but symbol info not found in streamer")
         
         # Warm-up: wait for first valid tick
         print("⏳ [GOLD_CTRADER] Warm-up: waiting for first valid tick (max 20 seconds)...")
@@ -2978,10 +3161,16 @@ def get_active_gold_signal_direction(channel_id):
         # Get gold signals for this channel
         gold_signals = signals.get("gold_private", [])
         
-        # Get current gold price
-        current_price = get_real_forex_price("XAUUSD")
+        # Get current gold price (strictly from cTrader if GOLD_CTRADER_ONLY=true)
+        current_price = get_gold_price_from_ctrader()
         if current_price is None:
-            return None
+            # Check if external fallback is allowed (Config imported at module level)
+            if not Config.GOLD_CTRADER_ONLY:
+                price_result = get_real_forex_price("XAUUSD")
+                if price_result and len(price_result) >= 1:
+                    current_price = price_result[0]
+            if current_price is None:
+                return None
         
         # Check all gold signals for this channel
         for signal in gold_signals:
@@ -3047,15 +3236,46 @@ def generate_gold_signal():
         entry = get_gold_price_from_ctrader()
         price_source = "cTrader"
         
-        # Fallback to external APIs if cTrader not available
         if entry is None:
-            print("⚠️ [GOLD_GEN] cTrader price not available, trying external APIs...")
-            entry = get_real_forex_price("XAUUSD")
-            price_source = "External API"
-        
-        if entry is None:
-            print("❌ [GOLD_GEN] Could not get real gold price from any source")
-            return None
+            # Check if cTrader-only mode is enabled (Config imported at module level)
+            gold_ctrader_only = Config.GOLD_CTRADER_ONLY
+            
+            if gold_ctrader_only:
+                # Strict cTrader only - no external APIs
+                print("[GOLD_GEN] PRICE_UNAVAILABLE_CTRADER_ONLY: cTrader price not available, GOLD_CTRADER_ONLY=true")
+                
+                # Detailed diagnostics
+                ctrader_config = Config.get_ctrader_config()
+                ws_url, _ = ctrader_config.get_ws_url()
+                print(f"   cTrader config:")
+                print(f"     ws_url: {ws_url}")
+                print(f"     is_demo: {ctrader_config.is_demo}")
+                print(f"     account_id: {ctrader_config.account_id}")
+                
+                # Check streamer status
+                global _gold_ctrader_streamer, _gold_symbol_resolved
+                if not _gold_ctrader_streamer:
+                    print(f"     reason: Streamer not initialized")
+                elif not _gold_symbol_resolved:
+                    print(f"     reason: Symbol not resolved (XAUUSD not found)")
+                else:
+                    symbol_name, symbol_id = _gold_symbol_resolved
+                    quote_cache = _gold_quote_cache.get(symbol_name.upper(), {})
+                    if not quote_cache.get("bid") or not quote_cache.get("ask"):
+                        print(f"     reason: No quotes received for {symbol_name} (ID: {symbol_id})")
+                    else:
+                        print(f"     reason: Unknown (streamer initialized, symbol resolved, quotes exist)")
+                
+                return None
+            else:
+                # Fallback to external APIs (if GOLD_CTRADER_ONLY=false)
+                print("[GOLD_GEN] cTrader price not available, trying external APIs (GOLD_CTRADER_ONLY=false)...")
+                entry = get_real_forex_price("XAUUSD")
+                if entry:
+                    price_source = "external API"
+                else:
+                    print("[GOLD_GEN] Could not get real gold price from any source")
+                    return None
         
         print(f"✅ [GOLD_GEN] Got gold price: {entry:.2f} (source: {price_source})")
         
@@ -3199,35 +3419,71 @@ async def send_gold_signal(return_reason=False, skip_throttle=False):
         details["signal_generated"] = signal is not None
         
         if signal is None:
-            # Check if price was unavailable (more specific reason)
-            # This is detected by checking if get_gold_price_from_ctrader() returned None
-            # and external API also failed
+            # Get gold price (strictly from cTrader if GOLD_CTRADER_ONLY=true) (Config imported at module level)
+            gold_ctrader_only = Config.GOLD_CTRADER_ONLY
+            
             gold_price = get_gold_price_from_ctrader()
             if gold_price is None:
-                # Try external API as fallback
-                try:
-                    external_price = get_real_forex_price("XAUUSD")
-                    if external_price is None:
+                if gold_ctrader_only:
+                    # Strict cTrader only - no external APIs
+                    ctrader_config = Config.get_ctrader_config()
+                    ws_url, _ = ctrader_config.get_ws_url()
+                    
+                    # Determine reason
+                    reason_details = {
+                        "ws_url": ws_url,
+                        "is_demo": ctrader_config.is_demo,
+                        "account_id": ctrader_config.account_id,
+                    }
+                    
+                    global _gold_ctrader_streamer, _gold_symbol_resolved
+                    if not _gold_ctrader_streamer:
+                        reason_details["reason"] = "Streamer not initialized"
+                    elif not _gold_symbol_resolved:
+                        reason_details["reason"] = "Symbol not resolved (XAUUSD not found)"
+                    else:
+                        symbol_name, symbol_id = _gold_symbol_resolved
+                        quote_cache = _gold_quote_cache.get(symbol_name.upper(), {})
+                        if not quote_cache.get("bid") or not quote_cache.get("ask"):
+                            reason_details["reason"] = f"No quotes received for {symbol_name} (ID: {symbol_id})"
+                        else:
+                            reason_details["reason"] = "Unknown (check logs)"
+                    
+                    details["reject_reason"] = SignalRejectReason.PRICE_UNAVAILABLE_CTRADER_ONLY.value
+                    details["reject_details"] = reason_details
+                    
+                    print(f"[GOLD_SEND] PRICE_UNAVAILABLE_CTRADER_ONLY: cTrader price not available")
+                    print(f"   ws_url: {ws_url}")
+                    print(f"   is_demo: {ctrader_config.is_demo}")
+                    print(f"   account_id: {ctrader_config.account_id}")
+                    print(f"   reason: {reason_details['reason']}")
+                    
+                    if return_reason:
+                        return False, SignalRejectReason.PRICE_UNAVAILABLE_CTRADER_ONLY, details
+                    return False
+                else:
+                    # Fallback to external APIs (if GOLD_CTRADER_ONLY=false)
+                    try:
+                        external_price = get_real_forex_price("XAUUSD")
+                        if external_price:
+                            gold_price = external_price
+                        else:
+                            details["reject_reason"] = SignalRejectReason.PRICE_UNAVAILABLE.value
+                            details["reject_details"] = {
+                                "ctrader_error": "No price from cTrader",
+                                "external_error": "No price from external APIs"
+                            }
+                            if return_reason:
+                                return False, SignalRejectReason.PRICE_UNAVAILABLE, details
+                            print("[GOLD_SEND] PRICE_UNAVAILABLE: Could not get gold price from cTrader or external APIs")
+                            return False
+                    except Exception as e:
                         details["reject_reason"] = SignalRejectReason.PRICE_UNAVAILABLE.value
-                        details["price_check"] = {
-                            "ctrader_price": None,
-                            "external_price": None,
-                            "reason": "Both cTrader and external APIs failed"
-                        }
+                        details["reject_details"] = {"external_error": str(e)}
                         if return_reason:
                             return False, SignalRejectReason.PRICE_UNAVAILABLE, details
-                        print("❌ [GOLD_SEND] PRICE_UNAVAILABLE: Could not get gold price from cTrader or external APIs")
+                        print(f"[GOLD_SEND] PRICE_UNAVAILABLE: External API error: {e}")
                         return False
-                except Exception as e:
-                    details["reject_reason"] = SignalRejectReason.PRICE_UNAVAILABLE.value
-                    details["price_check"] = {
-                        "ctrader_price": None,
-                        "external_api_error": str(e)
-                    }
-                    if return_reason:
-                        return False, SignalRejectReason.PRICE_UNAVAILABLE, details
-                    print(f"❌ [GOLD_SEND] PRICE_UNAVAILABLE: External API error: {e}")
-                    return False
             
             # Other generation failures
             details["reject_reason"] = SignalRejectReason.GENERATION_FAILED.value
@@ -3576,7 +3832,7 @@ def is_authorized(user_id: int) -> bool:
 
 
 async def debug_gold_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /debug_gold command - detailed diagnostics for gold signals"""
+    """Handle /debug_gold command - connect to cTrader and find gold symbols"""
     user_id = update.effective_user.id
     
     if not is_authorized(user_id):
@@ -3584,24 +3840,89 @@ async def debug_gold_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     
     try:
-        debug_info = []
-        debug_info.append("🔍 **GOLD Signal Diagnostics**\n")
+        await update.message.reply_text("🔍 Connecting to cTrader to find gold symbols...")
         
-        # 1. Symbol resolution
-        global _gold_symbol_resolved, _gold_ctrader_streamer, _gold_quote_cache
-        debug_info.append("📊 **Symbol Resolution:**")
-        if _gold_symbol_resolved:
-            symbol_name, symbol_id = _gold_symbol_resolved
-            debug_info.append(f"✅ Symbol: {symbol_name} (ID: {symbol_id})")
-        else:
-            debug_info.append("❌ Symbol not resolved")
-            if _gold_ctrader_streamer and hasattr(_gold_ctrader_streamer, 'symbol_name_to_id'):
-                symbol_map = _gold_ctrader_streamer.symbol_name_to_id
-                gold_candidates = [s for s in symbol_map.keys() if "XAU" in s or "GOLD" in s]
-                if gold_candidates:
-                    debug_info.append(f"   Found candidates: {', '.join(gold_candidates[:5])}")
-                else:
-                    debug_info.append(f"   No gold symbols found in {len(symbol_map)} symbols")
+        # Import cTrader streamer
+        from ctrader_stream import CTraderStreamer, CTraderStreamerError
+        
+        # Get config
+        ctrader_config = Config.get_ctrader_config()
+        
+        if not all([ctrader_config.access_token, ctrader_config.client_id, ctrader_config.client_secret, ctrader_config.account_id]):
+            await update.message.reply_text("❌ cTrader credentials not configured. Check ENV keys.")
+            return
+        
+        # Create temporary streamer for debugging
+        debug_streamer = CTraderStreamer()
+        
+        try:
+            # Connect and authenticate
+            await update.message.reply_text("📡 Step 1: Connecting to cTrader...")
+            await debug_streamer.start()
+            
+            # Get symbols list
+            await update.message.reply_text("📊 Step 2: Getting symbols list...")
+            
+            if not hasattr(debug_streamer, 'symbol_name_to_id') or not debug_streamer.symbol_name_to_id:
+                await update.message.reply_text("❌ Symbols list not loaded. Check connection.")
+                return
+            
+            symbol_map = debug_streamer.symbol_name_to_id
+            
+            # Find gold symbols
+            gold_candidates = []
+            search_terms = ["XAU", "GOLD", "METAL"]
+            
+            for sym_name, sym_id in symbol_map.items():
+                sym_upper = sym_name.upper()
+                for term in search_terms:
+                    if term in sym_upper:
+                        gold_candidates.append((sym_name, sym_id))
+                        break
+            
+            # Sort: exact matches first
+            gold_candidates.sort(key=lambda x: (x[0].upper() != "XAUUSD", x[0]))
+            
+            # Build response
+            debug_info = []
+            debug_info.append("🔍 **GOLD Symbol Debug Results**\n")
+            debug_info.append(f"📊 Total symbols: {len(symbol_map)}")
+            debug_info.append(f"🔎 Found {len(gold_candidates)} gold-related symbols:\n")
+            
+            # Show top 20
+            for i, (name, sym_id) in enumerate(gold_candidates[:20], 1):
+                debug_info.append(f"{i}. **{name}** (ID: {sym_id})")
+            
+            if len(gold_candidates) > 20:
+                debug_info.append(f"\n... and {len(gold_candidates) - 20} more")
+            
+            # Recommend best match
+            if gold_candidates:
+                best_name, best_id = gold_candidates[0]
+                debug_info.append(f"\n✅ **Recommended:** {best_name} (ID: {best_id})")
+                debug_info.append(f"\n💡 Set in .env: CTRADER_GOLD_SYMBOL_ID={best_id}")
+            else:
+                debug_info.append("\n❌ No gold symbols found!")
+                debug_info.append("\n💡 Check available symbols manually or contact support")
+            
+            debug_text = "\n".join(debug_info)
+            await update.message.reply_text(debug_text, parse_mode='Markdown')
+            
+        except CTraderStreamerError as e:
+            await update.message.reply_text(f"❌ cTrader Error: {e.reason_code}\n{e.message}")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {type(e).__name__}: {e}\n\n{traceback.format_exc()[:1000]}")
+        finally:
+            # Cleanup
+            try:
+                if hasattr(debug_streamer, 'client'):
+                    debug_streamer.client.stopService()
+            except:
+                pass
+        
+    except Exception as e:
+        error_msg = f"❌ Error in debug_gold: {e}\n\n{traceback.format_exc()[:1000]}"
+        await update.message.reply_text(error_msg)
         
         # 2. cTrader subscription status
         debug_info.append("\n📡 **cTrader Subscription:**")
@@ -3617,7 +3938,8 @@ async def debug_gold_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 debug_info.append("⚠️ Streamer initialized but symbol not resolved")
         else:
             debug_info.append("❌ Streamer not initialized")
-            if not all([Config.CTRADER_ACCESS_TOKEN, Config.CTRADER_CLIENT_ID, Config.CTRADER_CLIENT_SECRET, Config.DEMO_ACCOUNT_ID]):
+            ctrader_config = Config.get_ctrader_config()
+            if not all([ctrader_config.access_token, ctrader_config.client_id, ctrader_config.client_secret]) or not ctrader_config.account_id:
                 debug_info.append("   → cTrader credentials not configured")
         
         # 3. Current quotes
@@ -4862,13 +5184,31 @@ def automatic_signal_loop():
             await asyncio.sleep(3)
             
             # Initialize cTrader for gold if credentials available
-            if all([Config.CTRADER_ACCESS_TOKEN, Config.CTRADER_CLIENT_ID, Config.CTRADER_CLIENT_SECRET, Config.DEMO_ACCOUNT_ID]):
-                print("\n🔌 [INIT] Initializing cTrader for gold quotes...")
-                ctrader_ok = await init_gold_ctrader_streamer()
-                if ctrader_ok:
-                    print("✅ [INIT] cTrader initialized for gold")
-                else:
-                    print("⚠️ [INIT] cTrader initialization failed, will use external APIs")
+            # Check if gold streamer is disabled (will be set by init_gold_ctrader_streamer if config invalid)
+            global _gold_ctrader_disabled
+            if not _gold_ctrader_disabled:
+                try:
+                    account_id = Config.get_account_id_or_raise()
+                    ctrader_config = Config.get_ctrader_config()
+                    if all([ctrader_config.access_token, ctrader_config.client_id, ctrader_config.client_secret]) and account_id > 0:
+                        print("\n[INIT] Initializing cTrader for gold quotes...")
+                        ctrader_ok = await init_gold_ctrader_streamer()
+                        if ctrader_ok:
+                            print("[INIT] cTrader initialized for gold")
+                        else:
+                            if _gold_ctrader_disabled:
+                                print(f"[INIT] Gold streamer disabled: {_gold_ctrader_disable_reason}")
+                            else:
+                                print("[INIT] cTrader initialization failed")
+                    else:
+                        print("[INIT] cTrader credentials not configured, skipping gold streamer initialization")
+                except ValueError as e:
+                    print(f"[INIT] Config error: {e}")
+                    print(f"[INIT] Gold streamer DISABLED")
+                    _gold_ctrader_disabled = True
+                    _gold_ctrader_disable_reason = str(e)
+            else:
+                print(f"[INIT] Gold streamer disabled: {_gold_ctrader_disable_reason}")
             
             # Send 1 gold signal to GOLD Private channel (WITH throttle exception for startup)
             print("\n🥇 [INIT] Attempting to send initial gold signal to GOLD Private channel...")
@@ -4905,6 +5245,8 @@ def automatic_signal_loop():
                 
                 elif reason == SignalRejectReason.PRICE_UNAVAILABLE.value:
                     print(f"   → PRICE_UNAVAILABLE: Could not get gold price from any source")
+                elif reason == SignalRejectReason.PRICE_UNAVAILABLE_CTRADER_ONLY.value:
+                    print(f"   → PRICE_UNAVAILABLE_CTRADER_ONLY: cTrader price not available (GOLD_CTRADER_ONLY=true)")
                     print(f"   → Check:")
                     print(f"      - cTrader connection status")
                     print(f"      - Symbol resolution (use /debug_gold to check)")
@@ -4947,11 +5289,17 @@ def automatic_signal_loop():
             print(f"⚠️ [INIT] Error sending initial signals: {e}")
             print(traceback.format_exc())
     
-    # Schedule initial signals
-    loop.create_task(send_initial_signals())
-    asyncio.set_event_loop(loop)
-    
+    # Run initial signals first, then start the main loop
     async def async_loop():
+        # Send initial signals first (with delay to avoid conflicts)
+        try:
+            await asyncio.sleep(2)  # Small delay to let PTB initialize
+            await send_initial_signals()
+        except Exception as e:
+            print(f"⚠️ [INIT] Error in send_initial_signals: {e}")
+            print(traceback.format_exc())
+        
+        # Main signal generation loop
         while True:
             try:
                 current_time = datetime.now(timezone.utc)
@@ -5130,7 +5478,28 @@ def main():
     print("📅 Forex signals: No signals on weekends")
     print("=" * 60)
     
-    # Start automatic signal generation in separate thread
+    # Create application for interactive features FIRST
+    # This must be done before starting any threads to avoid event loop conflicts
+    application = Application.builder().token(BOT_TOKEN).build()
+    
+    # Add interactive handlers
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("debug_gold", debug_gold_command))
+    application.add_handler(CallbackQueryHandler(button_callback))
+    
+    # Add post_init callback to log bot info after initialization
+    async def post_init(application: Application) -> None:
+        """Called after bot is initialized"""
+        try:
+            bot_info = await application.bot.get_me()
+            print(f"✅ Bot initialized: @{bot_info.username} (ID: {bot_info.id})")
+        except Exception as e:
+            print(f"⚠️ Could not get bot info: {e}")
+    
+    # Set post_init callback
+    application.post_init = post_init
+    
+    # Start automatic signal generation in separate thread AFTER application is created
     # (Initial index signal will be sent automatically when the loop starts)
     automatic_thread = threading.Thread(target=automatic_signal_loop, daemon=True)
     automatic_thread.start()
@@ -5139,21 +5508,14 @@ def main():
     # tp_check_thread = threading.Thread(target=hourly_tp_check_loop, daemon=True)
     # tp_check_thread.start()
     
-    # Create application for interactive features
-    application = Application.builder().token(BOT_TOKEN).build()
-    
-    # Add interactive handlers
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("debug_gold", debug_gold_command))
-    application.add_handler(CallbackQueryHandler(button_callback))
-    
     print("✅ Working combined bot started successfully!")
     print("📱 Send /start to your bot to see the control panel")
     print("🤖 Automatic signal generation is running in background")
     print("⚠️ TP/SL monitoring disabled - no profit calculations or notifications")
+    print("🔄 Starting polling...")
     
-    # Start the interactive bot
-    application.run_polling()
+    # Start the interactive bot (blocking call)
+    application.run_polling(allowed_updates=None, drop_pending_updates=True)
 
 
 if __name__ == "__main__":
