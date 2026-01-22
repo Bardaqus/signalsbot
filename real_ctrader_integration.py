@@ -16,7 +16,7 @@ class RealCTraderAPI:
     
     def __init__(self):
         self.access_token = Config.CTRADER_ACCESS_TOKEN
-        self.refresh_token = "Ysne5K6hn9sgSUjzw4_QnmZHQ_VhAsNS5W5f5XxtXNE"
+        self.refresh_token = "UVNGZPSDSbB-Vi81R2DX8NANvIkESfE_yXnNS6z1RC4"
         self.account_id = 44749280  # Internal account ID
         self.account_number = 9615885  # Display account number
         self.websocket = None

@@ -1,6 +1,19 @@
 import asyncio
 from typing import Callable, Dict, Optional
-from loguru import logger
+
+# Try to import loguru, fallback to standard logging if not available
+try:
+    from loguru import logger
+    _logger_backend = "loguru"
+except ImportError:
+    import logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    logger = logging.getLogger("ctrader_stream")
+    _logger_backend = "logging"
 
 from ctrader_open_api.client import Client
 from ctrader_open_api.factory import Factory

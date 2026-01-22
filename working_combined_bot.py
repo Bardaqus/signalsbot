@@ -14,10 +14,13 @@ import json
 import random
 import requests
 import re
+import traceback
+from enum import Enum
 from datetime import datetime, timezone, timedelta
 import pytz
 import sys
 import httpx
+from typing import Optional, Dict, Tuple, List
 from config import Config
 
 # Fix APScheduler timezone issue: patch apscheduler.util.astimezone before APScheduler imports
@@ -99,6 +102,7 @@ CHANNEL_LINGRID_CRYPTO = "-1001411205299"  # Lingrid Crypto
 CHANNEL_LINGRID_FOREX = "-1001286609636"  # Lingrid Forex
 CHANNEL_GAINMUSE = "-1002978318746"  # GainMuse
 CHANNEL_LINGRID_INDEXES = "-1001247341118"  # Lingrid Indexes
+CHANNEL_GOLD_PRIVATE = "-1003506500177"  # GOLD Private
 
 # Channel result files - one file per channel
 # Maps all channel IDs (both old constants and new) to result files
@@ -109,6 +113,7 @@ CHANNEL_RESULTS = {
     CHANNEL_LINGRID_FOREX: "results_lingrid_forex.json",
     CHANNEL_GAINMUSE: "results_gainmuse.json",
     CHANNEL_LINGRID_INDEXES: "results_lingrid_indexes.json",
+    CHANNEL_GOLD_PRIVATE: "results_gold_private.json",
     # Old channel constants (for backward compatibility)
     FOREX_CHANNEL: "results_lingrid_forex.json",  # FOREX_CHANNEL = CHANNEL_LINGRID_FOREX
     FOREX_CHANNEL_3TP: "results_degram.json",  # FOREX_CHANNEL_3TP = CHANNEL_DEGRAM
@@ -124,7 +129,8 @@ CHANNEL_SIGNALS = {
     CHANNEL_LINGRID_CRYPTO: "signals_lingrid_crypto.json",
     CHANNEL_LINGRID_FOREX: "signals_lingrid_forex.json",
     CHANNEL_GAINMUSE: "signals_gainmuse.json",
-    CHANNEL_LINGRID_INDEXES: "signals_lingrid_indexes.json"
+    CHANNEL_LINGRID_INDEXES: "signals_lingrid_indexes.json",
+    CHANNEL_GOLD_PRIVATE: "signals_gold_private.json"
 }
 
 # Signal limits
@@ -134,10 +140,67 @@ MAX_FOREX_ADDITIONAL_SIGNALS = 5  # Additional forex channel (different signals)
 MAX_CRYPTO_SIGNALS_LINGRID = 5  # Lingrid Crypto channel
 MAX_CRYPTO_SIGNALS_GAINMUSE = 10  # GainMuse Crypto channel (increased to 10 signals per day)
 MAX_INDEX_SIGNALS = 5  # Index channel (5 signals per day)
+MAX_GOLD_SIGNALS = 2  # Gold Private channel (2 signals per day)
 
 # Time intervals (in hours)
 MIN_INTERVAL = 3  # Changed to 3 hours minimum
 MAX_INTERVAL = 5  # Keep 5 hours maximum
+
+# Reason codes for signal rejection
+class SignalRejectReason(Enum):
+    """Structured reason codes for why a signal was rejected"""
+    SUCCESS = "SUCCESS"
+    THROTTLE_MIN_INTERVAL = "THROTTLE_MIN_INTERVAL"  # 5 min between channels
+    THROTTLE_CHANNEL_INTERVAL = "THROTTLE_CHANNEL_INTERVAL"  # 2h for same channel
+    RULE_36H = "RULE_36H"  # 36h rule for same pair in same channel
+    DAILY_LIMIT = "DAILY_LIMIT"  # Daily signal limit reached
+    WEEKEND_BLOCK = "WEEKEND_BLOCK"  # Weekend - no signals
+    PRICE_UNAVAILABLE = "PRICE_UNAVAILABLE"  # Could not get price
+    SYMBOL_NOT_FOUND = "SYMBOL_NOT_FOUND"  # Symbol not found in cTrader
+    NO_SPOT_SUBSCRIPTION = "NO_SPOT_SUBSCRIPTION"  # Not subscribed to spot quotes
+    INVALID_TICK = "INVALID_TICK"  # bid=0 or ask=0
+    PARTIAL_TICK = "PARTIAL_TICK"  # Partial tick received, waiting for merge
+    EXCEPTION = "EXCEPTION"  # Exception occurred
+    GENERATION_FAILED = "GENERATION_FAILED"  # Signal generation failed
+    CONFIG_INVALID_DEMO_ACCOUNT_ID = "CONFIG_INVALID_DEMO_ACCOUNT_ID"  # DEMO_ACCOUNT_ID is invalid/not numeric
+
+
+def parse_int_env(name: str, value: str) -> Optional[int]:
+    """Parse integer from environment variable value
+    
+    Args:
+        name: Environment variable name (for error messages)
+        value: Environment variable value (string)
+    
+    Returns:
+        int if value is valid numeric string, None if empty/None, raises ValueError if invalid
+    
+    Raises:
+        ValueError: If value is not None/empty and not a valid integer string
+    """
+    if value is None or value == "":
+        return None
+    
+    # Check if it's a placeholder/example value
+    if value.lower() in ['your_demo_account_id', 'your_account_id', 'your_client_id', 
+                         'your_client_secret', 'your_access_token', 'your_refresh_token',
+                         'your_bot_token_here', 'your_test_channel', 'your_finnhub_api_key_here']:
+        raise ValueError(f"{name}='{value}' appears to be a placeholder/example value, not a real value")
+    
+    # Try to parse as integer
+    try:
+        return int(value)
+    except ValueError:
+        raise ValueError(f"{name}='{value}' is not numeric. Expected an integer (e.g., 123456789)")
+
+
+# Gold symbol candidates for cTrader
+GOLD_SYMBOL_CANDIDATES = ["XAUUSD", "GOLD", "XAUUSD.", "XAUUSDm", "XAUUSD.r", "XAU/USD"]
+
+# Global cTrader streamer instance for gold quotes
+_gold_ctrader_streamer = None
+_gold_quote_cache = {}  # {symbol_name: {"bid": float, "ask": float, "timestamp": datetime, "partial_count": int, "merged_count": int}}
+_gold_symbol_resolved = None  # Resolved symbol name and ID
 
 
 def get_real_forex_price(pair):
@@ -550,6 +613,8 @@ def load_signals():
                 signals["crypto_lingrid"] = []
             if "crypto_gainmuse" not in signals:
                 signals["crypto_gainmuse"] = []
+            if "gold_private" not in signals:
+                signals["gold_private"] = []
             return signals
     except:
         return {
@@ -559,6 +624,7 @@ def load_signals():
             "crypto_lingrid": [],
             "crypto_gainmuse": [],
             "indexes": [],
+            "gold_private": [],
             "forwarded_forex": [],
             "tp_notifications": [],
             "date": datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -660,56 +726,120 @@ def save_channel_pair_last_signal_time(channel_id, pair):
         json.dump(data, f, indent=2)
 
 
-def can_send_pair_signal_to_channel(channel_id, pair):
-    """Check if 36 hours have passed since last signal for this pair in this channel"""
+def can_send_pair_signal_to_channel(channel_id, pair, return_reason=False):
+    """Check if 36 hours have passed since last signal for this pair in this channel
+    
+    Args:
+        channel_id: Channel ID
+        pair: Trading pair (e.g., "XAUUSD")
+        return_reason: If True, returns (bool, reason_code, details_dict) instead of just bool
+    
+    Returns:
+        If return_reason=False: bool
+        If return_reason=True: (bool, SignalRejectReason, dict with details)
+    """
     current_time = datetime.now(timezone.utc)
     pair_last_time = get_channel_pair_last_signal_time(channel_id, pair)
     
+    details = {
+        "channel_id": channel_id,
+        "pair": pair,
+        "current_time": current_time.isoformat(),
+        "pair_last_time": pair_last_time.isoformat() if pair_last_time else None,
+        "time_diff_seconds": None,
+        "required_wait_seconds": None
+    }
+    
     if pair_last_time is not None:
         time_diff = (current_time - pair_last_time).total_seconds()
+        details["time_diff_seconds"] = time_diff
         min_pair_interval_seconds = 36 * 60 * 60  # 36 hours minimum between same pair in same channel
 
         if time_diff < min_pair_interval_seconds:
             remaining_seconds = min_pair_interval_seconds - time_diff
             remaining_hours = remaining_seconds / 3600
+            details["required_wait_seconds"] = remaining_seconds
+            details["remaining_hours"] = remaining_hours
+            
+            if return_reason:
+                return False, SignalRejectReason.RULE_36H, details
+            
             print(f"⏰ Cannot send signal for {pair} to channel {channel_id}: 36-hour interval not met. Wait {remaining_hours:.2f} more hours.")
             return False
     
+    if return_reason:
+        return True, SignalRejectReason.SUCCESS, details
     return True
 
 
-def can_send_signal_now(channel_id=None):
+def can_send_signal_now(channel_id=None, return_reason=False):
     """Check if enough time has passed:
     - 5 minutes since last signal from ANY channel (different channels)
     - 2 hours since last signal from SAME channel (if channel_id provided)
+    
+    Args:
+        channel_id: Channel ID to check
+        return_reason: If True, returns (bool, reason_code, details_dict) instead of just bool
+    
+    Returns:
+        If return_reason=False: bool
+        If return_reason=True: (bool, SignalRejectReason, dict with details)
     """
     current_time = datetime.now(timezone.utc)
+    details = {
+        "channel_id": channel_id,
+        "current_time": current_time.isoformat(),
+        "last_signal_time": None,
+        "channel_last_time": None,
+        "time_diff_seconds": None,
+        "required_wait_seconds": None
+    }
 
     # Check 5 minutes between different channels
     last_time = get_last_signal_time()
+    details["last_signal_time"] = last_time.isoformat() if last_time else None
+    
     if last_time is not None:
         time_diff = (current_time - last_time).total_seconds()
+        details["time_diff_seconds"] = time_diff
         min_interval_seconds = 5 * 60  # 5 minutes minimum between signals from different channels
 
         if time_diff < min_interval_seconds:
             remaining_seconds = min_interval_seconds - time_diff
             remaining_minutes = remaining_seconds / 60
+            details["required_wait_seconds"] = remaining_seconds
+            details["remaining_minutes"] = remaining_minutes
+            
+            if return_reason:
+                return False, SignalRejectReason.THROTTLE_MIN_INTERVAL, details
+            
             print(f"⏰ Minimum 5-minute interval between channels not met. Wait {remaining_minutes:.1f} more minutes.")
             return False
 
-            # Check 2 hours between same channel (if channel_id provided)
+    # Check 2 hours between same channel (if channel_id provided)
     if channel_id is not None:
         channel_last_time = get_channel_last_signal_time(channel_id)
+        details["channel_last_time"] = channel_last_time.isoformat() if channel_last_time else None
+        
         if channel_last_time is not None:
             time_diff = (current_time - channel_last_time).total_seconds()
+            details["channel_time_diff_seconds"] = time_diff
             min_channel_interval_seconds = 2 * 60 * 60  # 2 hours minimum between signals from same channel
 
             if time_diff < min_channel_interval_seconds:
                 remaining_seconds = min_channel_interval_seconds - time_diff
                 remaining_hours = remaining_seconds / 3600
+                details["required_wait_seconds"] = remaining_seconds
+                details["remaining_hours"] = remaining_hours
+                
+                if return_reason:
+                    return False, SignalRejectReason.THROTTLE_CHANNEL_INTERVAL, details
+                
                 print(f"⏰ Minimum 2-hour interval for this channel not met. Wait {remaining_hours:.2f} more hours.")
                 return False
 
+    if return_reason:
+        return True, SignalRejectReason.SUCCESS, details
     return True
 
 
@@ -2613,6 +2743,559 @@ async def send_crypto_signal(channel="lingrid"):
         return False
 
 
+def resolve_symbol_for_gold(streamer) -> Optional[Tuple[str, int]]:
+    """Resolve gold symbol in cTrader by trying candidates and searching by mask
+    
+    Args:
+        streamer: CTraderStreamer instance with symbol_name_to_id populated
+    
+    Returns:
+        (symbol_name, symbol_id) tuple or None if not found
+    """
+    try:
+        if not streamer or not hasattr(streamer, 'symbol_name_to_id'):
+            print("❌ [GOLD_RESOLVE] Streamer not initialized or symbols not loaded")
+            return None
+        
+        symbol_map = streamer.symbol_name_to_id
+        print(f"📊 [GOLD_RESOLVE] Searching in {len(symbol_map)} available symbols...")
+        
+        # Step 1: Try candidates from config
+        for candidate in GOLD_SYMBOL_CANDIDATES:
+            candidate_upper = candidate.upper()
+            if candidate_upper in symbol_map:
+                symbol_id = symbol_map[candidate_upper]
+                print(f"✅ [GOLD_RESOLVE] Found by candidate: {candidate_upper} (ID: {symbol_id})")
+                return (candidate_upper, symbol_id)
+        
+        # Step 2: Search by mask "XAU" or "GOLD"
+        matches = []
+        for sym_name, sym_id in symbol_map.items():
+            if "XAU" in sym_name or "GOLD" in sym_name:
+                matches.append((sym_name, sym_id))
+        
+        if matches:
+            print(f"📋 [GOLD_RESOLVE] Found {len(matches)} potential gold symbols:")
+            for sym_name, sym_id in matches[:10]:  # Show first 10
+                print(f"   - {sym_name} (ID: {sym_id})")
+            
+            # Prefer XAUUSD variants
+            for sym_name, sym_id in matches:
+                if "XAUUSD" in sym_name:
+                    print(f"✅ [GOLD_RESOLVE] Selected: {sym_name} (ID: {sym_id})")
+                    return (sym_name, sym_id)
+            
+            # Fallback to first match
+            sym_name, sym_id = matches[0]
+            print(f"✅ [GOLD_RESOLVE] Selected first match: {sym_name} (ID: {sym_id})")
+            return (sym_name, sym_id)
+        
+        print(f"❌ [GOLD_RESOLVE] No gold symbol found. Searched {len(symbol_map)} symbols.")
+        print(f"   Candidates tried: {GOLD_SYMBOL_CANDIDATES}")
+        return None
+        
+    except Exception as e:
+        print(f"❌ [GOLD_RESOLVE] Error resolving gold symbol: {e}")
+        import traceback
+        print(traceback.format_exc())
+        return None
+
+
+async def init_gold_ctrader_streamer():
+    """Initialize cTrader streamer for gold quotes"""
+    global _gold_ctrader_streamer, _gold_symbol_resolved
+    
+    try:
+        # Check if cTrader credentials are available (basic check)
+        if not all([Config.CTRADER_ACCESS_TOKEN, Config.CTRADER_CLIENT_ID, Config.CTRADER_CLIENT_SECRET, Config.DEMO_ACCOUNT_ID]):
+            print("⚠️ [GOLD_CTRADER] cTrader credentials not configured, will use external APIs")
+            return False
+        
+        # Validate and parse DEMO_ACCOUNT_ID
+        try:
+            account_id = parse_int_env("DEMO_ACCOUNT_ID", Config.DEMO_ACCOUNT_ID)
+            if account_id is None:
+                print(f"❌ [GOLD_CTRADER] CONFIG_INVALID_DEMO_ACCOUNT_ID: DEMO_ACCOUNT_ID is empty or not set.")
+                print(f"   → Set DEMO_ACCOUNT_ID in .env or config_live.env to your cTrader account id (e.g., DEMO_ACCOUNT_ID=123456789)")
+                print(f"   → Falling back to external APIs")
+                return False
+        except ValueError as ve:
+            print(f"❌ [GOLD_CTRADER] CONFIG_INVALID_DEMO_ACCOUNT_ID: {str(ve)}")
+            print(f"   → Set DEMO_ACCOUNT_ID in .env or config_live.env to your cTrader account id (e.g., DEMO_ACCOUNT_ID=123456789)")
+            print(f"   → Falling back to external APIs")
+            return False
+        
+        from ctrader_stream import CTraderStreamer
+        import ctrader_stream
+        
+        logger_backend = getattr(ctrader_stream, '_logger_backend', 'unknown')
+        print(f"🔌 [GOLD_CTRADER] Initializing cTrader streamer for gold...")
+        print(f"📊 [GOLD_CTRADER] Using logger backend: {logger_backend}")
+        print(f"📊 [GOLD_CTRADER] Using account_id={account_id}")
+        _gold_ctrader_streamer = CTraderStreamer(
+            access_token=Config.CTRADER_ACCESS_TOKEN,
+            client_id=Config.CTRADER_CLIENT_ID,
+            client_secret=Config.CTRADER_CLIENT_SECRET,
+            account_id=account_id
+        )
+        
+        # Set quote callback
+        def on_gold_quote(symbol_name: str, bid: float, ask: float, timestamp: int):
+            """Handle gold quote updates"""
+            global _gold_quote_cache
+            symbol_upper = symbol_name.upper()
+            
+            current_data = _gold_quote_cache.get(symbol_upper, {
+                "bid": 0.0,
+                "ask": 0.0,
+                "timestamp": None,
+                "partial_count": 0,
+                "merged_count": 0,
+                "first_tick_at": None
+            })
+            
+            # Check for partial ticks
+            is_partial = (bid == 0.0 and ask > 0.0) or (bid > 0.0 and ask == 0.0)
+            
+            if is_partial:
+                current_data["partial_count"] = current_data.get("partial_count", 0) + 1
+                print(f"📊 [GOLD_QUOTE] PARTIAL_TICK for {symbol_upper}: bid={bid}, ask={ask} (partial_count={current_data['partial_count']})")
+                
+                # Merge with existing data
+                if bid > 0.0:
+                    current_data["bid"] = bid
+                if ask > 0.0:
+                    current_data["ask"] = ask
+            else:
+                # Full tick
+                if current_data["first_tick_at"] is None:
+                    current_data["first_tick_at"] = datetime.now(timezone.utc).isoformat()
+                    print(f"✅ [GOLD_QUOTE] First valid tick received for {symbol_upper} at {current_data['first_tick_at']}")
+                
+                current_data["bid"] = bid
+                current_data["ask"] = ask
+                current_data["merged_count"] = current_data.get("merged_count", 0) + 1
+            
+            current_data["timestamp"] = datetime.fromtimestamp(timestamp / 1000.0, tz=timezone.utc).isoformat()
+            _gold_quote_cache[symbol_upper] = current_data
+        
+        _gold_ctrader_streamer.set_on_quote(on_gold_quote)
+        
+        # Start connection
+        print("🔌 [GOLD_CTRADER] Connecting to cTrader...")
+        await _gold_ctrader_streamer.start()
+        
+        # Wait for symbols list
+        print("⏳ [GOLD_CTRADER] Waiting for symbols list (5 seconds)...")
+        await asyncio.sleep(5)
+        
+        # Resolve gold symbol
+        _gold_symbol_resolved = resolve_symbol_for_gold(_gold_ctrader_streamer)
+        if not _gold_symbol_resolved:
+            print("❌ [GOLD_CTRADER] Could not resolve gold symbol")
+            return False
+        
+        symbol_name, symbol_id = _gold_symbol_resolved
+        print(f"✅ [GOLD_CTRADER] Resolved gold symbol: {symbol_name} (ID: {symbol_id})")
+        
+        # Subscribe to gold quotes
+        print(f"📡 [GOLD_CTRADER] Subscribing to {symbol_name}...")
+        success = await _gold_ctrader_streamer.subscribe(symbol_name)
+        if not success:
+            print(f"❌ [GOLD_CTRADER] Failed to subscribe to {symbol_name}")
+            return False
+        
+        # Warm-up: wait for first valid tick
+        print("⏳ [GOLD_CTRADER] Warm-up: waiting for first valid tick (max 20 seconds)...")
+        warmup_timeout = 20
+        start_time = time.time()
+        
+        while time.time() - start_time < warmup_timeout:
+            if symbol_name.upper() in _gold_quote_cache:
+                quote_data = _gold_quote_cache[symbol_name.upper()]
+                if quote_data.get("bid", 0) > 0 and quote_data.get("ask", 0) > 0:
+                    print(f"✅ [GOLD_CTRADER] Warm-up complete! bid={quote_data['bid']:.2f}, ask={quote_data['ask']:.2f}")
+                    print(f"   First tick at: {quote_data.get('first_tick_at', 'N/A')}")
+                    print(f"   Partial ticks: {quote_data.get('partial_count', 0)}, Merged ticks: {quote_data.get('merged_count', 0)}")
+                    return True
+            
+            await asyncio.sleep(0.5)
+        
+        print(f"⚠️ [GOLD_CTRADER] Warm-up timeout ({warmup_timeout}s). Quotes may not be ready.")
+        return False
+        
+    except Exception as e:
+        print(f"❌ [GOLD_CTRADER] Error initializing cTrader streamer: {e}")
+        import traceback
+        print(traceback.format_exc())
+        return False
+
+
+def get_gold_price_from_ctrader() -> Optional[float]:
+    """Get current gold price from cTrader quote cache
+    
+    Returns:
+        Mid price (bid+ask)/2 or None if unavailable
+    """
+    global _gold_symbol_resolved, _gold_quote_cache
+    
+    try:
+        if not _gold_symbol_resolved:
+            return None
+        
+        symbol_name, _ = _gold_symbol_resolved
+        symbol_upper = symbol_name.upper()
+        
+        if symbol_upper not in _gold_quote_cache:
+            return None
+        
+        quote_data = _gold_quote_cache[symbol_upper]
+        bid = quote_data.get("bid", 0.0)
+        ask = quote_data.get("ask", 0.0)
+        
+        if bid <= 0 or ask <= 0:
+            return None
+        
+        mid_price = (bid + ask) / 2.0
+        return mid_price
+        
+    except Exception as e:
+        print(f"❌ [GOLD_PRICE] Error getting price from cTrader: {e}")
+        return None
+
+
+def get_active_gold_signal_direction(channel_id):
+    """Get the direction (BUY/SELL) of active gold signal in the channel that hasn't reached SL or final TP
+    Returns None if no active signal or signal has reached SL/final TP
+    """
+    try:
+        signals = load_signals()
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        
+        if signals.get("date") != today:
+            return None
+        
+        # Get gold signals for this channel
+        gold_signals = signals.get("gold_private", [])
+        
+        # Get current gold price
+        current_price = get_real_forex_price("XAUUSD")
+        if current_price is None:
+            return None
+        
+        # Check all gold signals for this channel
+        for signal in gold_signals:
+            if signal.get("pair") != "XAUUSD":
+                continue
+            
+            signal_type = signal.get("type", "")
+            entry = signal.get("entry", 0)
+            sl = signal.get("sl", 0)
+            tp = signal.get("tp", 0)
+            tp1 = signal.get("tp1", 0)
+            tp2 = signal.get("tp2", 0)
+            tp3 = signal.get("tp3", 0)
+            
+            # Check if SL was hit
+            sl_hit = False
+            if signal_type == "BUY" and current_price <= sl:
+                sl_hit = True
+            elif signal_type == "SELL" and current_price >= sl:
+                sl_hit = True
+            
+            # Check if final TP was hit
+            final_tp_hit = False
+            if signal_type == "BUY":
+                # Check for final TP (tp3 if exists, else tp2, else tp)
+                if tp3 > 0 and current_price >= tp3:
+                    final_tp_hit = True
+                elif tp2 > 0 and current_price >= tp2:
+                    final_tp_hit = True
+                elif tp > 0 and current_price >= tp:
+                    final_tp_hit = True
+            else:  # SELL
+                if tp3 > 0 and current_price <= tp3:
+                    final_tp_hit = True
+                elif tp2 > 0 and current_price <= tp2:
+                    final_tp_hit = True
+                elif tp > 0 and current_price <= tp:
+                    final_tp_hit = True
+            
+            # If signal hasn't reached SL or final TP, return its direction
+            if not sl_hit and not final_tp_hit:
+                return signal_type
+        
+        return None
+    except Exception as e:
+        print(f"❌ Error checking active gold signal: {e}")
+        return None
+
+
+def generate_gold_signal():
+    """Generate a gold (XAUUSD) signal for GOLD Private channel
+    IMPORTANT: If there's an active signal that hasn't reached SL or final TP,
+    the new signal must be in the same direction (BUY or SELL)
+    
+    Returns:
+        Signal dict or None if generation failed
+    """
+    try:
+        # Check for active gold signal in GOLD Private channel
+        active_direction = get_active_gold_signal_direction(CHANNEL_GOLD_PRIVATE)
+        
+        # Try to get price from cTrader first
+        entry = get_gold_price_from_ctrader()
+        price_source = "cTrader"
+        
+        # Fallback to external APIs if cTrader not available
+        if entry is None:
+            print("⚠️ [GOLD_GEN] cTrader price not available, trying external APIs...")
+            entry = get_real_forex_price("XAUUSD")
+            price_source = "External API"
+        
+        if entry is None:
+            print("❌ [GOLD_GEN] Could not get real gold price from any source")
+            return None
+        
+        print(f"✅ [GOLD_GEN] Got gold price: {entry:.2f} (source: {price_source})")
+        
+        # Determine signal type
+        if active_direction:
+            # If there's an active signal, use the same direction
+            signal_type = active_direction
+            print(f"📊 Active gold signal found ({active_direction}), new signal will be in same direction")
+        else:
+            # No active signal, choose randomly
+            signal_type = random.choice(["BUY", "SELL"])
+        
+        # Calculate SL and TP for gold (similar to forex 3TP signals)
+        # Gold: TP1 close to entry, SL further away
+        sl_percent = random.uniform(0.015, 0.025)  # 1.5-2.5% SL
+        tp1_percent = random.uniform(0.01, 0.02)  # 1-2% TP1
+        tp2_percent = random.uniform(0.015, 0.025)  # 1.5-2.5% TP2
+        tp3_percent = random.uniform(0.02, 0.03)  # 2-3% TP3
+        
+        if signal_type == "BUY":
+            sl = round(entry * (1 - sl_percent), 2)
+            tp1 = round(entry * (1 + tp1_percent), 2)
+            tp2 = round(entry * (1 + tp2_percent), 2)
+            tp3 = round(entry * (1 + tp3_percent), 2)
+        else:  # SELL
+            sl = round(entry * (1 + sl_percent), 2)
+            tp1 = round(entry * (1 - tp1_percent), 2)
+            tp2 = round(entry * (1 - tp2_percent), 2)
+            tp3 = round(entry * (1 - tp3_percent), 2)
+        
+        return {
+            "pair": "XAUUSD",
+            "type": signal_type,
+            "entry": entry,
+            "sl": sl,
+            "tp1": tp1,
+            "tp2": tp2,
+            "tp3": tp3,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+    except Exception as e:
+        print(f"❌ Error generating gold signal: {e}")
+        return None
+
+
+def format_gold_signal(signal):
+    """Format gold signal message with 3 TPs"""
+    pair = signal['pair']
+    signal_type = signal['type']
+    entry = signal['entry']
+    sl = signal['sl']
+    tp1 = signal['tp1']
+    tp2 = signal['tp2']
+    tp3 = signal['tp3']
+    
+    direction_emoji = "🟢" if signal_type == "BUY" else "🔴"
+    
+    message = f"""
+{direction_emoji} **{pair} {signal_type} SIGNAL** {direction_emoji}
+
+💰 **Entry Price:** `{entry:.2f}`
+🎯 **Take Profit 1:** `{tp1:.2f}`
+🎯 **Take Profit 2:** `{tp2:.2f}`
+🎯 **Take Profit 3:** `{tp3:.2f}`
+🛡️ **Stop Loss:** `{sl:.2f}`
+
+⏰ **Time:** {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}
+🤖 **Generated by:** Signals Bot
+
+#Gold #Trading #Signal
+    """.strip()
+    
+    return message
+
+
+async def send_gold_signal(return_reason=False, skip_throttle=False):
+    """Send a gold (XAUUSD) signal to GOLD Private channel
+    
+    Args:
+        return_reason: If True, returns (bool, reason_code, details_dict) instead of just bool
+        skip_throttle: If True, skips throttle checks (for startup initial signal)
+    
+    Returns:
+        If return_reason=False: bool
+        If return_reason=True: (bool, SignalRejectReason, dict with details)
+    """
+    details = {
+        "channel_id": CHANNEL_GOLD_PRIVATE,
+        "pair": "XAUUSD",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "skip_throttle": skip_throttle
+    }
+    
+    try:
+        # Check throttle: 5 min between channels, 2h for same channel (unless skipped for startup)
+        if not skip_throttle:
+            can_send, throttle_reason, throttle_details = can_send_signal_now(CHANNEL_GOLD_PRIVATE, return_reason=True)
+            details["throttle_check"] = throttle_details
+            
+            if not can_send:
+                details["reject_reason"] = throttle_reason.value
+                details["reject_details"] = throttle_details
+                
+                if return_reason:
+                    return False, throttle_reason, details
+                
+                reason_msg = f"⏰ [GOLD_SEND] Throttle blocked: {throttle_reason.value}"
+                if throttle_reason == SignalRejectReason.THROTTLE_MIN_INTERVAL:
+                    wait_mins = throttle_details.get("remaining_minutes", 0)
+                    reason_msg += f" - Wait {wait_mins:.1f} more minutes"
+                elif throttle_reason == SignalRejectReason.THROTTLE_CHANNEL_INTERVAL:
+                    wait_hours = throttle_details.get("remaining_hours", 0)
+                    reason_msg += f" - Wait {wait_hours:.2f} more hours"
+                print(reason_msg)
+                return False
+        else:
+            details["throttle_check"] = {"skipped": True, "reason": "startup_initial_signal"}
+            print("🚀 [GOLD_SEND] Throttle checks SKIPPED for startup initial signal")
+
+        signals = load_signals()
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        
+        if signals.get("date") != today:
+            signals = {"forex": [], "forex_3tp": [], "forex_additional": [], "crypto_lingrid": [], "crypto_gainmuse": [], "indexes": [], "gold_private": [], "date": today}
+        
+        # Check daily limit
+        gold_signals_today = signals.get("gold_private", [])
+        gold_count = len(gold_signals_today)
+        details["gold_count"] = gold_count
+        details["max_gold_signals"] = MAX_GOLD_SIGNALS
+        
+        if gold_count >= MAX_GOLD_SIGNALS:
+            details["reject_reason"] = SignalRejectReason.DAILY_LIMIT.value
+            if return_reason:
+                return False, SignalRejectReason.DAILY_LIMIT, details
+            print(f"⚠️ [GOLD_SEND] Gold signal limit reached: {gold_count}/{MAX_GOLD_SIGNALS}")
+            return False
+        
+        # Generate signal (will respect active signal direction if exists)
+        signal = generate_gold_signal()
+        details["signal_generated"] = signal is not None
+        
+        if signal is None:
+            # Check if price was unavailable (more specific reason)
+            # This is detected by checking if get_gold_price_from_ctrader() returned None
+            # and external API also failed
+            gold_price = get_gold_price_from_ctrader()
+            if gold_price is None:
+                # Try external API as fallback
+                try:
+                    external_price = get_real_forex_price("XAUUSD")
+                    if external_price is None:
+                        details["reject_reason"] = SignalRejectReason.PRICE_UNAVAILABLE.value
+                        details["price_check"] = {
+                            "ctrader_price": None,
+                            "external_price": None,
+                            "reason": "Both cTrader and external APIs failed"
+                        }
+                        if return_reason:
+                            return False, SignalRejectReason.PRICE_UNAVAILABLE, details
+                        print("❌ [GOLD_SEND] PRICE_UNAVAILABLE: Could not get gold price from cTrader or external APIs")
+                        return False
+                except Exception as e:
+                    details["reject_reason"] = SignalRejectReason.PRICE_UNAVAILABLE.value
+                    details["price_check"] = {
+                        "ctrader_price": None,
+                        "external_api_error": str(e)
+                    }
+                    if return_reason:
+                        return False, SignalRejectReason.PRICE_UNAVAILABLE, details
+                    print(f"❌ [GOLD_SEND] PRICE_UNAVAILABLE: External API error: {e}")
+                    return False
+            
+            # Other generation failures
+            details["reject_reason"] = SignalRejectReason.GENERATION_FAILED.value
+            if return_reason:
+                return False, SignalRejectReason.GENERATION_FAILED, details
+            print("❌ [GOLD_SEND] GENERATION_FAILED: Could not generate gold signal (unknown reason)")
+            return False
+        
+        details["signal_type"] = signal.get("type")
+        details["signal_entry"] = signal.get("entry")
+        
+        # Check 36-hour rule for this pair in this channel
+        can_send_pair, pair_reason, pair_details = can_send_pair_signal_to_channel(
+            CHANNEL_GOLD_PRIVATE, signal['pair'], return_reason=True
+        )
+        details["pair_36h_check"] = pair_details
+        
+        if not can_send_pair:
+            details["reject_reason"] = pair_reason.value
+            details["reject_details"] = pair_details
+            
+            if return_reason:
+                return False, pair_reason, details
+            
+            wait_hours = pair_details.get("remaining_hours", 0)
+            print(f"⚠️ [GOLD_SEND] Cannot send gold signal: 36-hour interval not met. Wait {wait_hours:.2f} more hours.")
+            return False
+        
+        # All checks passed - send signal
+        signals["gold_private"].append(signal)
+        save_signals(signals)
+        
+        # Send to channel
+        bot = Bot(token=BOT_TOKEN)
+        message = format_gold_signal(signal)
+        await bot.send_message(chat_id=CHANNEL_GOLD_PRIVATE, text=message, parse_mode='Markdown')
+
+        # Save signal to channel file
+        save_channel_signal(CHANNEL_GOLD_PRIVATE, signal)
+
+        # Update last signal time (global, channel-specific, and pair-specific)
+        save_last_signal_time()
+        save_channel_last_signal_time(CHANNEL_GOLD_PRIVATE)
+        save_channel_pair_last_signal_time(CHANNEL_GOLD_PRIVATE, signal['pair'])
+
+        details["sent"] = True
+        details["sent_at"] = datetime.now(timezone.utc).isoformat()
+        
+        print(f"✅ [GOLD_SEND] Gold signal sent: {signal['pair']} {signal['type']} at {signal['entry']}")
+        print(f"📊 [GOLD_SEND] Today's gold signals: {gold_count + 1}/{MAX_GOLD_SIGNALS}")
+        
+        if return_reason:
+            return True, SignalRejectReason.SUCCESS, details
+        return True
+
+    except Exception as e:
+        details["exception"] = str(e)
+        details["traceback"] = traceback.format_exc()
+        details["reject_reason"] = SignalRejectReason.EXCEPTION.value
+        
+        print(f"❌ [GOLD_SEND] Error sending gold signal: {e}")
+        print(traceback.format_exc())
+        
+        if return_reason:
+            return False, SignalRejectReason.EXCEPTION, details
+        return False
+
+
 async def send_index_signal(signal_data=None):
     """Send an index/gold signal to the indexes channel"""
     try:
@@ -2630,7 +3313,7 @@ async def send_index_signal(signal_data=None):
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
         if signals.get("date") != today:
-            signals = {"forex": [], "forex_3tp": [], "forex_additional": [], "crypto": [], "indexes": [], "date": today}
+            signals = {"forex": [], "forex_3tp": [], "forex_additional": [], "crypto": [], "indexes": [], "gold_private": [], "date": today}
 
         # Check limit before generating/sending signal
         if len(signals.get("indexes", [])) >= MAX_INDEX_SIGNALS:
@@ -2890,6 +3573,138 @@ async def send_weekly_summary():
 def is_authorized(user_id: int) -> bool:
     """Check if user is authorized to use the bot"""
     return user_id in ALLOWED_USERS
+
+
+async def debug_gold_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /debug_gold command - detailed diagnostics for gold signals"""
+    user_id = update.effective_user.id
+    
+    if not is_authorized(user_id):
+        await update.message.reply_text("❌ You are not authorized to use this bot.")
+        return
+    
+    try:
+        debug_info = []
+        debug_info.append("🔍 **GOLD Signal Diagnostics**\n")
+        
+        # 1. Symbol resolution
+        global _gold_symbol_resolved, _gold_ctrader_streamer, _gold_quote_cache
+        debug_info.append("📊 **Symbol Resolution:**")
+        if _gold_symbol_resolved:
+            symbol_name, symbol_id = _gold_symbol_resolved
+            debug_info.append(f"✅ Symbol: {symbol_name} (ID: {symbol_id})")
+        else:
+            debug_info.append("❌ Symbol not resolved")
+            if _gold_ctrader_streamer and hasattr(_gold_ctrader_streamer, 'symbol_name_to_id'):
+                symbol_map = _gold_ctrader_streamer.symbol_name_to_id
+                gold_candidates = [s for s in symbol_map.keys() if "XAU" in s or "GOLD" in s]
+                if gold_candidates:
+                    debug_info.append(f"   Found candidates: {', '.join(gold_candidates[:5])}")
+                else:
+                    debug_info.append(f"   No gold symbols found in {len(symbol_map)} symbols")
+        
+        # 2. cTrader subscription status
+        debug_info.append("\n📡 **cTrader Subscription:**")
+        if _gold_ctrader_streamer:
+            if _gold_symbol_resolved:
+                symbol_name, _ = _gold_symbol_resolved
+                is_sub = _gold_ctrader_streamer.is_subscribed(symbol_name)
+                sub_status = _gold_ctrader_streamer.get_subscription_status(symbol_name)
+                debug_info.append(f"✅ Streamer initialized")
+                debug_info.append(f"   Subscription: {'✅ Subscribed' if is_sub else '❌ Not subscribed'}")
+                debug_info.append(f"   Status: {sub_status.get(symbol_name.upper(), 'unknown')}")
+            else:
+                debug_info.append("⚠️ Streamer initialized but symbol not resolved")
+        else:
+            debug_info.append("❌ Streamer not initialized")
+            if not all([Config.CTRADER_ACCESS_TOKEN, Config.CTRADER_CLIENT_ID, Config.CTRADER_CLIENT_SECRET, Config.DEMO_ACCOUNT_ID]):
+                debug_info.append("   → cTrader credentials not configured")
+        
+        # 3. Current quotes
+        debug_info.append("\n💰 **Current Quotes:**")
+        if _gold_symbol_resolved:
+            symbol_name, _ = _gold_symbol_resolved
+            symbol_upper = symbol_name.upper()
+            if symbol_upper in _gold_quote_cache:
+                quote_data = _gold_quote_cache[symbol_upper]
+                bid = quote_data.get("bid", 0.0)
+                ask = quote_data.get("ask", 0.0)
+                timestamp = quote_data.get("timestamp", "N/A")
+                first_tick = quote_data.get("first_tick_at", "N/A")
+                partial_count = quote_data.get("partial_count", 0)
+                merged_count = quote_data.get("merged_count", 0)
+                
+                if bid > 0 and ask > 0:
+                    mid = (bid + ask) / 2.0
+                    debug_info.append(f"✅ Bid: {bid:.2f}, Ask: {ask:.2f}, Mid: {mid:.2f}")
+                    debug_info.append(f"   Last update: {timestamp}")
+                    debug_info.append(f"   First tick: {first_tick}")
+                    debug_info.append(f"   Partial ticks: {partial_count}, Merged: {merged_count}")
+                else:
+                    debug_info.append(f"⚠️ Invalid tick: bid={bid}, ask={ask}")
+                    if bid == 0 and ask == 0:
+                        debug_info.append("   → No quotes received yet")
+                    else:
+                        debug_info.append(f"   → Partial tick (partial_count={partial_count})")
+            else:
+                debug_info.append("❌ No quotes in cache")
+        else:
+            debug_info.append("⚠️ Cannot check quotes - symbol not resolved")
+        
+        # 4. Last send attempt
+        debug_info.append("\n📤 **Last Send Attempt:**")
+        signals = load_signals()
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        gold_signals = signals.get("gold_private", []) if signals.get("date") == today else []
+        debug_info.append(f"Today's signals: {len(gold_signals)}/{MAX_GOLD_SIGNALS}")
+        
+        # Check throttle
+        can_send, throttle_reason, throttle_details = can_send_signal_now(CHANNEL_GOLD_PRIVATE, return_reason=True)
+        debug_info.append(f"Throttle check: {'✅ Can send' if can_send else f'❌ {throttle_reason.value}'}")
+        if not can_send:
+            if throttle_reason == SignalRejectReason.THROTTLE_MIN_INTERVAL:
+                wait_mins = throttle_details.get("remaining_minutes", 0)
+                debug_info.append(f"   → Wait {wait_mins:.1f} more minutes (5 min interval)")
+            elif throttle_reason == SignalRejectReason.THROTTLE_CHANNEL_INTERVAL:
+                wait_hours = throttle_details.get("remaining_hours", 0)
+                debug_info.append(f"   → Wait {wait_hours:.2f} more hours (2h interval)")
+        
+        # Check 36h rule
+        can_send_pair, pair_reason, pair_details = can_send_pair_signal_to_channel(
+            CHANNEL_GOLD_PRIVATE, "XAUUSD", return_reason=True
+        )
+        debug_info.append(f"36h rule check: {'✅ Can send' if can_send_pair else f'❌ {pair_reason.value}'}")
+        if not can_send_pair:
+            wait_hours = pair_details.get("remaining_hours", 0)
+            debug_info.append(f"   → Wait {wait_hours:.2f} more hours")
+        
+        # 5. Test signal generation
+        debug_info.append("\n🧪 **Test Signal Generation:**")
+        test_signal = generate_gold_signal()
+        if test_signal:
+            debug_info.append(f"✅ Generated: {test_signal['type']} @ {test_signal['entry']:.2f}")
+        else:
+            debug_info.append("❌ Generation failed")
+        
+        # 6. Price source
+        debug_info.append("\n📊 **Price Source:**")
+        ctrader_price = get_gold_price_from_ctrader()
+        external_price = get_real_forex_price("XAUUSD")
+        if ctrader_price:
+            debug_info.append(f"✅ cTrader: {ctrader_price:.2f}")
+        else:
+            debug_info.append("❌ cTrader: Not available")
+        if external_price:
+            debug_info.append(f"✅ External API: {external_price:.2f}")
+        else:
+            debug_info.append("❌ External API: Not available")
+        
+        debug_text = "\n".join(debug_info)
+        await update.message.reply_text(debug_text, parse_mode='Markdown')
+        
+    except Exception as e:
+        error_msg = f"❌ Error in debug_gold: {e}\n\n{traceback.format_exc()}"
+        await update.message.reply_text(error_msg[:4000])  # Telegram limit
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -4039,23 +4854,101 @@ def automatic_signal_loop():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
-    # Send initial index signal on startup
-    async def send_initial_index():
-        """Send 1 index signal when bot starts"""
+    # Send initial signals on startup
+    async def send_initial_signals():
+        """Send initial signals when bot starts"""
         try:
             # Wait a moment for bot to fully initialize
             await asyncio.sleep(3)
-            print("\n📊 Sending initial index signal on startup...")
-            success = await send_index_signal()
-            if success:
-                print("✅ Initial index signal sent successfully")
+            
+            # Initialize cTrader for gold if credentials available
+            if all([Config.CTRADER_ACCESS_TOKEN, Config.CTRADER_CLIENT_ID, Config.CTRADER_CLIENT_SECRET, Config.DEMO_ACCOUNT_ID]):
+                print("\n🔌 [INIT] Initializing cTrader for gold quotes...")
+                ctrader_ok = await init_gold_ctrader_streamer()
+                if ctrader_ok:
+                    print("✅ [INIT] cTrader initialized for gold")
+                else:
+                    print("⚠️ [INIT] cTrader initialization failed, will use external APIs")
+            
+            # Send 1 gold signal to GOLD Private channel (WITH throttle exception for startup)
+            print("\n🥇 [INIT] Attempting to send initial gold signal to GOLD Private channel...")
+            print("   → Throttle rules EXEMPTED for startup initial signal")
+            gold_success, gold_reason, gold_details = await send_gold_signal(return_reason=True, skip_throttle=True)
+            
+            if gold_success:
+                print("✅ [INIT] Initial gold signal sent successfully")
             else:
-                print("⚠️ Could not send initial index signal (may be weekend, limit reached, or price unavailable)")
+                # Detailed reason logging with exact reason code
+                reason = gold_reason.value
+                print(f"❌ [INIT] Could not send initial gold signal")
+                print(f"   Reason Code: {reason}")
+                
+                # Log specific reason details
+                if reason == SignalRejectReason.DAILY_LIMIT.value:
+                    gold_count = gold_details.get("gold_count", 0)
+                    max_signals = gold_details.get("max_gold_signals", MAX_GOLD_SIGNALS)
+                    print(f"   → DAILY_LIMIT: Already sent {gold_count}/{max_signals} gold signals today")
+                
+                elif reason == SignalRejectReason.RULE_36H.value:
+                    pair_details = gold_details.get("pair_36h_check", {})
+                    wait_hours = pair_details.get("remaining_hours", 0)
+                    pair_last_time = pair_details.get("pair_last_time", "N/A")
+                    print(f"   → RULE_36H: 36-hour interval not met for XAUUSD in this channel")
+                    print(f"   → Last signal sent at: {pair_last_time}")
+                    print(f"   → Need to wait {wait_hours:.2f} more hours")
+                
+                elif reason == SignalRejectReason.GENERATION_FAILED.value:
+                    print(f"   → GENERATION_FAILED: Could not generate gold signal")
+                    print(f"   → Possible causes:")
+                    print(f"      - Price unavailable (check cTrader connection and symbol resolution)")
+                    print(f"      - External APIs failed")
+                
+                elif reason == SignalRejectReason.PRICE_UNAVAILABLE.value:
+                    print(f"   → PRICE_UNAVAILABLE: Could not get gold price from any source")
+                    print(f"   → Check:")
+                    print(f"      - cTrader connection status")
+                    print(f"      - Symbol resolution (use /debug_gold to check)")
+                    print(f"      - External API availability")
+                
+                elif reason == SignalRejectReason.SYMBOL_NOT_FOUND.value:
+                    print(f"   → SYMBOL_NOT_FOUND: Gold symbol not found in cTrader")
+                    print(f"   → Check available symbols and symbol name")
+                
+                elif reason == SignalRejectReason.NO_SPOT_SUBSCRIPTION.value:
+                    print(f"   → NO_SPOT_SUBSCRIPTION: Not subscribed to spot quotes")
+                    print(f"   → Check subscription status")
+                
+                elif reason == SignalRejectReason.INVALID_TICK.value:
+                    print(f"   → INVALID_TICK: Received invalid tick (bid=0 or ask=0)")
+                    print(f"   → Check quote data quality")
+                
+                elif reason == SignalRejectReason.EXCEPTION.value:
+                    exception_msg = gold_details.get("exception", "Unknown")
+                    print(f"   → EXCEPTION: {exception_msg}")
+                    traceback_str = gold_details.get("traceback", "")
+                    if traceback_str:
+                        print(f"   → Traceback:\n{traceback_str}")
+                
+                else:
+                    print(f"   → Unknown reason: {reason}")
+                
+                # Always print full details for debugging
+                print(f"\n   Full details:")
+                print(json.dumps(gold_details, indent=4, default=str))
+            
+            # Send 1 index signal
+            print("\n📊 [INIT] Sending initial index signal on startup...")
+            index_success = await send_index_signal()
+            if index_success:
+                print("✅ [INIT] Initial index signal sent successfully")
+            else:
+                print("⚠️ [INIT] Could not send initial index signal (may be weekend, limit reached, or price unavailable)")
         except Exception as e:
-            print(f"⚠️ Error sending initial index signal: {e}")
+            print(f"⚠️ [INIT] Error sending initial signals: {e}")
+            print(traceback.format_exc())
     
-    # Schedule initial index signal
-    loop.create_task(send_initial_index())
+    # Schedule initial signals
+    loop.create_task(send_initial_signals())
     asyncio.set_event_loop(loop)
     
     async def async_loop():
@@ -4088,7 +4981,7 @@ def automatic_signal_loop():
                 today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
                 
                 if signals.get("date") != today:
-                    signals = {"forex": [], "forex_3tp": [], "forex_additional": [], "crypto_lingrid": [], "crypto_gainmuse": [], "indexes": [], "forwarded_forex": [], "tp_notifications": [], "date": today}
+                    signals = {"forex": [], "forex_3tp": [], "forex_additional": [], "crypto_lingrid": [], "crypto_gainmuse": [], "indexes": [], "gold_private": [], "forwarded_forex": [], "tp_notifications": [], "date": today}
                     save_signals(signals)
                     print(f"📅 New day: {today}")
                 
@@ -4098,8 +4991,9 @@ def automatic_signal_loop():
                 crypto_lingrid_count = len(signals.get("crypto_lingrid", []))
                 crypto_gainmuse_count = len(signals.get("crypto_gainmuse", []))
                 index_count = len(signals.get("indexes", []))
+                gold_count = len(signals.get("gold_private", []))
 
-                print(f"📊 Current signals: Forex {forex_count}/{MAX_FOREX_SIGNALS}, Forex 3TP {forex_3tp_count}/{MAX_FOREX_3TP_SIGNALS}, Forex Additional {forex_additional_count}/{MAX_FOREX_ADDITIONAL_SIGNALS}, Crypto Lingrid {crypto_lingrid_count}/{MAX_CRYPTO_SIGNALS_LINGRID}, Crypto GainMuse {crypto_gainmuse_count}/{MAX_CRYPTO_SIGNALS_GAINMUSE}, Indexes {index_count}/{MAX_INDEX_SIGNALS}")
+                print(f"📊 Current signals: Forex {forex_count}/{MAX_FOREX_SIGNALS}, Forex 3TP {forex_3tp_count}/{MAX_FOREX_3TP_SIGNALS}, Forex Additional {forex_additional_count}/{MAX_FOREX_ADDITIONAL_SIGNALS}, Crypto Lingrid {crypto_lingrid_count}/{MAX_CRYPTO_SIGNALS_LINGRID}, Crypto GainMuse {crypto_gainmuse_count}/{MAX_CRYPTO_SIGNALS_GAINMUSE}, Indexes {index_count}/{MAX_INDEX_SIGNALS}, Gold {gold_count}/{MAX_GOLD_SIGNALS}")
 
                 # Only send one signal per iteration to ensure minimum 5-minute spacing between channels
                 # Prioritize channels that haven't reached their limit
@@ -4145,6 +5039,28 @@ def automatic_signal_loop():
                     elif not success:
                         print("⚠️ Could not send crypto signal to GainMuse (all pairs may be active or waiting for interval)")
 
+                        # Send gold signal if needed (and under limit)
+                if gold_count < MAX_GOLD_SIGNALS and signals_sent == 0:
+                    success, reason, details = await send_gold_signal(return_reason=True)
+                    if success:
+                        signals_sent = 1
+                    else:
+                        reason_str = reason.value
+                        print(f"⚠️ [AUTO] Could not send gold signal: {reason_str}")
+                        if reason == SignalRejectReason.THROTTLE_MIN_INTERVAL:
+                            wait_mins = details.get("throttle_check", {}).get("remaining_minutes", 0)
+                            print(f"   → Throttle: Wait {wait_mins:.1f} more minutes")
+                        elif reason == SignalRejectReason.THROTTLE_CHANNEL_INTERVAL:
+                            wait_hours = details.get("throttle_check", {}).get("remaining_hours", 0)
+                            print(f"   → Throttle: Wait {wait_hours:.2f} more hours")
+                        elif reason == SignalRejectReason.RULE_36H:
+                            wait_hours = details.get("pair_36h_check", {}).get("remaining_hours", 0)
+                            print(f"   → 36h rule: Wait {wait_hours:.2f} more hours")
+                        elif reason == SignalRejectReason.PRICE_UNAVAILABLE or reason == SignalRejectReason.GENERATION_FAILED:
+                            print(f"   → Price/generation issue - check cTrader connection and symbol resolution")
+                        else:
+                            print(f"   → Full details: {json.dumps(details, indent=2, default=str)}")
+
                         # Send index signal if needed (and under limit)
                 if index_count < MAX_INDEX_SIGNALS and signals_sent == 0:
                     success = await send_index_signal()
@@ -4166,7 +5082,8 @@ def automatic_signal_loop():
                     forex_3tp_count >= MAX_FOREX_3TP_SIGNALS and 
                     forex_additional_count >= MAX_FOREX_ADDITIONAL_SIGNALS and
                     crypto_lingrid_count >= MAX_CRYPTO_SIGNALS_LINGRID and
-                    crypto_gainmuse_count >= MAX_CRYPTO_SIGNALS_GAINMUSE):
+                    crypto_gainmuse_count >= MAX_CRYPTO_SIGNALS_GAINMUSE and
+                    gold_count >= MAX_GOLD_SIGNALS):
                     print("✅ All signals sent for today. Waiting until tomorrow...")
                     # Wait until next day
                     tomorrow = datetime.now(timezone.utc) + timedelta(days=1)
@@ -4227,6 +5144,7 @@ def main():
     
     # Add interactive handlers
     application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("debug_gold", debug_gold_command))
     application.add_handler(CallbackQueryHandler(button_callback))
     
     print("✅ Working combined bot started successfully!")
