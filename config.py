@@ -4,7 +4,37 @@ Configuration settings for Signals_bot
 import os
 from pathlib import Path
 from dotenv import load_dotenv
-from typing import Optional
+from typing import Optional, Dict
+from types import SimpleNamespace
+
+# ============================================================================
+# HARDCODED CTRADER CONFIGURATION (Source of Truth)
+# ============================================================================
+# Set to True to use hardcoded values instead of .env
+CTRADER_HARDCODED_ENABLED = True
+
+# Hardcoded cTrader configuration values
+HARDCODED_CTRADER_CONFIG = {
+    'is_demo': True,
+    'account_id': 44749280,
+    'client_id': '17667_hKA21RsOIjvIT45QG9Q9GTcot9Coiy7VeNOFaJQLFPeGyUQmBN',
+    'client_secret': 'amV88gmO8jTayhPVR7t4Q2VsRmEqbW8Xg5A4dOF2Ag1E13d4Jl',
+    'access_token': 'n_SuXHNX4TlMyekW05N_yqwNy4Y_Zc3DAIwEXVrp2os',
+    'refresh_token': 'UVNGZPSDSbB-Vi81R2DX8NANvIkESfE_yXnNS6z1RC4',
+    'ws_url_demo': 'wss://demo.ctraderapi.com:5035',
+    'ws_url_live': 'wss://live.ctraderapi.com:5035',
+    'gold_ctrader_only': True,
+    'gold_symbol_name': None,  # Auto-detect from symbol list
+    'gold_symbol_id': None,    # Auto-detect from symbol list
+}
+
+def _safe_preview(value: str, length: int = 8) -> str:
+    """Create safe preview of sensitive value"""
+    if not value:
+        return "(not set)"
+    if len(value) <= length:
+        return value[:length] + "..."
+    return value[:length] + "..."
 
 # Determine project root (signalsbot directory)
 # config.py is in project root, so __file__ is already there
@@ -13,18 +43,158 @@ _dotenv_path = _project_root / ".env"
 _config_live_path = _project_root / "config_live.env"
 
 # Load environment variables from project root (override=True to ensure fresh load)
-_env_loaded = load_dotenv(dotenv_path=_dotenv_path, override=True)
+# Note: working_combined_bot.py loads .env first, but we reload here for safety
+_env_loaded = load_dotenv(dotenv_path=_dotenv_path, override=True, encoding="utf-8")
 _env_live_loaded = False
 if _config_live_path.exists():
-    _env_live_loaded = load_dotenv(dotenv_path=_config_live_path, override=True)
+    _env_live_loaded = load_dotenv(dotenv_path=_config_live_path, override=True, encoding="utf-8")
 
 # Debug: Print critical keys immediately after load_dotenv
-print("[ENV_LOAD] After load_dotenv:")
+print("[CONFIG] After load_dotenv:")
 print(f"  CTRADER_IS_DEMO: {repr(os.getenv('CTRADER_IS_DEMO'))}")
 print(f"  CTRADER_ACCOUNT_ID: {repr(os.getenv('CTRADER_ACCOUNT_ID'))}")
 print(f"  CTRADER_DEMO_WS_URL: {repr(os.getenv('CTRADER_DEMO_WS_URL'))}")
 print(f"  dotenv_path: {_dotenv_path} (exists={_dotenv_path.exists()})")
 print()
+
+# Helper functions for reading environment variables with validation
+def get_env_str(name: str, default: Optional[str] = None, required: bool = False, strip: bool = True) -> Optional[str]:
+    """Get environment variable as string with validation
+    
+    Args:
+        name: Environment variable name
+        default: Default value if not set (None if not provided)
+        required: If True, raise ValueError if missing
+        strip: If True, strip whitespace from value
+    
+    Returns:
+        String value or None if not set and not required
+    
+    Raises:
+        ValueError: If required=True and variable is missing or empty
+    """
+    value = os.getenv(name)
+    
+    if value is None:
+        if required:
+            raise ValueError(f"Required environment variable {name} is not set")
+        return default
+    
+    if strip:
+        value = value.strip()
+    
+    # Empty string after strip is treated as None
+    if value == "":
+        if required:
+            raise ValueError(f"Required environment variable {name} is empty")
+        return default
+    
+    return value
+
+def get_env_bool(name: str, default: bool = False) -> bool:
+    """Get environment variable as boolean
+    
+    Args:
+        name: Environment variable name
+        default: Default value if not set
+    
+    Returns:
+        Boolean value
+    """
+    value = os.getenv(name)
+    if not value:
+        return default
+    
+    value = value.strip().lower()
+    return value in ('true', '1', 'yes', 'on')
+
+def get_env_int(name: str, default: int = 0, required: bool = False) -> int:
+    """Get environment variable as integer with validation
+    
+    Args:
+        name: Environment variable name
+        default: Default value if not set
+        required: If True, raise ValueError if missing or invalid
+    
+    Returns:
+        Integer value
+    
+    Raises:
+        ValueError: If required=True and variable is missing, empty, or not a valid integer
+    """
+    value = os.getenv(name)
+    
+    if not value or not value.strip():
+        if required:
+            raise ValueError(f"Required environment variable {name} is not set or empty")
+        return default
+    
+    value = value.strip()
+    
+    # Check for placeholder values
+    if value.lower() in ('your_demo_account_id', 'your_account_id', 'your_client_id', 
+                         'your_client_secret', 'your_access_token', 'your_refresh_token',
+                         'your_bot_token_here', 'your_test_channel', 'your_finnhub_api_key_here'):
+        if required:
+            raise ValueError(f"Environment variable {name} appears to be a placeholder: {value}")
+        return default
+    
+    try:
+        return int(value)
+    except ValueError:
+        if required:
+            raise ValueError(f"Environment variable {name} is not a valid integer: {value}")
+        return default
+
+
+# Unified parser functions for Config class
+def _parse_bool_env(name: str, default: bool = False) -> bool:
+    """Parse boolean environment variable
+    
+    Args:
+        name: Environment variable name
+        default: Default value if not set
+    
+    Returns:
+        Boolean value
+    """
+    return get_env_bool(name, default)
+
+
+def _parse_int_env(name: str, default: Optional[int] = None, required: bool = False) -> int:
+    """Parse integer environment variable
+    
+    Args:
+        name: Environment variable name
+        default: Default value if not set (None means 0)
+        required: If True, raise ValueError if missing
+    
+    Returns:
+        Integer value
+    
+    Raises:
+        ValueError: If required=True and variable is missing or invalid
+    """
+    if default is None:
+        default = 0
+    return get_env_int(name, default=default, required=required)
+
+
+def _get_str_env(name: str, default: Optional[str] = None, required: bool = False) -> Optional[str]:
+    """Get string environment variable
+    
+    Args:
+        name: Environment variable name
+        default: Default value if not set
+        required: If True, raise ValueError if missing
+    
+    Returns:
+        String value or None
+    
+    Raises:
+        ValueError: If required=True and variable is missing
+    """
+    return get_env_str(name, default=default, required=required, strip=True)
 
 # Self-heal: if python-dotenv didn't load CTRADER_* keys, try manual parsing
 def _self_heal_env_loading():
@@ -323,6 +493,9 @@ class Config:
     CTRADER_LIVE_WS_URL: str = os.getenv('CTRADER_LIVE_WS_URL', '')
     CTRADER_IS_DEMO: bool = _parse_bool(os.getenv('CTRADER_IS_DEMO', 'true'), default=True)
     
+    # Gold symbol configuration (optional override)
+    GOLD_SYMBOL_NAME: str = os.getenv('GOLD_SYMBOL_NAME', '').strip()  # Manual override (e.g., "GOLD", "XAUUSDm")
+    
     # Gold price source (strictly cTrader only by default)
     GOLD_CTRADER_ONLY: bool = _parse_bool(os.getenv('GOLD_CTRADER_ONLY', 'true'), default=True)
     
@@ -366,7 +539,9 @@ class Config:
     
     @classmethod
     def _parse_ctrader_is_demo(cls) -> bool:
-        """Parse CTRADER_IS_DEMO strictly from {"true","false","1","0","yes","no"} (case-insensitive)"""
+        """Parse CTRADER_IS_DEMO - returns hardcoded value if enabled, otherwise parses from env"""
+        if CTRADER_HARDCODED_ENABLED:
+            return HARDCODED_CTRADER_CONFIG['is_demo']
         return _parse_ctrader_is_demo()  # Call module-level function
     
     @classmethod
@@ -378,7 +553,14 @@ class Config:
             - If valid: (int, None)
             - If invalid: (None, reason_code)
         """
-        # Read directly from os.getenv (not from cls.CTRADER_ACCOUNT_ID which is evaluated at class definition time)
+        # Priority 1: Hardcoded config
+        if CTRADER_HARDCODED_ENABLED:
+            account_id = HARDCODED_CTRADER_CONFIG['account_id']
+            if account_id <= 0:
+                return None, "CONFIG_INVALID_ACCOUNT_ID"
+            return account_id, None
+        
+        # Priority 2: Environment variables
         account_id_str = os.getenv('CTRADER_ACCOUNT_ID', '').strip()
         
         # Check if empty
@@ -438,11 +620,16 @@ class Config:
     
     @classmethod
     def get_ctrader_config(cls):
-        """Get unified cTrader configuration object (either from ENV or hardcoded)
+        """Get unified cTrader configuration object (hardcoded or from ENV)
         
         Returns:
-            CTraderConfig-like object with all cTrader settings
+            CTraderConfig-like object with all cTrader settings and source_map
         """
+        # Priority 1: Hardcoded config (if enabled)
+        if CTRADER_HARDCODED_ENABLED:
+            return cls._get_hardcoded_ctrader_config()
+        
+        # Priority 2: Legacy hardcoded config file (if USE_HARDCODED_CTRADER_CONFIG flag is set)
         if cls.USE_HARDCODED_CTRADER_CONFIG:
             try:
                 from config_hardcoded import _hardcoded_config
@@ -450,8 +637,89 @@ class Config:
             except ImportError:
                 print("[CONFIG] WARNING: USE_HARDCODED_CTRADER_CONFIG=true but config_hardcoded.py not found, falling back to ENV")
                 return cls._get_env_ctrader_config()
-        else:
-            return cls._get_env_ctrader_config()
+        
+        # Priority 3: Environment variables
+        return cls._get_env_ctrader_config()
+    
+    @classmethod
+    def _get_hardcoded_ctrader_config(cls):
+        """Get hardcoded cTrader configuration (source of truth)
+        
+        Returns:
+            SimpleNamespace object with all cTrader settings and source_map
+        """
+        config = SimpleNamespace()
+        
+        # Copy all hardcoded values
+        config.is_demo = HARDCODED_CTRADER_CONFIG['is_demo']
+        config.account_id = HARDCODED_CTRADER_CONFIG['account_id']
+        config.client_id = HARDCODED_CTRADER_CONFIG['client_id']
+        config.client_secret = HARDCODED_CTRADER_CONFIG['client_secret']
+        config.access_token = HARDCODED_CTRADER_CONFIG['access_token']
+        config.refresh_token = HARDCODED_CTRADER_CONFIG['refresh_token']
+        config.ws_url_demo = HARDCODED_CTRADER_CONFIG['ws_url_demo']
+        config.ws_url_live = HARDCODED_CTRADER_CONFIG['ws_url_live']
+        config.gold_ctrader_only = HARDCODED_CTRADER_CONFIG['gold_ctrader_only']
+        config.gold_symbol_name_override = HARDCODED_CTRADER_CONFIG.get('gold_symbol_name')
+        config.gold_symbol_id = HARDCODED_CTRADER_CONFIG.get('gold_symbol_id')
+        
+        # API URLs (hardcoded)
+        config.base_url = cls.CTRADER_API_URL
+        config.api_url = cls.CTRADER_API_URL
+        config.auth_url = cls.CTRADER_AUTH_URL
+        config.token_url = f"{cls.CTRADER_API_URL}/oauth/token"
+        config.redirect_uri = cls.CTRADER_REDIRECT_URI
+        
+        # Source map (all from HARDCODED)
+        config.source_map = {
+            'is_demo': 'HARDCODED',
+            'account_id': 'HARDCODED',
+            'client_id': 'HARDCODED',
+            'client_secret': 'HARDCODED',
+            'access_token': 'HARDCODED',
+            'refresh_token': 'HARDCODED',
+            'ws_url_demo': 'HARDCODED',
+            'ws_url_live': 'HARDCODED',
+            'gold_ctrader_only': 'HARDCODED',
+            'gold_symbol_name': 'HARDCODED' if config.gold_symbol_name_override else 'AUTO',
+        }
+        
+        # get_ws_url method
+        def get_ws_url():
+            """Get WebSocket URL based on is_demo flag"""
+            if config.is_demo:
+                ws_url = config.ws_url_demo
+                source = "HARDCODED"
+            else:
+                ws_url = config.ws_url_live
+                source = "HARDCODED"
+            
+            config.source_map['ws_url'] = source
+            print(f"[CTRADER_CONFIG] Using WS URL: {ws_url} (source={source})")
+            return ws_url, source
+        
+        config.get_ws_url = get_ws_url
+        
+        # log_preview method
+        def log_preview():
+            """Log configuration preview"""
+            print("[CTRADER_CONFIG] cTrader config loaded from: HARDCODED")
+            try:
+                ws_url, source = config.get_ws_url()
+                print(f"   Endpoint: {ws_url} (source={source})")
+            except ValueError as e:
+                print(f"   Endpoint: ERROR - {str(e)}")
+            print(f"   Is Demo: {config.is_demo}")
+            print(f"   Account ID: {config.account_id}")
+            print(f"   Client ID: {_safe_preview(config.client_id)}")
+            print(f"   Client Secret: {_safe_preview(config.client_secret)}")
+            print(f"   Access Token: {_safe_preview(config.access_token)}")
+            print(f"   Refresh Token: {_safe_preview(config.refresh_token)}")
+            print(f"   Gold cTrader Only: {config.gold_ctrader_only}")
+        
+        config.log_preview = log_preview
+        
+        return config
     
     @classmethod
     def _get_env_ctrader_config(cls):
@@ -459,48 +727,98 @@ class Config:
         # Create a simple object that mimics CTraderHardcodedConfig interface
         class EnvCTraderConfig:
             def __init__(self):
+                # Track source of each value for diagnostics
+                self.source_map: Dict[str, str] = {}
+                
                 # STRICT: Read only CTRADER_* keys (no fallbacks)
-                self.is_demo = cls._parse_ctrader_is_demo()
-                # Validate account_id - read directly from os.getenv
-                account_id, error_reason = cls.validate_account_id()
-                if error_reason:
-                    # Don't raise here - let caller check account_id and handle
+                # Use _parse_bool_env for proper parsing
+                try:
+                    self.is_demo = _parse_bool_env('CTRADER_IS_DEMO', default=True)
+                    self.source_map['is_demo'] = 'ENV' if os.getenv('CTRADER_IS_DEMO') else 'DEFAULT'
+                except Exception as e:
+                    print(f"[CONFIG] ERROR parsing CTRADER_IS_DEMO: {e}, using default=True")
+                    self.is_demo = True
+                    self.source_map['is_demo'] = 'ERROR_DEFAULT'
+                
+                # Validate account_id - use _parse_int_env with required=False (we'll check later)
+                try:
+                    self.account_id = _parse_int_env('CTRADER_ACCOUNT_ID', default=0, required=False)
+                    if self.account_id <= 0:
+                        self.source_map['account_id'] = 'ERROR'
+                    else:
+                        self.source_map['account_id'] = 'ENV'
+                except ValueError as e:
+                    # Log error but don't raise - let caller handle
+                    print(f"[CONFIG] ERROR: {e}")
                     self.account_id = 0
-                else:
-                    self.account_id = account_id
-                # Read WS URLs directly from os.getenv (not from class properties)
-                self.ws_url_demo = os.getenv('CTRADER_DEMO_WS_URL', '').strip()
-                self.ws_url_live = os.getenv('CTRADER_LIVE_WS_URL', '').strip()
-                self.client_id = cls.CTRADER_CLIENT_ID
-                self.client_secret = cls.CTRADER_CLIENT_SECRET
-                self.access_token = cls.CTRADER_ACCESS_TOKEN
-                self.refresh_token = cls.CTRADER_REFRESH_TOKEN
+                    self.source_map['account_id'] = 'ERROR'
+                
+                # Read WS URLs using _get_str_env
+                ws_url_demo_raw = _get_str_env('CTRADER_DEMO_WS_URL', default='', required=False)
+                self.ws_url_demo = ws_url_demo_raw or ''
+                self.source_map['ws_url_demo'] = 'ENV' if ws_url_demo_raw else 'MISSING'
+                
+                ws_url_live_raw = _get_str_env('CTRADER_LIVE_WS_URL', default='', required=False)
+                self.ws_url_live = ws_url_live_raw or ''
+                self.source_map['ws_url_live'] = 'ENV' if ws_url_live_raw else 'MISSING'
+                
+                # Read credentials using _get_str_env
+                self.client_id = _get_str_env('CTRADER_CLIENT_ID', default='', required=False) or ''
+                self.source_map['client_id'] = 'ENV' if self.client_id else 'MISSING'
+                
+                self.client_secret = _get_str_env('CTRADER_CLIENT_SECRET', default='', required=False) or ''
+                self.source_map['client_secret'] = 'ENV' if self.client_secret else 'MISSING'
+                
+                self.access_token = _get_str_env('CTRADER_ACCESS_TOKEN', default='', required=False) or ''
+                self.source_map['access_token'] = 'ENV' if self.access_token else 'MISSING'
+                
+                self.refresh_token = _get_str_env('CTRADER_REFRESH_TOKEN', default='', required=False) or ''
+                self.source_map['refresh_token'] = 'ENV' if self.refresh_token else 'MISSING'
+                
+                # API URLs (hardcoded)
                 self.base_url = cls.CTRADER_API_URL
                 self.api_url = cls.CTRADER_API_URL
                 self.auth_url = cls.CTRADER_AUTH_URL
                 self.token_url = f"{cls.CTRADER_API_URL}/oauth/token"
                 self.redirect_uri = cls.CTRADER_REDIRECT_URI
+                
+                # Gold symbol name override from env
+                gold_symbol_name_raw = _get_str_env('GOLD_SYMBOL_NAME', default='', required=False)
+                self.gold_symbol_name_override = gold_symbol_name_raw if gold_symbol_name_raw else None
+                self.source_map['gold_symbol_name'] = 'ENV' if gold_symbol_name_raw else 'MISSING'
             
             def get_ws_url(self):
-                """Get WebSocket URL based on is_demo flag (with safe defaults)"""
+                """Get WebSocket URL based on is_demo flag (with safe defaults)
+                
+                Returns:
+                    Tuple of (ws_url, source) where source is 'ENV', 'DEFAULT', or 'ERROR'
+                """
                 if self.is_demo:
-                    ws_url_raw = os.getenv('CTRADER_DEMO_WS_URL', '').strip()
+                    ws_url_raw = self.ws_url_demo
                     source_var = "CTRADER_DEMO_WS_URL"
                     default_url = "wss://demo.ctraderapi.com:5035"
                 else:
-                    ws_url_raw = os.getenv('CTRADER_LIVE_WS_URL', '').strip()
+                    ws_url_raw = self.ws_url_live
                     source_var = "CTRADER_LIVE_WS_URL"
                     default_url = "wss://live.ctraderapi.com:5035"
                 
-                # Use default if not set (never fail with CONFIG_MISSING_WS_URL)
+                # Use default if not set (check ALLOW_WS_DEFAULT flag)
+                allow_default = get_env_bool('ALLOW_WS_DEFAULT', default=True)
+                
                 if not ws_url_raw:
-                    ws_url = default_url
-                    source = f"{source_var}_default"
-                    print(f"[CTRADER_CONFIG] {source_var} missing -> using default {default_url} (source={source})")
+                    if allow_default:
+                        ws_url = default_url
+                        source = "DEFAULT"
+                        print(f"[CTRADER_CONFIG] {source_var} missing -> using default {default_url} (source={source})")
+                    else:
+                        raise ValueError(f"{source_var} is required but not set. Set ALLOW_WS_DEFAULT=true to use defaults.")
                 else:
                     ws_url = ws_url_raw
-                    source = source_var
+                    source = "ENV"
                     print(f"[CTRADER_CONFIG] Using {source_var}={ws_url} (source={source})")
+                
+                # Update source_map
+                self.source_map['ws_url'] = source
                 
                 return ws_url, source
                 

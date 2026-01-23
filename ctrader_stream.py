@@ -348,7 +348,17 @@ class CTraderStreamer:
             from config import Config
             ctrader_config = Config.get_ctrader_config()
             ws_url, source_var = ctrader_config.get_ws_url()
-            logger.info(f"[GOLD_CTRADER] Selected WS endpoint={ws_url} (source={source_var})")
+            
+            # Log startup configuration
+            logger.info("=" * 80)
+            logger.info("[GOLD_CTRADER] STARTUP CONFIGURATION")
+            logger.info("=" * 80)
+            logger.info(f"  is_demo: {ctrader_config.is_demo}")
+            logger.info(f"  account_id: {ctrader_config.account_id}")
+            logger.info(f"  ws_url: {ws_url} (source={source_var})")
+            if hasattr(ctrader_config, 'gold_symbol_name_override') and ctrader_config.gold_symbol_name_override:
+                logger.info(f"  gold_symbol_name_override: {ctrader_config.gold_symbol_name_override}")
+            logger.info("=" * 80)
             
             # Store config for later use
             self.ctrader_config = ctrader_config
@@ -634,10 +644,30 @@ class CTraderStreamer:
             
             # Build symbol map
             self.symbol_name_to_id = {}
-            symbol_candidates = [
-                "XAUUSD", "XAU/USD", "GOLD", "XAUUSD.", "XAUUSDm", "GOLD.",
-                "XAUUSDm.", "XAUUSD.", "XAU/USD.", "GOLDm"
-            ]
+            
+            # Get gold symbol name override from config (if set)
+            gold_symbol_name_override = None
+            if hasattr(self, 'ctrader_config') and self.ctrader_config:
+                gold_symbol_name_override = getattr(self.ctrader_config, 'gold_symbol_name_override', None)
+            
+            # If GOLD_SYMBOL_NAME env var is set, use it as primary candidate
+            if gold_symbol_name_override:
+                symbol_candidates = [gold_symbol_name_override]
+                logger.info(f"[GOLD_CTRADER] Using GOLD_SYMBOL_NAME override: {gold_symbol_name_override}")
+            else:
+                # Default candidates: flexible search (try common gold symbol names)
+                symbol_candidates = [
+                    "XAUUSD",      # Most common
+                    "XAUUSD.",     # With dot suffix
+                    "XAUUSDm",     # Mini variant
+                    "GOLD",        # Generic name
+                    "XAU/USD",     # With slash
+                    "XAUUSDm.",    # Mini with dot
+                    "XAUUSD.r",    # Round variant
+                    "GOLD.",       # Generic with dot
+                    "GOLDm",       # Generic mini
+                    "XAU/USD.",    # Slash with dot
+                ]
             
             gold_matches = []
             
@@ -653,14 +683,32 @@ class CTraderStreamer:
                         
                         # Check if this matches gold candidates
                         symbol_upper = symbol_name.upper()
-                        for candidate in symbol_candidates:
-                            if candidate.upper() == symbol_upper:
-                                # Exact match
-                                gold_matches.append((symbol_name, symbol_id, description, "exact"))
-                            elif candidate.upper() in symbol_upper or symbol_upper in candidate.upper():
-                                # Contains match
+                        
+                        # If override is set, try exact match first, then contains
+                        if gold_symbol_name_override:
+                            override_upper = gold_symbol_name_override.upper()
+                            if override_upper == symbol_upper:
+                                gold_matches.append((symbol_name, symbol_id, description, "exact_override"))
+                            elif override_upper in symbol_upper or symbol_upper in override_upper:
                                 if "XAU" in symbol_upper or "GOLD" in symbol_upper:
-                                    gold_matches.append((symbol_name, symbol_id, description, "contains"))
+                                    gold_matches.append((symbol_name, symbol_id, description, "contains_override"))
+                        else:
+                            # Default search: exact match, then contains with XAU/USD or GOLD
+                            for candidate in symbol_candidates:
+                                candidate_upper = candidate.upper()
+                                if candidate_upper == symbol_upper:
+                                    gold_matches.append((symbol_name, symbol_id, description, "exact"))
+                                elif candidate_upper in symbol_upper or symbol_upper in candidate_upper:
+                                    # Contains match - only if it's actually a metal symbol
+                                    if "XAU" in symbol_upper or "GOLD" in symbol_upper:
+                                        gold_matches.append((symbol_name, symbol_id, description, "contains"))
+                            
+                            # Also search for any symbol containing XAU and USD, or GOLD
+                            if ("XAU" in symbol_upper and "USD" in symbol_upper) or symbol_upper == "GOLD":
+                                # Check if not already added
+                                already_added = any(sym_id == symbol_id for _, sym_id, _, _ in gold_matches)
+                                if not already_added:
+                                    gold_matches.append((symbol_name, symbol_id, description, "pattern_match"))
             
             logger.info(f"[GOLD_CTRADER] Loaded {len(self.symbol_name_to_id)} symbols from list")
             
@@ -761,15 +809,34 @@ class CTraderStreamer:
             await asyncio.wait_for(tick_received.wait(), timeout=20.0)
             logger.info(f"[GOLD_CTRADER] First tick received: bid={first_tick_data.get('bid'):.2f} ask={first_tick_data.get('ask'):.2f}")
         except asyncio.TimeoutError:
-            logger.error(f"[GOLD_CTRADER] No ticks received for {self.gold_symbol_name} within 20 seconds")
-            logger.error(f"   -> Subscription may be active but no market data is flowing")
-            logger.error(f"   -> Check if symbol is tradeable and market is open")
-            raise CTraderStreamerError("NO_TICKS_RECEIVED", f"No ticks received for {self.gold_symbol_name} within 20 seconds")
+            # Extended diagnostics for NO_MARKETDATA
+            logger.error("=" * 80)
+            logger.error("[GOLD_CTRADER] NO_MARKETDATA: No valid ticks received")
+            logger.error("=" * 80)
+            logger.error(f"  Symbol: {self.gold_symbol_name} (ID: {self.gold_symbol_id})")
+            logger.error(f"  Timeout: 20 seconds")
+            logger.error(f"  Possible reasons:")
+            logger.error(f"    1. Symbol {self.gold_symbol_name} is disabled/not tradeable")
+            logger.error(f"    2. Market is closed or symbol has no liquidity")
+            logger.error(f"    3. Account does not have access to this symbol")
+            logger.error(f"    4. Subscription succeeded but no market data is flowing")
+            logger.error(f"  Subscription status: {self.subscription_status.get(self.gold_symbol_name.upper(), 'unknown')}")
+            logger.error(f"  Quote cache keys: {list(self.quote_cache.keys())}")
+            logger.error("=" * 80)
+            raise CTraderStreamerError("NO_TICKS_RECEIVED", f"No valid ticks received for {self.gold_symbol_name} within 20 seconds. Check symbol access and market hours.")
         finally:
             # Restore original callback
             self.on_quote = original_callback
         
-        logger.info(f"[GOLD_CTRADER] READY symbol={self.gold_symbol_name} symbolId={self.gold_symbol_id} bid={first_tick_data.get('bid'):.2f} ask={first_tick_data.get('ask'):.2f}")
+        logger.info("=" * 80)
+        logger.info("[GOLD_CTRADER] STREAMER READY")
+        logger.info("=" * 80)
+        logger.info(f"  symbol_name: {self.gold_symbol_name}")
+        logger.info(f"  symbol_id: {self.gold_symbol_id}")
+        logger.info(f"  bid: {first_tick_data.get('bid'):.2f}")
+        logger.info(f"  ask: {first_tick_data.get('ask'):.2f}")
+        logger.info(f"  mid: {(first_tick_data.get('bid', 0) + first_tick_data.get('ask', 0)) / 2:.2f}")
+        logger.info("=" * 80)
         logger.info("[GOLD_CTRADER] Protocol sequence completed successfully")
 
     async def subscribe(self, symbol_name: str):

@@ -8,6 +8,17 @@ Working Combined Trading Signals Bot
 - Fixed all asyncio issues
 """
 
+# CRITICAL: Load .env FIRST, before any config imports
+from pathlib import Path
+from env_loader import load_env
+
+# Compute absolute path to project root
+_project_root = Path(__file__).resolve().parent
+
+# Load .env with unified loader (includes diagnostics)
+_dotenv_path = load_env(_project_root)
+
+# Now safe to import Config and other modules
 import asyncio
 import time
 import json
@@ -206,9 +217,21 @@ _gold_symbol_resolved = None  # Resolved symbol name and ID
 
 
 def get_real_forex_price(pair):
-    """Get real forex price from real-time API with detailed logging"""
+    """Get real forex price from real-time API with detailed logging
+    
+    For XAUUSD (gold), uses cTrader if available, otherwise falls back to external APIs.
+    For other forex pairs, uses external free API.
+    """
     try:
         if pair == "XAUUSD":
+            # STRICT: Use cTrader only (GOLD_CTRADER_ONLY is always true with hardcoded config)
+            gold_price = get_gold_price_from_ctrader()
+            if gold_price is not None and gold_price > 0:
+                return gold_price
+            
+            # No external fallback - cTrader only
+            print("[FOREX_PRICE] XAUUSD: cTrader price unavailable, GOLD_CTRADER_ONLY=true - no external fallback")
+            return None
             # Import robust HTTP client
             try:
                 from http_client import get_http_session, log_request_error
@@ -219,8 +242,9 @@ def get_real_forex_price(pair):
                 def log_request_error(name, url, exc, sess):
                     return f"{name}: {type(exc).__name__} - {str(exc)[:100]}"
             
-            # STRICT: Check if cTrader-only mode is enabled - NEVER call external APIs for gold (Config imported at module level)
-            gold_ctrader_only = Config.GOLD_CTRADER_ONLY
+            # STRICT: Check if cTrader-only mode is enabled - NEVER call external APIs for gold
+            ctrader_config = Config.get_ctrader_config()
+            gold_ctrader_only = ctrader_config.gold_ctrader_only
             
             if gold_ctrader_only:
                 # Strict cTrader only - NEVER call external APIs
@@ -2937,7 +2961,8 @@ async def init_gold_ctrader_streamer():
     # DO NOT create local variable Config - use global import only
     try:
         # Test access to Config (from global import)
-        _ = Config.GOLD_CTRADER_ONLY
+        ctrader_config = Config.get_ctrader_config()
+        _ = ctrader_config.gold_ctrader_only
     except (NameError, AttributeError) as import_err:
         error_msg = f"CONFIG_IMPORT_ERROR: Failed to access Config: {import_err}"
         print(f"[GOLD_CTRADER] {error_msg}")
@@ -2970,13 +2995,20 @@ async def init_gold_ctrader_streamer():
             _gold_ctrader_disable_reason = error_msg
             return False
         
-        # Validate account ID from config matches
-        if ctrader_config.account_id != account_id or ctrader_config.account_id <= 0:
-            error_msg = f"CONFIG_INVALID_ACCOUNT_ID: Account ID mismatch or invalid (got {ctrader_config.account_id}, expected {account_id})"
-            print(f"[GOLD_CTRADER] {error_msg}")
-            print(f"   → Gold streamer DISABLED - will not attempt to connect")
-            _gold_ctrader_disabled = True
-            _gold_ctrader_disable_reason = error_msg
+        # Validate account ID from config
+        if ctrader_config.account_id <= 0:
+            error_msg = f"CONFIG_INVALID_ACCOUNT_ID: Account ID is missing or invalid (got {ctrader_config.account_id}, source: {ctrader_config.source_map.get('account_id', 'UNKNOWN')})"
+            print(f"[GOLD_CTRADER] ERROR: {error_msg}")
+            
+            # Check GOLD_CTRADER_ONLY flag
+            ctrader_config = Config.get_ctrader_config()
+            if ctrader_config.gold_ctrader_only:
+                print(f"   → GOLD_CTRADER_ONLY=true - gold streamer DISABLED")
+                print(f"   → Set CTRADER_ACCOUNT_ID in .env to enable gold signals")
+                _gold_ctrader_disabled = True
+                _gold_ctrader_disable_reason = error_msg
+            else:
+                print(f"   → GOLD_CTRADER_ONLY=false - will use external APIs for gold")
             return False
         
         # Validate required credentials
@@ -3058,7 +3090,8 @@ async def init_gold_ctrader_streamer():
                 print(f"   → {e.message}")
                 
                 # Check if external fallback is allowed (Config is already imported at function start)
-                if Config.GOLD_CTRADER_ONLY:
+                ctrader_config = Config.get_ctrader_config()
+                if ctrader_config.gold_ctrader_only:
                     print(f"   → GOLD_CTRADER_ONLY=true, external APIs disabled")
                 else:
                     print(f"   → Falling back to external APIs (GOLD_CTRADER_ONLY=false)")
@@ -3070,7 +3103,8 @@ async def init_gold_ctrader_streamer():
                 traceback.print_exc()
                 
                 # Check if external fallback is allowed (Config is already imported at function start)
-                if Config.GOLD_CTRADER_ONLY:
+                ctrader_config = Config.get_ctrader_config()
+                if ctrader_config.gold_ctrader_only:
                     print(f"   → GOLD_CTRADER_ONLY=true, external APIs disabled")
                 else:
                     print(f"   → Falling back to external APIs (GOLD_CTRADER_ONLY=false)")
@@ -3165,7 +3199,8 @@ def get_active_gold_signal_direction(channel_id):
         current_price = get_gold_price_from_ctrader()
         if current_price is None:
             # Check if external fallback is allowed (Config imported at module level)
-            if not Config.GOLD_CTRADER_ONLY:
+            ctrader_config = Config.get_ctrader_config()
+            if not ctrader_config.gold_ctrader_only:
                 price_result = get_real_forex_price("XAUUSD")
                 if price_result and len(price_result) >= 1:
                     current_price = price_result[0]
@@ -5483,8 +5518,49 @@ def main():
     application = Application.builder().token(BOT_TOKEN).build()
     
     # Add interactive handlers
+    async def debug_env_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /debug_env command - show environment configuration"""
+        user_id = update.effective_user.id
+        
+        if not is_authorized(user_id):
+            await update.message.reply_text("❌ You are not authorized to use this bot.")
+            return
+        
+        try:
+            import os
+            from env_loader import CRITICAL_CTRADER_KEYS
+            
+            message = "🔍 Environment Configuration Diagnostic\n\n"
+            message += "Critical CTRADER keys:\n"
+            
+            for key in CRITICAL_CTRADER_KEYS:
+                value = os.getenv(key)
+                is_set = value is not None and value.strip() != ''
+                status = "✅" if is_set else "❌"
+                
+                if key in ['CTRADER_CLIENT_ID', 'CTRADER_CLIENT_SECRET', 'CTRADER_ACCESS_TOKEN', 'CTRADER_REFRESH_TOKEN']:
+                    preview = value[:8] + "..." if value and len(value) > 8 else (value or "(not set)")
+                    message += f"{status} {key}: {preview}\n"
+                else:
+                    preview_val = repr(value) if value else '(not set)'
+                    message += f"{status} {key}: {preview_val}\n"
+            
+            # Get config and source map
+            try:
+                ctrader_config = Config.get_ctrader_config()
+                message += "\n📊 Config source map:\n"
+                for key, source in ctrader_config.source_map.items():
+                    message += f"  {key}: {source}\n"
+            except Exception as e:
+                message += f"\n❌ Error getting config: {e}\n"
+            
+            await update.message.reply_text(message)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {e}")
+    
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("debug_gold", debug_gold_command))
+    application.add_handler(CommandHandler("debug_env", debug_env_command))
     application.add_handler(CallbackQueryHandler(button_callback))
     
     # Add post_init callback to log bot info after initialization
