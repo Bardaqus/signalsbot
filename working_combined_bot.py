@@ -31,7 +31,7 @@ from datetime import datetime, timezone, timedelta
 import pytz
 import sys
 import httpx
-from typing import Optional, Dict, Tuple, List
+from typing import Optional, Dict, Tuple, List, Any
 from config import Config
 
 # Fix APScheduler timezone issue: patch apscheduler.util.astimezone before APScheduler imports
