@@ -151,7 +151,7 @@ MAX_FOREX_ADDITIONAL_SIGNALS = 5  # Additional forex channel (different signals)
 MAX_CRYPTO_SIGNALS_LINGRID = 5  # Lingrid Crypto channel
 MAX_CRYPTO_SIGNALS_GAINMUSE = 10  # GainMuse Crypto channel (increased to 10 signals per day)
 MAX_INDEX_SIGNALS = 5  # Index channel (5 signals per day)
-MAX_GOLD_SIGNALS = 2  # Gold Private channel (2 signals per day)
+MAX_GOLD_SIGNALS = 3  # Gold Private channel (3 signals per day)
 
 # Time intervals (in hours)
 MIN_INTERVAL = 3  # Changed to 3 hours minimum
@@ -294,6 +294,144 @@ async def get_gold_price_from_yahoo() -> Optional[Dict[str, Any]]:
             continue
     
     return None
+
+
+def get_forex_price_ctrader(symbol: str) -> Tuple[Optional[float], Optional[str]]:
+    """Get forex price STRICTLY from cTrader (no fallbacks)
+    
+    Args:
+        symbol: Forex pair (e.g., "EURUSD", "GBPUSD", "USDJPY")
+    
+    Returns:
+        Tuple of (price: float or None, reason: str or None)
+        If price is None, reason contains error explanation
+    """
+    import time
+    start_time = time.time()
+    
+    global _ctrader_async_client
+    
+    if not _ctrader_async_client:
+        latency_ms = int((time.time() - start_time) * 1000)
+        print(f"[FOREX_PRICE] {symbol}: source=CTRADER, price=None, reason=client_not_initialized, latency={latency_ms}ms")
+        return None, "client_not_initialized"
+    
+    try:
+        price = _ctrader_async_client.get_last_price(symbol)
+        latency_ms = int((time.time() - start_time) * 1000)
+        
+        if price and price > 0:
+            print(f"[FOREX_PRICE] {symbol}: source=CTRADER, price={price:.5f}, latency={latency_ms}ms")
+            return price, None
+        else:
+            print(f"[FOREX_PRICE] {symbol}: source=CTRADER, price=None, reason=no_quotes, latency={latency_ms}ms")
+            return None, "no_quotes"
+    except Exception as e:
+        latency_ms = int((time.time() - start_time) * 1000)
+        print(f"[FOREX_PRICE] {symbol}: source=CTRADER, price=None, reason=exception ({type(e).__name__}: {str(e)[:50]}), latency={latency_ms}ms")
+        return None, f"exception: {type(e).__name__}"
+
+
+async def get_gold_price_yahoo() -> Tuple[Optional[float], Optional[str]]:
+    """Get gold price STRICTLY from Yahoo Finance (no fallbacks)
+    
+    Returns:
+        Tuple of (price: float or None, reason: str or None)
+        If price is None, reason contains error explanation
+    """
+    import time
+    start_time = time.time()
+    
+    yahoo_data = await get_gold_price_from_yahoo()
+    latency_ms = int((time.time() - start_time) * 1000)
+    
+    if yahoo_data and yahoo_data["price"] > 0:
+        ticker_used = yahoo_data["meta"].get("ticker", "unknown")
+        source = yahoo_data["source"]
+        price = yahoo_data["price"]
+        print(f"[GOLD_PRICE] XAUUSD: source=YAHOO ({source}), price={price:.2f}, ticker={ticker_used}, latency={latency_ms}ms")
+        return price, None
+    else:
+        print(f"[GOLD_PRICE] XAUUSD: source=YAHOO, price=None, reason=unavailable, latency={latency_ms}ms")
+        return None, "unavailable"
+
+
+async def get_index_price_yahoo(symbol: str) -> Tuple[Optional[float], Optional[str]]:
+    """Get index price STRICTLY from Yahoo Finance (no fallbacks)
+    
+    Args:
+        symbol: Index symbol (e.g., "BRENT", "USOIL")
+    
+    Returns:
+        Tuple of (price: float or None, reason: str or None)
+        If price is None, reason contains error explanation
+    """
+    import time
+    start_time = time.time()
+    
+    try:
+        import yfinance as yf
+    except ImportError:
+        latency_ms = int((time.time() - start_time) * 1000)
+        print(f"[INDEX_PRICE] {symbol}: source=YAHOO, price=None, reason=yfinance_not_installed, latency={latency_ms}ms")
+        return None, "yfinance_not_installed"
+    
+    # Map symbols to Yahoo Finance tickers
+    ticker_map = {
+        "BRENT": "BZ=F",  # Brent Crude Oil Futures
+        "USOIL": "CL=F",  # WTI Crude Oil Futures
+        "XAUUSD": "GC=F",  # Gold Futures (for consistency)
+    }
+    
+    ticker_symbol = ticker_map.get(symbol.upper())
+    if not ticker_symbol:
+        latency_ms = int((time.time() - start_time) * 1000)
+        print(f"[INDEX_PRICE] {symbol}: source=YAHOO, price=None, reason=unknown_symbol, latency={latency_ms}ms")
+        return None, "unknown_symbol"
+    
+    try:
+        import asyncio
+        ticker = yf.Ticker(ticker_symbol)
+        
+        # Get latest price (non-blocking)
+        loop = asyncio.get_event_loop()
+        info = await asyncio.wait_for(
+            loop.run_in_executor(None, lambda: ticker.history(period="1d", interval="1m")),
+            timeout=10.0
+        )
+        
+        if info is not None and not info.empty:
+            last_price = float(info['Close'].iloc[-1])
+            if last_price > 0:
+                latency_ms = int((time.time() - start_time) * 1000)
+                print(f"[INDEX_PRICE] {symbol}: source=YAHOO, price={last_price:.2f}, ticker={ticker_symbol}, latency={latency_ms}ms")
+                return last_price, None
+        
+        # Fallback: try info attribute
+        info_dict = await asyncio.wait_for(
+            loop.run_in_executor(None, lambda: ticker.info),
+            timeout=5.0
+        )
+        
+        if info_dict and 'regularMarketPrice' in info_dict:
+            price = float(info_dict['regularMarketPrice'])
+            if price > 0:
+                latency_ms = int((time.time() - start_time) * 1000)
+                print(f"[INDEX_PRICE] {symbol}: source=YAHOO, price={price:.2f}, ticker={ticker_symbol}, latency={latency_ms}ms")
+                return price, None
+        
+        latency_ms = int((time.time() - start_time) * 1000)
+        print(f"[INDEX_PRICE] {symbol}: source=YAHOO, price=None, reason=no_price_data, ticker={ticker_symbol}, latency={latency_ms}ms")
+        return None, "no_price_data"
+        
+    except asyncio.TimeoutError:
+        latency_ms = int((time.time() - start_time) * 1000)
+        print(f"[INDEX_PRICE] {symbol}: source=YAHOO, price=None, reason=timeout, ticker={ticker_symbol}, latency={latency_ms}ms")
+        return None, "timeout"
+    except Exception as e:
+        latency_ms = int((time.time() - start_time) * 1000)
+        print(f"[INDEX_PRICE] {symbol}: source=YAHOO, price=None, reason=exception ({type(e).__name__}: {str(e)[:50]}), ticker={ticker_symbol}, latency={latency_ms}ms")
+        return None, f"exception: {type(e).__name__}"
 
 
 def _log_gold_price_comparison(ctrader_price: float, yahoo_price: float):
@@ -2138,23 +2276,12 @@ def generate_forex_signal():
     pair = random.choice(available_pairs)
     signal_type = random.choice(["BUY", "SELL"])
     
-    # Check CTRADER_ONLY_MODE: if enabled and pair is XAUUSD, require cTrader connection
-    if CTRADER_ONLY_MODE and pair == "XAUUSD":
-        price = get_gold_price_from_ctrader()
-        if price is None or price <= 0:
-            print("[FOREX_GEN] CTRADER_ONLY_MODE: waiting for cTrader connection/price...")
-            print("[FOREX_GEN]   Signal generation skipped until cTrader is connected")
-            return None
-        entry = price
-    else:
-        # Get real price from forex API
-        entry = get_real_forex_price(pair)
+    # STRICT: Forex pairs ONLY from cTrader (no fallbacks)
+    entry, reason = get_forex_price_ctrader(pair)
     
     if entry is None:
-        if CTRADER_ONLY_MODE and pair == "XAUUSD":
-            print(f"[FOREX_GEN] CTRADER_ONLY_MODE: XAUUSD requires cTrader connection")
-        else:
-            print(f"❌ Could not get real price for {pair}, skipping signal")
+        print(f"❌ [FOREX_GEN] Could not get price for {pair} from cTrader (reason: {reason})")
+        print(f"   Reject reason: PRICE_UNAVAILABLE_CTRADER")
         return None
     
     # Calculate SL and TP based on real price with 2 TPs
@@ -2503,7 +2630,7 @@ def generate_crypto_signal(channel="lingrid"):
     }
 
 
-def generate_index_signal():
+async def generate_index_signal():
     """Generate an index signal (USOIL, BRENT, or XAUUSD) - only Buy now signals"""
     # Get all active pairs across all channels to ensure uniqueness
     all_active_pairs = get_all_active_pairs_across_channels()
@@ -2531,36 +2658,12 @@ def generate_index_signal():
     pair = random.choice(available_pairs)
     signal_type = "Buy"  # Only Buy now signals
 
-    # Check CTRADER_ONLY_MODE: if enabled and pair is XAUUSD, require cTrader connection
-    if CTRADER_ONLY_MODE and pair == "XAUUSD":
-        price = get_gold_price_from_ctrader()
-        if price is None or price <= 0:
-            print("[INDEX_GEN] CTRADER_ONLY_MODE: waiting for cTrader connection/price...")
-            print("[INDEX_GEN]   Signal generation skipped until cTrader is connected")
-            return None
-        entry = price
-        print(f"✅ Index price available for {pair}: {entry} (from cTrader)")
-    else:
-        # Get real price
-        print(f"📊 Checking index price availability for {pair}...")
-        if pair == "XAUUSD":
-            entry = get_real_forex_price(pair)
-            if entry:
-                print(f"✅ Index price available for {pair}: {entry}")
-            else:
-                print(f"❌ Index price NOT available for {pair} - cannot generate signal")
-        else:
-            entry = get_real_index_price(pair)
-            if entry:
-                print(f"✅ Index price available for {pair}: {entry}")
-            else:
-                print(f"❌ Index price NOT available for {pair} - cannot generate signal")
-
+    # STRICT: Index prices ONLY from Yahoo Finance (no fallbacks)
+    # Note: XAUUSD in indexes channel also uses Yahoo Finance (not cTrader)
+    entry, reason = await get_index_price_yahoo(pair)
+    
     if entry is None:
-        if CTRADER_ONLY_MODE and pair == "XAUUSD":
-            print(f"[INDEX_GEN] CTRADER_ONLY_MODE: XAUUSD requires cTrader connection")
-        else:
-            print(f"❌ Could not get real price for {pair}, skipping signal")
+        print(f"❌ [INDEX_GEN] Could not get price for {pair} from Yahoo Finance (reason: {reason})")
         return None
     
     # Strict type check: entry must be float or int
@@ -3122,15 +3225,16 @@ async def init_ctrader_async_client():
         await _ctrader_async_client.auth_application()
         await _ctrader_async_client.auth_account()
         
-        # Resolve and subscribe to XAUUSD
-        symbol_id = await _ctrader_async_client.ensure_symbol_id("XAUUSD")
-        if symbol_id:
-            await _ctrader_async_client.subscribe_spot(symbol_id)
-            print("[CTRADER_ASYNC] ✅ Gold (XAUUSD) subscribed")
-        else:
-            print("[CTRADER_ASYNC] ⚠️ XAUUSD symbol not found, but client connected")
+        # Resolve and subscribe to FOREX pairs only (not XAUUSD - gold uses Yahoo Finance)
+        forex_pairs = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "NZDUSD"]
+        for pair in forex_pairs:
+            symbol_id = await _ctrader_async_client.ensure_symbol_id(pair)
+            if symbol_id:
+                await _ctrader_async_client.subscribe_spot(symbol_id)
+                print(f"[CTRADER_ASYNC] ✅ {pair} subscribed")
+            else:
+                print(f"[CTRADER_ASYNC] ⚠️ {pair} symbol not found")
         
-        _gold_ctrader_connected = True
         return True
         
     except CTraderAsyncError as e:
@@ -3183,17 +3287,24 @@ def get_active_gold_signal_direction(channel_id):
         # Get gold signals for this channel
         gold_signals = signals.get("gold_private", [])
         
-        # Get current gold price (strictly from cTrader if GOLD_CTRADER_ONLY=true)
-        current_price = get_gold_price_from_ctrader()
+        # STRICT: Get current gold price ONLY from Yahoo Finance
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # If loop is running, use a thread executor
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(lambda: asyncio.run(get_gold_price_yahoo()))
+                    current_price, _ = future.result(timeout=10)
+            else:
+                current_price, _ = loop.run_until_complete(get_gold_price_yahoo())
+        except Exception as e:
+            print(f"❌ Error getting gold price for active signal check: {e}")
+            return None
+        
         if current_price is None:
-            # Check if external fallback is allowed (Config imported at module level)
-            ctrader_config = Config.get_ctrader_config()
-            if not ctrader_config.gold_ctrader_only:
-                price_result = get_real_forex_price("XAUUSD")
-                if price_result and len(price_result) >= 1:
-                    current_price = price_result[0]
-            if current_price is None:
-                return None
+            return None
         
         # Check all gold signals for this channel
         for signal in gold_signals:
@@ -3248,7 +3359,7 @@ async def generate_gold_signal():
     IMPORTANT: If there's an active signal that hasn't reached SL or final TP,
     the new signal must be in the same direction (BUY or SELL)
     
-    Uses get_gold_price() which tries cTrader first, then Yahoo Finance as fallback.
+    STRICT: Uses ONLY Yahoo Finance (no cTrader fallback).
     
     Returns:
         Signal dict or None if generation failed
@@ -3257,16 +3368,15 @@ async def generate_gold_signal():
         # Check for active gold signal in GOLD Private channel
         active_direction = get_active_gold_signal_direction(CHANNEL_GOLD_PRIVATE)
         
-        # Get gold price (cTrader -> Yahoo Finance fallback)
-        price_data = await get_gold_price()
+        # STRICT: Gold price ONLY from Yahoo Finance (no fallbacks)
+        entry, reason = await get_gold_price_yahoo()
         
-        if price_data is None or price_data["price"] <= 0:
-            print("[GOLD_GEN] Could not get gold price from any source")
+        if entry is None or entry <= 0:
+            print(f"[GOLD_GEN] Could not get gold price from Yahoo Finance (reason: {reason})")
             return None
         
-        entry = price_data["price"]
-        price_source = price_data["source"]
-        is_fallback = price_source.startswith("yahoo")
+        price_source = "yahoo"
+        is_fallback = False  # Yahoo is primary source, not fallback
         
         print(f"✅ [GOLD_GEN] Got gold price: {entry:.2f} (source: {price_source})")
         
@@ -3409,9 +3519,10 @@ async def send_gold_signal(return_reason=False, skip_throttle=False):
         
         if gold_count >= MAX_GOLD_SIGNALS:
             details["reject_reason"] = SignalRejectReason.DAILY_LIMIT.value
+            print(f"⛔ [GOLD_REJECT] DAILY_LIMIT: Gold signal limit reached: {gold_count}/{MAX_GOLD_SIGNALS}")
+            print(f"   Counter NOT incremented (already at limit)")
             if return_reason:
                 return False, SignalRejectReason.DAILY_LIMIT, details
-            print(f"⚠️ [GOLD_SEND] Gold signal limit reached: {gold_count}/{MAX_GOLD_SIGNALS}")
             return False
         
         # Generate signal (will respect active signal direction if exists)
@@ -3419,77 +3530,13 @@ async def send_gold_signal(return_reason=False, skip_throttle=False):
         details["signal_generated"] = signal is not None
         
         if signal is None:
-            # Get gold price (strictly from cTrader if GOLD_CTRADER_ONLY=true) (Config imported at module level)
-            gold_ctrader_only = Config.GOLD_CTRADER_ONLY
-            
-            gold_price = get_gold_price_from_ctrader()
-            if gold_price is None:
-                if gold_ctrader_only:
-                    # Strict cTrader only - no external APIs
-                    ctrader_config = Config.get_ctrader_config()
-                    ws_url, _ = ctrader_config.get_ws_url()
-                    
-                    # Determine reason
-                    reason_details = {
-                        "ws_url": ws_url,
-                        "is_demo": ctrader_config.is_demo,
-                        "account_id": ctrader_config.account_id,
-                    }
-                    
-                    global _gold_ctrader_connected, _ctrader_async_client
-                    if not _ctrader_async_client or not _gold_ctrader_connected:
-                        reason_details["reason"] = "cTrader async client not initialized or not connected"
-                    elif "XAUUSD" not in _ctrader_async_client.symbol_name_to_id:
-                        reason_details["reason"] = "Symbol not resolved (XAUUSD not found)"
-                    else:
-                        symbol_id = _ctrader_async_client.symbol_name_to_id["XAUUSD"]
-                        last_quote = _ctrader_async_client.last_quotes.get(symbol_id, {})
-                        if not last_quote.get("bid") or not last_quote.get("ask"):
-                            reason_details["reason"] = f"No quotes received for XAUUSD (ID: {symbol_id})"
-                        else:
-                            reason_details["reason"] = "Unknown (check logs)"
-                    
-                    details["reject_reason"] = SignalRejectReason.PRICE_UNAVAILABLE_CTRADER_ONLY.value
-                    details["reject_details"] = reason_details
-                    
-                    print(f"[GOLD_SEND] PRICE_UNAVAILABLE_CTRADER_ONLY: cTrader price not available")
-                    print(f"   ws_url: {ws_url}")
-                    print(f"   is_demo: {ctrader_config.is_demo}")
-                    print(f"   account_id: {ctrader_config.account_id}")
-                    print(f"   reason: {reason_details['reason']}")
-                    
-                    if return_reason:
-                        return False, SignalRejectReason.PRICE_UNAVAILABLE_CTRADER_ONLY, details
-                    return False
-                else:
-                    # Fallback to external APIs (if GOLD_CTRADER_ONLY=false)
-                    try:
-                        external_price = get_real_forex_price("XAUUSD")
-                        if external_price:
-                            gold_price = external_price
-                        else:
-                            details["reject_reason"] = SignalRejectReason.PRICE_UNAVAILABLE.value
-                            details["reject_details"] = {
-                                "ctrader_error": "No price from cTrader",
-                                "external_error": "No price from external APIs"
-                            }
-                            if return_reason:
-                                return False, SignalRejectReason.PRICE_UNAVAILABLE, details
-                            print("[GOLD_SEND] PRICE_UNAVAILABLE: Could not get gold price from cTrader or external APIs")
-                            return False
-                    except Exception as e:
-                        details["reject_reason"] = SignalRejectReason.PRICE_UNAVAILABLE.value
-                        details["reject_details"] = {"external_error": str(e)}
-                        if return_reason:
-                            return False, SignalRejectReason.PRICE_UNAVAILABLE, details
-                        print(f"[GOLD_SEND] PRICE_UNAVAILABLE: External API error: {e}")
-                        return False
-            
-            # Other generation failures
+            # STRICT: Gold uses ONLY Yahoo Finance - no cTrader fallback
             details["reject_reason"] = SignalRejectReason.GENERATION_FAILED.value
+            details["reject_details"] = {"reason": "Yahoo Finance price unavailable"}
+            print(f"⛔ [GOLD_REJECT] GENERATION_FAILED: Could not get gold price from Yahoo Finance")
+            print(f"   Counter NOT incremented (current: {gold_count}/{MAX_GOLD_SIGNALS})")
             if return_reason:
                 return False, SignalRejectReason.GENERATION_FAILED, details
-            print("❌ [GOLD_SEND] GENERATION_FAILED: Could not generate gold signal (unknown reason)")
             return False
         
         details["signal_type"] = signal.get("type")
@@ -3505,35 +3552,60 @@ async def send_gold_signal(return_reason=False, skip_throttle=False):
             details["reject_reason"] = pair_reason.value
             details["reject_details"] = pair_details
             
+            wait_hours = pair_details.get("remaining_hours", 0)
+            print(f"⛔ [GOLD_REJECT] RULE_36H: Cannot send gold signal - 36-hour interval not met. Wait {wait_hours:.2f} more hours.")
+            print(f"   Counter NOT incremented (current: {gold_count}/{MAX_GOLD_SIGNALS})")
+            
             if return_reason:
                 return False, pair_reason, details
-            
-            wait_hours = pair_details.get("remaining_hours", 0)
-            print(f"⚠️ [GOLD_SEND] Cannot send gold signal: 36-hour interval not met. Wait {wait_hours:.2f} more hours.")
             return False
         
         # All checks passed - send signal
-        signals["gold_private"].append(signal)
-        save_signals(signals)
+        # IMPORTANT: Do NOT increment counter before sending - only after successful send
         
         # Send to channel
         bot = Bot(token=BOT_TOKEN)
         message = format_gold_signal(signal)
-        await bot.send_message(chat_id=CHANNEL_GOLD_PRIVATE, text=message, parse_mode='HTML')
-
-        # Save signal to channel file
-        save_channel_signal(CHANNEL_GOLD_PRIVATE, signal)
-
-        # Update last signal time (global, channel-specific, and pair-specific)
-        save_last_signal_time()
-        save_channel_last_signal_time(CHANNEL_GOLD_PRIVATE)
-        save_channel_pair_last_signal_time(CHANNEL_GOLD_PRIVATE, signal['pair'])
-
-        details["sent"] = True
-        details["sent_at"] = datetime.now(timezone.utc).isoformat()
         
-        print(f"✅ [GOLD_SEND] Gold signal sent: {signal['pair']} {signal['type']} at {signal['entry']}")
-        print(f"📊 [GOLD_SEND] Today's gold signals: {gold_count + 1}/{MAX_GOLD_SIGNALS}")
+        try:
+            sent_message = await bot.send_message(chat_id=CHANNEL_GOLD_PRIVATE, text=message, parse_mode='HTML')
+            message_id = sent_message.message_id if sent_message else None
+            
+            # ONLY increment counter AFTER successful send
+            signals["gold_private"].append(signal)
+            save_signals(signals)
+            
+            # Save signal to channel file
+            save_channel_signal(CHANNEL_GOLD_PRIVATE, signal)
+
+            # Update last signal time (global, channel-specific, and pair-specific)
+            save_last_signal_time()
+            save_channel_last_signal_time(CHANNEL_GOLD_PRIVATE)
+            save_channel_pair_last_signal_time(CHANNEL_GOLD_PRIVATE, signal['pair'])
+
+            details["sent"] = True
+            details["sent_at"] = datetime.now(timezone.utc).isoformat()
+            details["message_id"] = message_id
+            
+            new_gold_count = len(signals.get("gold_private", []))
+            
+            print(f"✅ [GOLD_SENT] Gold signal sent successfully: {signal['pair']} {signal['type']} at {signal['entry']}")
+            print(f"   Channel: {CHANNEL_GOLD_PRIVATE}, Message ID: {message_id}")
+            print(f"📌 [GOLD_COUNTER_INCREMENTED] {gold_count} -> {new_gold_count}/{MAX_GOLD_SIGNALS}")
+            
+        except Exception as send_error:
+            # Send failed - do NOT increment counter
+            details["send_exception"] = str(send_error)
+            details["reject_reason"] = SignalRejectReason.EXCEPTION.value
+            details["reject_details"] = {"send_error": str(send_error), "error_type": type(send_error).__name__}
+            
+            print(f"⛔ [GOLD_REJECT] EXCEPTION: Failed to send message to Telegram")
+            print(f"   Error: {type(send_error).__name__}: {send_error}")
+            print(f"   Counter NOT incremented (current: {gold_count}/{MAX_GOLD_SIGNALS})")
+            
+            if return_reason:
+                return False, SignalRejectReason.EXCEPTION, details
+            return False
         
         if return_reason:
             return True, SignalRejectReason.SUCCESS, details
@@ -3544,7 +3616,15 @@ async def send_gold_signal(return_reason=False, skip_throttle=False):
         details["traceback"] = traceback.format_exc()
         details["reject_reason"] = SignalRejectReason.EXCEPTION.value
         
-        print(f"❌ [GOLD_SEND] Error sending gold signal: {e}")
+        # Get current gold count for logging
+        try:
+            signals_check = load_signals()
+            gold_count_check = len(signals_check.get("gold_private", []))
+        except:
+            gold_count_check = "unknown"
+        
+        print(f"⛔ [GOLD_REJECT] EXCEPTION: Error in send_gold_signal: {e}")
+        print(f"   Counter NOT incremented (current: {gold_count_check}/{MAX_GOLD_SIGNALS})")
         print(traceback.format_exc())
         
         if return_reason:
@@ -3583,7 +3663,7 @@ async def send_index_signal(signal_data=None):
             signal_data = None
             
             while attempts < max_attempts:
-                signal_data = generate_index_signal()
+                signal_data = await generate_index_signal()
                 if signal_data is None:
                     print("❌ Could not generate index signal")
                     return False
@@ -5172,38 +5252,30 @@ def automatic_signal_loop():
             # Wait a moment for bot to fully initialize
             await asyncio.sleep(3)
             
-            # Initialize cTrader for gold if credentials available
-            global _gold_ctrader_connected
-            print(f"[INIT] gold_connected={_gold_ctrader_connected}")
-            
-            if not _gold_ctrader_connected:
-                try:
-                    account_id = Config.get_account_id_or_raise()
-                    ctrader_config = Config.get_ctrader_config()
-                    if all([ctrader_config.access_token, ctrader_config.client_id, ctrader_config.client_secret]) and account_id > 0:
-                        print("\n[INIT] Initializing cTrader for gold quotes...")
-                        ctrader_ok = await init_ctrader_async_client()
-                        if ctrader_ok:
-                            print("[INIT] cTrader initialized for gold")
-                        else:
-                            print("[INIT] cTrader initialization failed")
+            # Initialize cTrader for FOREX pairs only (not for gold/index)
+            # Gold and Index use Yahoo Finance, so no cTrader initialization needed for them
+            try:
+                account_id = Config.get_account_id_or_raise()
+                ctrader_config = Config.get_ctrader_config()
+                if all([ctrader_config.access_token, ctrader_config.client_id, ctrader_config.client_secret]) and account_id > 0:
+                    print("\n[INIT] Initializing cTrader for FOREX quotes...")
+                    ctrader_ok = await init_ctrader_async_client()
+                    if ctrader_ok:
+                        print("[INIT] cTrader initialized for FOREX")
                     else:
-                        print("[INIT] cTrader credentials not configured, skipping gold streamer initialization")
-                except ValueError as e:
-                    print(f"[INIT] Config error: {e}")
-                    print(f"[INIT] Gold streamer initialization skipped")
+                        print("[INIT] cTrader initialization failed")
+                else:
+                    print("[INIT] cTrader credentials not configured, skipping cTrader initialization")
+            except ValueError as e:
+                print(f"[INIT] Config error: {e}")
+                print(f"[INIT] cTrader initialization skipped")
             
             # Send 1 gold signal to GOLD Private channel (WITH throttle exception for startup)
-            # Only send if gold is connected
-            if _gold_ctrader_connected:
-                print("\n🥇 [INIT] Attempting to send initial gold signal to GOLD Private channel...")
-                print("   → Throttle rules EXEMPTED for startup initial signal")
-                gold_success, gold_reason, gold_details = await send_gold_signal(return_reason=True, skip_throttle=True)
-            else:
-                print("\n🥇 [INIT] Skipping initial gold signal (gold not connected)")
-                gold_success = False
-                gold_reason = None
-                gold_details = {}
+            # Gold uses Yahoo Finance, no connection check needed
+            print("\n🥇 [INIT] Attempting to send initial gold signal to GOLD Private channel...")
+            print("   → Throttle rules EXEMPTED for startup initial signal")
+            print("   → Using Yahoo Finance as price source")
+            gold_success, gold_reason, gold_details = await send_gold_signal(return_reason=True, skip_throttle=True)
             
             if gold_success:
                 print("✅ [INIT] Initial gold signal sent successfully")
