@@ -135,6 +135,18 @@ def load_telegram_token(dotenv_path: Optional[Path] = None) -> str:
 # Load Telegram token at module level
 TELEGRAM_BOT_TOKEN = load_telegram_token()
 
+# Fallback to hardcoded token if .env loading failed
+if not TELEGRAM_BOT_TOKEN:
+    try:
+        from config_hardcoded import HARDCODED_TELEGRAM
+        TELEGRAM_BOT_TOKEN = HARDCODED_TELEGRAM.get('bot_token', '')
+        if TELEGRAM_BOT_TOKEN:
+            logger.warning("[TELEGRAM_TOKEN] ⚠️ Using hardcoded token from config_hardcoded.py (fallback)")
+            logger.info(f"[TELEGRAM_TOKEN] Token preview: {TELEGRAM_BOT_TOKEN[:6]}...{TELEGRAM_BOT_TOKEN[-4:]}")
+    except Exception as e:
+        logger.error(f"[TELEGRAM_TOKEN] ❌ Failed to load token from .env and fallback: {e}")
+        TELEGRAM_BOT_TOKEN = ""
+
 # Load channel ID (with fallback)
 try:
     from config_hardcoded import get_hardcoded_config
@@ -730,9 +742,27 @@ def get_active_pairs() -> List[str]:
     return active_pairs
 
 
-def get_available_pairs(all_pairs: List[str]) -> List[str]:
-    """Get pairs that don't have active signals"""
-    active_pairs = get_active_pairs()
+def get_available_pairs(all_pairs: List[str], channel_id: Optional[str] = None) -> List[str]:
+    """Get pairs that don't have active signals for the specified channel.
+    
+    Args:
+        all_pairs: List of all pairs to check
+        channel_id: If provided, only check for active signals in this channel.
+                   If None, check globally (backward compatibility)
+    """
+    active_signals = load_active_signals()
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    
+    # Get active pairs for this channel (or globally if channel_id is None)
+    active_pairs = []
+    for signal in active_signals:
+        if signal.get("status") == "active" and signal.get("date") == today:
+            signal_channel_id = signal.get("channel_id")
+            # If channel_id is specified, only exclude pairs active in THIS channel
+            # If channel_id is None, exclude pairs active in ANY channel (backward compatibility)
+            if channel_id is None or signal_channel_id == channel_id:
+                active_pairs.append(signal.get("symbol"))
+    
     return [pair for pair in all_pairs if pair not in active_pairs]
 
 
@@ -1415,10 +1445,10 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str]) -> None
         signals_needed = max_signals - today_count
         print(f"🎯 {channel_name}: Need {signals_needed} more signals (current: {today_count}/{max_signals})")
         
-        # Get available pairs for this channel
-        available_pairs = get_available_pairs(symbols)
+        # Get available pairs for this channel (check only this channel's active signals)
+        available_pairs = get_available_pairs(symbols, channel_id=channel_id)
         if not available_pairs:
-            print(f"⚠️ {channel_name}: No available pairs")
+            print(f"⚠️ {channel_name}: No available pairs (all pairs already have active signals in this channel)")
             continue
         
         signals_generated = 0
