@@ -1,29 +1,262 @@
 import os
+import re
 import time
 import asyncio
 import json
+import logging
+from pathlib import Path
 from datetime import datetime, timezone, timedelta
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 
+from dotenv import load_dotenv
 from telegram import Bot
+from telegram.error import InvalidToken, TelegramError
 from data_router import get_price, get_candles, AssetClass, ForbiddenDataSourceError, get_data_router
 from config import Config
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-# Telegram configuration: HARDCODED PRIMARY, ENV override
-# Import hardcoded config for Telegram
+# Global flag for Telegram send capability
+_telegram_send_enabled = True
+
+# Determine project root and .env path
+_project_root = Path(__file__).resolve().parent
+_dotenv_path = _project_root / ".env"
+
+
+def load_telegram_token(dotenv_path: Optional[Path] = None) -> str:
+    """
+    Load and clean Telegram bot token from .env file.
+    
+    Args:
+        dotenv_path: Path to .env file (defaults to project root/.env)
+    
+    Returns:
+        Cleaned token string (empty string if invalid/missing)
+    
+    Side effects:
+        - Loads .env file with override=True
+        - Logs detailed diagnostics including repr() of raw/cleaned token parts
+    """
+    if dotenv_path is None:
+        dotenv_path = _dotenv_path
+    
+    # Load .env file
+    env_exists = dotenv_path.exists()
+    logger.info(f"[TELEGRAM_TOKEN] Loading .env from: {dotenv_path} (exists={env_exists})")
+    logger.info(f"[TELEGRAM_TOKEN] Reading key: TELEGRAM_BOT_TOKEN")
+    
+    load_dotenv(dotenv_path=dotenv_path, override=True, encoding="utf-8")
+    
+    # Get raw token from ENV (STRICT: only from .env, no fallback)
+    raw_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    
+    # Log raw token diagnostics (safe: only first/last chars with repr)
+    raw_len = len(raw_token) if raw_token else 0
+    raw_preview_start = repr(raw_token[:25]) if raw_token else "''"
+    raw_preview_end = repr(raw_token[-10:]) if raw_token and len(raw_token) > 10 else "''"
+    
+    logger.info(f"[TELEGRAM_TOKEN] Raw token from ENV:")
+    logger.info(f"   RAW_LEN={raw_len}")
+    logger.info(f"   RAW_START={raw_preview_start}")
+    logger.info(f"   RAW_END={raw_preview_end}")
+    
+    if not raw_token:
+        logger.error("[TELEGRAM_TOKEN] ❌ Token is empty or not set in ENV")
+        logger.error("[TELEGRAM_TOKEN] Set TELEGRAM_BOT_TOKEN in .env file")
+        return ""
+    
+    # Clean token: remove BOM, CR, quotes, whitespace, comments
+    cleaned = raw_token
+    
+    # Remove BOM (UTF-8 BOM: \ufeff)
+    cleaned = cleaned.replace("\ufeff", "")
+    
+    # Remove carriage returns (CR)
+    cleaned = cleaned.replace("\r", "")
+    
+    # Strip whitespace
+    cleaned = cleaned.strip()
+    
+    # Remove quotes (single and double)
+    cleaned = cleaned.strip('"').strip("'")
+    
+    # Remove comments (if token contains " #", "\t#", or " ;")
+    if " #" in cleaned:
+        cleaned = cleaned.split(" #")[0]
+    if "\t#" in cleaned:
+        cleaned = cleaned.split("\t#")[0]
+    if " ;" in cleaned:
+        cleaned = cleaned.split(" ;")[0]
+    
+    # Final strip after comment removal
+    cleaned = cleaned.strip()
+    
+    # Log cleaned token diagnostics
+    cleaned_len = len(cleaned) if cleaned else 0
+    cleaned_preview_start = repr(cleaned[:25]) if cleaned else "''"
+    cleaned_preview_end = repr(cleaned[-10:]) if cleaned and len(cleaned) > 10 else "''"
+    
+    logger.info(f"[TELEGRAM_TOKEN] Cleaned token:")
+    logger.info(f"   CLEANED_LEN={cleaned_len}")
+    logger.info(f"   CLEANED_START={cleaned_preview_start}")
+    logger.info(f"   CLEANED_END={cleaned_preview_end}")
+    
+    # Validate token format: digits:alphanumeric_underscore_dash (min 30 chars after colon)
+    token_pattern = re.compile(r"^\d+:[A-Za-z0-9_-]{30,}$")
+    
+    if not cleaned:
+        logger.error("[TELEGRAM_TOKEN] ❌ Token is empty after cleaning")
+        return ""
+    
+    if not token_pattern.match(cleaned):
+        logger.error("[TELEGRAM_TOKEN] ❌ Token format is invalid (does not match pattern)")
+        logger.error("[TELEGRAM_TOKEN] Expected format: digits:alphanumeric_underscore_dash (min 30 chars after colon)")
+        logger.error(f"[TELEGRAM_TOKEN] Actual cleaned token (first 30 chars): {repr(cleaned[:30])}")
+        return ""
+    
+    # Safe logging: show length and preview (first 6 + last 4 chars)
+    token_preview = f"{cleaned[:6]}...{cleaned[-4:]}" if cleaned_len > 10 else "***"
+    
+    logger.info(f"[TELEGRAM_TOKEN] ✅ Token loaded and validated successfully:")
+    logger.info(f"   DOTENV_PATH={dotenv_path}")
+    logger.info(f"   KEY=TELEGRAM_BOT_TOKEN")
+    logger.info(f"   TOKEN_LEN={cleaned_len}")
+    logger.info(f"   TOKEN_PREVIEW={token_preview}")
+    
+    return cleaned
+
+
+# Load Telegram token at module level
+TELEGRAM_BOT_TOKEN = load_telegram_token()
+
+# Load channel ID (with fallback)
 try:
     from config_hardcoded import get_hardcoded_config
     _hardcoded_config = get_hardcoded_config()
-    TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", _hardcoded_config.telegram_bot_token)
     TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", _hardcoded_config.telegram_channel_id)
 except ImportError:
-    # Fallback if config_hardcoded not available
-    TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "7734435177:AAGeoSk7TChGNvaVf63R9DW8TELWRQB_rmY")
     TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "-1003118256304")
 
 # Global Twelve Data client state (FOREX data source)
 _twelve_data_client = None
+
+
+async def safe_send_message(bot: Optional[Bot], chat_id: str, text: str, disable_web_page_preview: bool = True, parse_mode: Optional[str] = None) -> bool:
+    """
+    Safely send Telegram message with error handling.
+    
+    Args:
+        bot: Telegram Bot instance
+        chat_id: Chat/channel ID
+        text: Message text
+        disable_web_page_preview: Disable web page preview
+        parse_mode: Optional parse mode (e.g., 'Markdown')
+    
+    Returns:
+        True if sent successfully, False otherwise
+    
+    Side effects:
+        - Sets _telegram_send_enabled=False on InvalidToken (one-time)
+        - Logs errors but doesn't raise exceptions
+    """
+    global _telegram_send_enabled
+    
+    if bot is None:
+        logger.debug("[TELEGRAM_SEND] Skipping send (bot is None)")
+        return False
+    
+    if not _telegram_send_enabled:
+        logger.debug("[TELEGRAM_SEND] Skipping send (send disabled)")
+        return False
+    
+    try:
+        kwargs = {
+            "chat_id": chat_id,
+            "text": text,
+            "disable_web_page_preview": disable_web_page_preview
+        }
+        if parse_mode:
+            kwargs["parse_mode"] = parse_mode
+        
+        logger.info(f"[TELEGRAM_SEND] Sending message to chat_id={chat_id}, text_length={len(text)}")
+        result = await bot.send_message(**kwargs)
+        logger.info(f"[TELEGRAM_SEND] ✅ Message sent successfully to chat_id={chat_id}, message_id={result.message_id}")
+        return True
+    except InvalidToken as e:
+        logger.error(f"[TELEGRAM_SEND] ❌ InvalidToken error: {e}")
+        logger.error(f"[TELEGRAM_SEND] Chat ID: {chat_id}")
+        logger.error("[TELEGRAM_SEND] Disabling Telegram send for remainder of session")
+        _telegram_send_enabled = False
+        return False
+    except TelegramError as e:
+        logger.error(f"[TELEGRAM_SEND] ❌ Telegram error: {type(e).__name__}: {e}")
+        logger.error(f"[TELEGRAM_SEND] Chat ID: {chat_id}")
+        logger.error(f"[TELEGRAM_SEND] Message preview: {text[:100]}...")
+        return False
+    except Exception as e:
+        logger.error(f"[TELEGRAM_SEND] ❌ Unexpected error: {type(e).__name__}: {e}")
+        logger.error(f"[TELEGRAM_SEND] Chat ID: {chat_id}")
+        import traceback
+        logger.error(f"[TELEGRAM_SEND] Traceback: {traceback.format_exc()}")
+        return False
+
+
+async def create_telegram_bot_with_check(token: Optional[str] = None) -> Optional[Bot]:
+    """
+    Create Telegram Bot instance and verify token validity via getMe.
+    
+    Args:
+        token: Bot token (defaults to TELEGRAM_BOT_TOKEN)
+    
+    Returns:
+        Bot instance if valid, None otherwise
+    
+    Side effects:
+        - Sets _telegram_send_enabled=False if token invalid
+        - Logs bot info on success (@username and id)
+    """
+    global _telegram_send_enabled
+    
+    if token is None:
+        token = TELEGRAM_BOT_TOKEN
+    
+    if not token:
+        logger.error("[TELEGRAM_BOT] ❌ No token provided")
+        logger.error("[TELEGRAM_BOT] Telegram disabled: invalid/missing token")
+        _telegram_send_enabled = False
+        return None
+    
+    try:
+        bot = Bot(token=token)
+        
+        # Self-check: verify token by calling getMe
+        try:
+            me = await bot.get_me()
+            logger.info(f"[TELEGRAM_BOT] ✅ Telegram OK: @{me.username} (id={me.id})")
+            _telegram_send_enabled = True
+            return bot
+        except InvalidToken as e:
+            logger.error(f"[TELEGRAM_BOT] ❌ Invalid TELEGRAM_BOT_TOKEN (getMe failed): {e!r}")
+            logger.error("[TELEGRAM_BOT] Telegram disabled: getMe failed")
+            _telegram_send_enabled = False
+            return None
+        except Exception as e:
+            logger.error(f"[TELEGRAM_BOT] ❌ Telegram getMe failed: {type(e).__name__}: {e!r}")
+            logger.error("[TELEGRAM_BOT] Telegram disabled: getMe failed")
+            _telegram_send_enabled = False
+            return None
+            
+    except Exception as e:
+        logger.error(f"[TELEGRAM_BOT] ❌ Error creating Bot instance: {type(e).__name__}: {e!r}")
+        logger.error("[TELEGRAM_BOT] Telegram disabled: bot creation failed")
+        _telegram_send_enabled = False
+        return None
 
 
 # Forex pairs (without .FOREX suffix - will be handled by router)
@@ -45,17 +278,19 @@ MAX_SIGNALS_PER_DAY = 5
 PERFORMANCE_USER_ID = 615348532  # Telegram user ID for performance reports
 
 # Channel definitions
-CHANNEL_DEGRAM = "-1001220540048"  # DeGRAM (Forex)
-CHANNEL_LINGRID_FOREX = "-1001286609636"  # Lingrid Forex
-CHANNEL_GAINMUSE = "-1002978318746"  # GainMuse
-CHANNEL_LINGRID_INDEXES = "-1001247341118"  # Lingrid Indexes
+CHANNEL_DEGRAM = "-1001220540048"  # PREMIUM Signals DeGRAM (Forex)
+CHANNEL_LINGRID_FOREX = "-1001286609636"  # Lingrid private signals (Forex)
+CHANNEL_GAINMUSE_CRYPTO = "-1001411205299"  # GainMuse Crypto Signals / Lingrid Crypto signals
+CHANNEL_LINGRID_INDEXES = "-1001247341118"  # Lingrid private Indexes
 CHANNEL_GOLD_PRIVATE = "-1003506500177"  # GOLD Private
+CHANNEL_DEGRAM_INDEX = "-1001453338906"  # DeGRAM index
 
 # Signal limits per channel per day
-MAX_GOLD_SIGNALS = 2
+MAX_GOLD_SIGNALS = 3  # Updated to 3 per user request
 MAX_FOREX_SIGNALS_PER_CHANNEL = 5  # Per Degram and Lingrid Forex
-MAX_GAINMUSE_SIGNALS = 5
+MAX_GAINMUSE_CRYPTO_SIGNALS = 5
 MAX_INDEX_SIGNALS = 5
+MAX_DEGRAM_INDEX_SIGNALS = 5
 
 # Time constraints (in seconds)
 MIN_TIME_BETWEEN_SIGNALS = 5 * 60  # 5 minutes between any signals
@@ -64,6 +299,7 @@ MIN_TIME_BETWEEN_CHANNEL_SIGNALS = 30 * 60  # 30 minutes between signals in same
 # Files for tracking signal times
 LAST_SIGNAL_TIME_FILE = "last_signal_time.json"  # Global last signal time
 CHANNEL_LAST_SIGNAL_FILE = "channel_last_signal_time.json"  # Last signal time per channel
+CHANNEL_PAIR_LAST_SIGNAL_FILE = "channel_pair_last_signal_time.json"  # Last signal time per pair per channel
 
 
 def format_price(pair: str, price: float) -> str:
@@ -293,46 +529,153 @@ def save_active_signals(signals: List[Dict]) -> None:
         pass
 
 
+def normalize_timestamp(value: Any, field_name: str = "timestamp") -> float:
+    """
+    Normalize timestamp value to float (Unix timestamp)
+    
+    Handles various input types:
+    - None -> 0.0
+    - str -> try to parse as float or ISO datetime
+    - int/float -> convert to float
+    - other -> log warning and return 0.0
+    
+    Args:
+        value: Timestamp value (can be any type)
+        field_name: Field name for logging purposes
+    
+    Returns:
+        float: Unix timestamp as float
+    """
+    if value is None:
+        return 0.0
+    
+    if isinstance(value, (int, float)):
+        result = float(value)
+        if result < 0:
+            print(f"[NORMALIZE_TIMESTAMP] ⚠️ {field_name}: Negative timestamp {result}, using 0.0")
+            return 0.0
+        return result
+    
+    if isinstance(value, str):
+        # Try to parse as float first (most common case)
+        try:
+            result = float(value)
+            if result < 0:
+                print(f"[NORMALIZE_TIMESTAMP] ⚠️ {field_name}: Negative timestamp {result}, using 0.0")
+                return 0.0
+            print(f"[NORMALIZE_TIMESTAMP] ✅ {field_name}: Converted string '{value}' to float {result}")
+            return result
+        except ValueError:
+            pass
+        
+        # Try to parse as ISO datetime string
+        try:
+            from dateutil import parser as date_parser
+            dt = date_parser.isoparse(value)
+            result = dt.timestamp()
+            print(f"[NORMALIZE_TIMESTAMP] ✅ {field_name}: Converted ISO datetime '{value}' to timestamp {result}")
+            return result
+        except (ValueError, ImportError):
+            try:
+                # Fallback: try datetime.fromisoformat (Python 3.7+)
+                dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
+                result = dt.timestamp()
+                print(f"[NORMALIZE_TIMESTAMP] ✅ {field_name}: Converted ISO datetime '{value}' to timestamp {result}")
+                return result
+            except (ValueError, AttributeError):
+                pass
+        
+        # If all parsing fails, log and return 0.0
+        print(f"[NORMALIZE_TIMESTAMP] ⚠️ {field_name}: Cannot parse string '{value}', using 0.0")
+        return 0.0
+    
+    # Unknown type
+    print(f"[NORMALIZE_TIMESTAMP] ⚠️ {field_name}: Unknown type {type(value).__name__} with value {value}, using 0.0")
+    return 0.0
+
+
 def load_last_signal_times() -> Dict:
-    """Load last signal times from file"""
+    """Load last signal times from file with normalization"""
     try:
         if os.path.exists(LAST_SIGNAL_TIME_FILE):
             with open(LAST_SIGNAL_TIME_FILE, 'r') as f:
-                return json.load(f)
-    except Exception:
-        pass
+                data = json.load(f)
+                
+                # Log loaded data for debugging
+                if "last_signal_time" in data:
+                    raw_value = data["last_signal_time"]
+                    print(f"[LOAD_STATE] last_signal_time: type={type(raw_value).__name__}, value={raw_value}")
+                    
+                    # Normalize and update
+                    normalized = normalize_timestamp(raw_value, "last_signal_time")
+                    if normalized != raw_value:
+                        data["last_signal_time"] = normalized
+                        # Auto-migrate: save normalized value back
+                        try:
+                            with open(LAST_SIGNAL_TIME_FILE, 'w') as wf:
+                                json.dump(data, wf)
+                            print(f"[LOAD_STATE] ✅ Auto-migrated last_signal_time to float format")
+                        except Exception as e:
+                            print(f"[LOAD_STATE] ⚠️ Failed to auto-migrate: {e}")
+                
+                return data
+    except Exception as e:
+        print(f"[LOAD_STATE] ⚠️ Error loading last_signal_times: {e}")
     return {}
 
 
 def save_last_signal_time() -> None:
-    """Save current time as last signal time"""
+    """Save current time as last signal time (always as float)"""
     try:
+        current_time = float(time.time())
         with open(LAST_SIGNAL_TIME_FILE, 'w') as f:
-            json.dump({"last_signal_time": time.time()}, f)
-    except Exception:
-        pass
+            json.dump({"last_signal_time": current_time}, f)
+    except Exception as e:
+        print(f"[SAVE_STATE] ⚠️ Error saving last_signal_time: {e}")
 
 
 def load_channel_last_signal_times() -> Dict:
-    """Load last signal times per channel from file"""
+    """Load last signal times per channel from file with normalization"""
     try:
         if os.path.exists(CHANNEL_LAST_SIGNAL_FILE):
             with open(CHANNEL_LAST_SIGNAL_FILE, 'r') as f:
-                return json.load(f)
-    except Exception:
-        pass
+                data = json.load(f)
+                
+                # Normalize all channel timestamps
+                needs_migration = False
+                for channel_id, raw_value in data.items():
+                    if raw_value is not None:
+                        print(f"[LOAD_STATE] channel_last_signal[{channel_id}]: type={type(raw_value).__name__}, value={raw_value}")
+                        normalized = normalize_timestamp(raw_value, f"channel_last_signal[{channel_id}]")
+                        if normalized != raw_value:
+                            data[channel_id] = normalized
+                            needs_migration = True
+                
+                # Auto-migrate if needed
+                if needs_migration:
+                    try:
+                        with open(CHANNEL_LAST_SIGNAL_FILE, 'w') as wf:
+                            json.dump(data, wf)
+                        print(f"[LOAD_STATE] ✅ Auto-migrated channel_last_signal_times to float format")
+                    except Exception as e:
+                        print(f"[LOAD_STATE] ⚠️ Failed to auto-migrate: {e}")
+                
+                return data
+    except Exception as e:
+        print(f"[LOAD_STATE] ⚠️ Error loading channel_last_signal_times: {e}")
     return {}
 
 
 def save_channel_last_signal_time(channel_id: str) -> None:
-    """Save current time as last signal time for channel"""
+    """Save current time as last signal time for channel (always as float)"""
     try:
+        current_time = float(time.time())
         channel_times = load_channel_last_signal_times()
-        channel_times[channel_id] = time.time()
+        channel_times[channel_id] = current_time
         with open(CHANNEL_LAST_SIGNAL_FILE, 'w') as f:
             json.dump(channel_times, f)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[SAVE_STATE] ⚠️ Error saving channel_last_signal_time: {e}")
 
 
 def can_send_signal(channel_id: str) -> Tuple[bool, Optional[str]]:
@@ -341,14 +684,18 @@ def can_send_signal(channel_id: str) -> Tuple[bool, Optional[str]]:
     
     # Check global time constraint (5 minutes)
     last_signal_times = load_last_signal_times()
-    last_global_time = last_signal_times.get("last_signal_time", 0)
+    last_global_time_raw = last_signal_times.get("last_signal_time", 0)
+    last_global_time = normalize_timestamp(last_global_time_raw, "last_global_time")
+    
     if current_time - last_global_time < MIN_TIME_BETWEEN_SIGNALS:
         remaining = MIN_TIME_BETWEEN_SIGNALS - (current_time - last_global_time)
         return False, f"Wait {int(remaining/60)} minutes (global constraint)"
     
     # Check channel-specific time constraint (30 minutes)
     channel_times = load_channel_last_signal_times()
-    last_channel_time = channel_times.get(channel_id, 0)
+    last_channel_time_raw = channel_times.get(channel_id, 0)
+    last_channel_time = normalize_timestamp(last_channel_time_raw, f"last_channel_time[{channel_id}]")
+    
     if current_time - last_channel_time < MIN_TIME_BETWEEN_CHANNEL_SIGNALS:
         remaining = MIN_TIME_BETWEEN_CHANNEL_SIGNALS - (current_time - last_channel_time)
         return False, f"Wait {int(remaining/60)} minutes (channel constraint)"
@@ -799,35 +1146,47 @@ def get_performance_report(days: int = 1) -> str:
     return "\n".join(report_lines)
 
 
-async def send_performance_report(bot: Bot, days: int = 1) -> None:
+async def send_performance_report(bot: Optional[Bot], days: int = 1) -> None:
     """Send comprehensive performance report to user and channels"""
+    if bot is None:
+        logger.debug("[PERFORMANCE_REPORT] Bot is None, skipping report")
+        return
+    
     try:
         report = get_performance_report(days)
         period = "24h" if days == 1 else f"{days} days"
         
         # Send to user
-        await bot.send_message(
-            chat_id=PERFORMANCE_USER_ID,
-            text=report,
-            parse_mode='Markdown',
-            disable_web_page_preview=True
+        send_success = await safe_send_message(
+            bot, 
+            chat_id=str(PERFORMANCE_USER_ID), 
+            text=report, 
+            disable_web_page_preview=True,
+            parse_mode='Markdown'
         )
-        print(f"📊 Sent {period} performance report to user {PERFORMANCE_USER_ID}")
+        if send_success:
+            print(f"📊 Sent {period} performance report to user {PERFORMANCE_USER_ID}")
+        else:
+            logger.warning(f"[PERFORMANCE_REPORT] Failed to send {period} report to user {PERFORMANCE_USER_ID}")
         
         # Send to forex channel as well
-        await bot.send_message(
-            chat_id=TELEGRAM_CHANNEL_ID,
-            text=report,
-            parse_mode='Markdown',
-            disable_web_page_preview=True
+        send_success = await safe_send_message(
+            bot, 
+            chat_id=TELEGRAM_CHANNEL_ID, 
+            text=report, 
+            disable_web_page_preview=True,
+            parse_mode='Markdown'
         )
-        print(f"📊 Sent {period} performance report to forex channel")
+        if send_success:
+            print(f"📊 Sent {period} performance report to forex channel")
+        else:
+            logger.warning(f"[PERFORMANCE_REPORT] Failed to send {period} report to forex channel")
         
     except Exception as e:
         print(f"❌ Failed to send performance report: {e}")
 
 
-async def check_and_send_reports(bot: Bot) -> None:
+async def check_and_send_reports(bot: Optional[Bot]) -> None:
     """Check if it's time to send performance reports"""
     now = datetime.now(timezone.utc)
     
@@ -843,7 +1202,10 @@ async def check_and_send_reports(bot: Bot) -> None:
 
 async def post_signals_once(pairs: List[str]) -> None:
     print("🤖 Starting bot...")
-    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    bot = await create_telegram_bot_with_check()
+    if not bot:
+        logger.error("[MAIN] ❌ Failed to create Telegram bot - continuing without Telegram send")
+        logger.error("[MAIN] Bot will generate signals but not send them to Telegram")
     
     # Check if it's weekend (forex market is closed)
     now = datetime.now(timezone.utc)
@@ -857,7 +1219,7 @@ async def post_signals_once(pairs: List[str]) -> None:
         print(f"Found {len(profit_messages)} TP hits")
         for msg in profit_messages:
             print(f"Sending TP message: {msg}")
-            await bot.send_message(chat_id=TELEGRAM_CHANNEL_ID, text=msg, disable_web_page_preview=True)
+            await safe_send_message(bot, chat_id=TELEGRAM_CHANNEL_ID, text=msg, disable_web_page_preview=True)
             await asyncio.sleep(0.4)
         return
     
@@ -872,7 +1234,7 @@ async def post_signals_once(pairs: List[str]) -> None:
         print(f"Found {len(profit_messages)} TP hits")
         for msg in profit_messages:
             print(f"Sending TP message: {msg}")
-            await bot.send_message(chat_id=TELEGRAM_CHANNEL_ID, text=msg, disable_web_page_preview=True)
+            await safe_send_message(bot, chat_id=TELEGRAM_CHANNEL_ID, text=msg, disable_web_page_preview=True)
             await asyncio.sleep(0.4)
         return
     
@@ -885,7 +1247,7 @@ async def post_signals_once(pairs: List[str]) -> None:
     print(f"Found {len(profit_messages)} TP hits")
     for msg in profit_messages:
         print(f"Sending TP message: {msg}")
-        await bot.send_message(chat_id=TELEGRAM_CHANNEL_ID, text=msg, disable_web_page_preview=True)
+        await safe_send_message(bot, chat_id=TELEGRAM_CHANNEL_ID, text=msg, disable_web_page_preview=True)
         await asyncio.sleep(0.4)
     
     # Generate signals for different channels
@@ -915,12 +1277,20 @@ async def startup_init():
         print(f"   api_key={safe_preview(config.twelve_data_api_key, 6)} (source={config.source_map.get('twelve_data_api_key', 'HARDCODED')})")
         print(f"   base_url={config.twelve_data_base_url}")
         print(f"   timeout={config.twelve_data_timeout}s")
+        print(f"   min_interval_ms={getattr(config, 'twelve_data_min_interval_ms', 400)}ms")
+        print(f"   max_retries={getattr(config, 'twelve_data_max_retries', 3)}")
+        print(f"   backoff_base_ms={getattr(config, 'twelve_data_backoff_base_ms', 500)}ms")
+        print(f"   backoff_max_ms={getattr(config, 'twelve_data_backoff_max_ms', 5000)}ms")
         
-        # Create Twelve Data client
+        # Create Twelve Data client with rate limiting configuration
         _twelve_data_client = TwelveDataClient(
             api_key=config.twelve_data_api_key,
             base_url=config.twelve_data_base_url,
-            timeout=config.twelve_data_timeout
+            timeout=config.twelve_data_timeout,
+            min_interval_ms=getattr(config, 'twelve_data_min_interval_ms', 400),
+            max_retries=getattr(config, 'twelve_data_max_retries', 3),
+            backoff_base_ms=getattr(config, 'twelve_data_backoff_base_ms', 500),
+            backoff_max_ms=getattr(config, 'twelve_data_backoff_max_ms', 5000)
         )
         
         # Test connection with a simple price request
@@ -966,8 +1336,22 @@ async def startup_init():
         return False
 
 
-async def generate_channel_signals(bot: Bot, pairs: List[str]) -> None:
-    """Generate signals for different channels with proper limits and time constraints"""
+async def generate_channel_signals(bot: Optional[Bot], pairs: List[str]) -> None:
+    """Generate signals for different channels with proper limits and time constraints.
+    
+    If bot is None, signals are still generated and logged locally, but not sent to Telegram.
+    """
+    if bot is None:
+        logger.warning("[GENERATE_SIGNALS] Bot is None - signals will be generated and logged locally, but NOT sent to Telegram")
+    
+    # Define channel configurations
+    logger.info("[GENERATE_SIGNALS] Channel configuration:")
+    logger.info(f"  GOLD_PRIVATE: {CHANNEL_GOLD_PRIVATE}")
+    logger.info(f"  DEGRAM (Forex): {CHANNEL_DEGRAM}")
+    logger.info(f"  LINGRID_FOREX: {CHANNEL_LINGRID_FOREX}")
+    logger.info(f"  GAINMUSE_CRYPTO: {CHANNEL_GAINMUSE_CRYPTO}")
+    logger.info(f"  LINGRID_INDEXES: {CHANNEL_LINGRID_INDEXES}")
+    logger.info(f"  DEGRAM_INDEX: {CHANNEL_DEGRAM_INDEX}")
     
     # Define channel configurations
     channel_configs = [
@@ -993,17 +1377,24 @@ async def generate_channel_signals(bot: Bot, pairs: List[str]) -> None:
             "has_tp2": True
         },
         {
-            "name": "GAINMUSE",
-            "channel_id": CHANNEL_GAINMUSE,
-            "symbols": pairs,  # Forex pairs
-            "max_signals": MAX_GAINMUSE_SIGNALS,
+            "name": "GAINMUSE_CRYPTO",
+            "channel_id": CHANNEL_GAINMUSE_CRYPTO,
+            "symbols": pairs,  # Forex pairs (TODO: add crypto symbols when crypto generation is implemented)
+            "max_signals": MAX_GAINMUSE_CRYPTO_SIGNALS,
             "has_tp2": True
         },
         {
-            "name": "INDEXES",
+            "name": "INDEXES_LINGRID",
             "channel_id": CHANNEL_LINGRID_INDEXES,
-            "symbols": ["BRENT", "USOIL", "XAUUSD"],  # Index pairs (including gold for indexes channel)
+            "symbols": ["BRENT", "USOIL", "XAUUSD"],  # Index pairs
             "max_signals": MAX_INDEX_SIGNALS,
+            "has_tp2": True
+        },
+        {
+            "name": "INDEXES_DEGRAM",
+            "channel_id": CHANNEL_DEGRAM_INDEX,
+            "symbols": ["BRENT", "USOIL", "XAUUSD"],  # Index pairs
+            "max_signals": MAX_DEGRAM_INDEX_SIGNALS,
             "has_tp2": True
         }
     ]
@@ -1129,18 +1520,36 @@ async def generate_channel_signals(bot: Bot, pairs: List[str]) -> None:
                         tp1 = entry - tp1_distance
                         tp2 = entry - tp2_distance
                 
-                # Build and send message
+                # Build message
                 msg = build_signal_message(sym, signal_type, entry, sl, tp1, tp2)
-                print(f"📤 {channel_name}: Sending signal: {msg}")
                 
-                await bot.send_message(chat_id=channel_id, text=msg, disable_web_page_preview=True)
+                # Try to send to Telegram (if bot available)
+                send_success = False
+                if bot is not None:
+                    print(f"📤 {channel_name}: Sending signal to Telegram (channel_id={channel_id}): {msg}")
+                    logger.info(f"[GENERATE_SIGNALS] Attempting to send signal to {channel_name} (ID: {channel_id})")
+                    send_success = await safe_send_message(bot, chat_id=channel_id, text=msg, disable_web_page_preview=True)
+                    if send_success:
+                        print(f"✅ {channel_name}: Signal sent successfully to Telegram")
+                        logger.info(f"[GENERATE_SIGNALS] ✅ Signal sent successfully to {channel_name} (ID: {channel_id})")
+                    else:
+                        print(f"❌ {channel_name}: Failed to send signal to Telegram (check logs for details)")
+                        logger.warning(f"[GENERATE_SIGNALS] ❌ Failed to send signal to {channel_name} (ID: {channel_id}) via Telegram")
+                        # Skip saving if Telegram send failed (signal not actually published)
+                        continue
+                else:
+                    print(f"📝 {channel_name}: Generated signal (Telegram disabled): {msg}")
+                    logger.info(f"[GENERATE_SIGNALS] Signal generated for {channel_name} (local only, bot=None): {sym} {signal_type} @ {entry}")
+                    # If bot is None, we still save for local logging
+                    send_success = True
                 
-                # Save signal with channel_id
-                add_signal(sym, signal_type, entry, sl, tp1, tp2, channel_id=channel_id)
-                
-                # Update time constraints
-                save_last_signal_time()
-                save_channel_last_signal_time(channel_id)
+                # Only save signal if send was successful (or bot is None for local generation)
+                if send_success:
+                    add_signal(sym, signal_type, entry, sl, tp1, tp2, channel_id=channel_id)
+                    
+                    # Update time constraints only after successful send
+                    save_last_signal_time()
+                    save_channel_last_signal_time(channel_id)
                 
                 signals_generated += 1
                 print(f"✅ {channel_name}: Generated signal {signals_generated}/{signals_needed}: {sym} {signal_type}")
@@ -1161,7 +1570,72 @@ async def generate_channel_signals(bot: Bot, pairs: List[str]) -> None:
         print(f"🏁 {channel_name}: Finished. Generated {signals_generated}/{signals_needed} signals.")
 
 
+def migrate_state_files() -> None:
+    """
+    Migrate state files to ensure all timestamps are stored as float (Unix timestamp)
+    This function can be called at startup to fix old format files
+    """
+    print("[MIGRATE_STATE] Starting state files migration...")
+    
+    files_to_migrate = [
+        (LAST_SIGNAL_TIME_FILE, "last_signal_time"),
+        (CHANNEL_LAST_SIGNAL_FILE, None),  # None means it's a dict with channel_id keys
+        (CHANNEL_PAIR_LAST_SIGNAL_FILE, None),  # Dict with nested structure
+    ]
+    
+    for file_path, timestamp_key in files_to_migrate:
+        if not os.path.exists(file_path):
+            print(f"[MIGRATE_STATE] ⏭️ {file_path}: File does not exist, skipping")
+            continue
+        
+        try:
+            with open(file_path, 'r') as f:
+                data = json.load(f)
+            
+            needs_migration = False
+            
+            if timestamp_key:
+                # Simple structure: {"last_signal_time": value}
+                if timestamp_key in data:
+                    raw_value = data[timestamp_key]
+                    normalized = normalize_timestamp(raw_value, f"{file_path}[{timestamp_key}]")
+                    if normalized != raw_value:
+                        data[timestamp_key] = normalized
+                        needs_migration = True
+            else:
+                # Dict structure: {key: timestamp_value} or {key: {nested_key: timestamp_value}}
+                for key, value in data.items():
+                    if isinstance(value, dict):
+                        # Nested structure (e.g., channel_pair_last_signal: {channel_id: {pair: timestamp}})
+                        for nested_key, nested_value in value.items():
+                            normalized = normalize_timestamp(nested_value, f"{file_path}[{key}][{nested_key}]")
+                            if normalized != nested_value:
+                                value[nested_key] = normalized
+                                needs_migration = True
+                    else:
+                        # Direct timestamp value
+                        normalized = normalize_timestamp(value, f"{file_path}[{key}]")
+                        if normalized != value:
+                            data[key] = normalized
+                            needs_migration = True
+            
+            if needs_migration:
+                with open(file_path, 'w') as f:
+                    json.dump(data, f)
+                print(f"[MIGRATE_STATE] ✅ Migrated {file_path} to float timestamp format")
+            else:
+                print(f"[MIGRATE_STATE] ✅ {file_path}: Already in correct format")
+                
+        except Exception as e:
+            print(f"[MIGRATE_STATE] ⚠️ Error migrating {file_path}: {type(e).__name__}: {e}")
+    
+    print("[MIGRATE_STATE] Migration completed")
+
+
 async def main_async():
+    # Migrate state files first (fix old format if needed)
+    migrate_state_files()
+    
     # Initialize Twelve Data client for FOREX
     twelve_data_init_success = await startup_init()
     
