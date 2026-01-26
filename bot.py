@@ -949,6 +949,23 @@ async def startup_init():
         else:
             print("[STARTUP] ⚠️ Twelve Data connection test failed, but client initialized (will retry on demand)")
         
+        # Create DataRouter with injected Twelve Data client
+        from data_router import DataRouter, set_data_router
+        data_router = DataRouter(twelve_data_client=_twelve_data_client)
+        set_data_router(data_router)
+        print("[STARTUP] ✅ DataRouter initialized with Twelve Data client")
+        
+        # Self-check: verify router can get price
+        print("[STARTUP] Self-check: testing DataRouter.get_price('EURUSD')...")
+        try:
+            check_price, check_reason, check_source = data_router.get_price("EURUSD")
+            if check_price:
+                print(f"[STARTUP] ✅ Self-check passed: EURUSD={check_price:.5f} (source={check_source})")
+            else:
+                print(f"[STARTUP] ⚠️ Self-check warning: EURUSD=None (reason={check_reason}, source={check_source})")
+        except Exception as e:
+            print(f"[STARTUP] ⚠️ Self-check error: {type(e).__name__}: {e}")
+        
         print("[STARTUP] ✅ Twelve Data client initialized - FOREX signals enabled")
         return True
         
@@ -973,15 +990,15 @@ async def main_async():
         print("⚠️ [MAIN] Twelve Data initialization failed - FOREX signals may be unavailable")
         print("   Bot will continue working, but FOREX pairs may fail")
     
-    try:
-        pairs = DEFAULT_PAIRS
-        await post_signals_once(pairs)
-    finally:
-        # Cleanup: close Twelve Data client
-        global _twelve_data_client
-        if _twelve_data_client:
-            await _twelve_data_client.close()
-            print("[MAIN] ✅ Twelve Data client closed")
+    # Generate signals (client stays open during execution)
+    pairs = DEFAULT_PAIRS
+    await post_signals_once(pairs)
+    
+    # Cleanup: close Twelve Data client only at the very end
+    global _twelve_data_client
+    if _twelve_data_client:
+        await _twelve_data_client.close()
+        print("[MAIN] ✅ Twelve Data client closed")
 
 
 async def ctrader_auth_test():

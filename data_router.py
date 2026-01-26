@@ -8,6 +8,9 @@ from typing import Optional, Dict, List, Tuple, Any
 from enum import Enum
 import time
 
+# Global DataRouter instance (set via Dependency Injection)
+_data_router_instance: Optional['DataRouter'] = None
+
 
 class AssetClass(Enum):
     """Asset class enumeration"""
@@ -54,325 +57,335 @@ def _detect_asset_class(symbol: str) -> AssetClass:
     return AssetClass.FOREX
 
 
-def get_price(symbol: str, asset_class: Optional[AssetClass] = None) -> Tuple[Optional[float], Optional[str], str]:
-    """
-    Get price for symbol using strict source policy
+class DataRouter:
+    """Data router with dependency injection for data sources"""
     
-    Args:
-        symbol: Symbol name (e.g., "EURUSD", "BTCUSDT", "XAUUSD", "BRENT")
-        asset_class: Optional asset class override (auto-detected if None)
+    def __init__(self, twelve_data_client: Optional[Any] = None):
+        """
+        Initialize DataRouter with injected dependencies
+        
+        Args:
+            twelve_data_client: TwelveDataClient instance (required for FOREX)
+        """
+        self.twelve_data_client = twelve_data_client
     
-    Returns:
-        Tuple of (price: float or None, reason: str or None, source: str)
-        source will be "TWELVE_DATA", "BINANCE", or "YAHOO"
-    
-    Raises:
-        ForbiddenDataSourceError: If attempting to use forbidden source
-    """
-    if asset_class is None:
-        asset_class = _detect_asset_class(symbol)
-    
-    # STRICT ENFORCEMENT: Verify detected class matches symbol patterns
-    symbol_upper = symbol.upper()
-    if asset_class == AssetClass.FOREX:
-        # FOREX symbols must NOT be Gold/Index/Crypto
-        if symbol_upper in ["XAUUSD", "GOLD", "XAU/USD"]:
-            raise ForbiddenDataSourceError(f"Symbol {symbol} detected as FOREX but is actually GOLD. Use GOLD asset class.")
-        if any(symbol_upper.endswith(suffix) for suffix in ["USDT", "BTC", "ETH"]):
-            raise ForbiddenDataSourceError(f"Symbol {symbol} detected as FOREX but is actually CRYPTO. Use CRYPTO asset class.")
-    elif asset_class == AssetClass.GOLD:
-        # GOLD must NOT be treated as FOREX
-        if symbol_upper not in ["XAUUSD", "GOLD", "XAU/USD"]:
-            raise ForbiddenDataSourceError(f"Symbol {symbol} detected as GOLD but doesn't match gold patterns.")
-    elif asset_class == AssetClass.CRYPTO:
-        # CRYPTO must have crypto suffixes
-        if not any(symbol_upper.endswith(suffix) for suffix in ["USDT", "BTC", "ETH", "BNB", "ADA", "SOL", "XRP", "DOT", "DOGE", "AVAX", "MATIC"]):
-            raise ForbiddenDataSourceError(f"Symbol {symbol} detected as CRYPTO but doesn't match crypto patterns.")
-    
-    start_time = time.time()
-    
-    if asset_class == AssetClass.FOREX:
-        # FOREX: Twelve Data only
-        try:
-            # Import Twelve Data client (lazy import to avoid circular dependencies)
-            from twelve_data_client import TwelveDataClient
-            import asyncio
-            
-            # Get Twelve Data client instance (singleton pattern via module-level variable)
-            # Check if client already exists in bot.py or create new one
-            twelve_data_client = None
-            try:
-                from bot import _twelve_data_client
-                twelve_data_client = _twelve_data_client
-            except (ImportError, AttributeError):
-                # Create new client instance
-                from config_hardcoded import get_hardcoded_config
-                config = get_hardcoded_config()
-                twelve_data_client = TwelveDataClient(
-                    api_key=config.twelve_data_api_key,
-                    base_url=config.twelve_data_base_url,
-                    timeout=config.twelve_data_timeout
-                )
-            
-            if not twelve_data_client:
+    def get_price(self, symbol: str, asset_class: Optional[AssetClass] = None) -> Tuple[Optional[float], Optional[str], str]:
+        """
+        Get price for symbol using strict source policy
+        
+        Args:
+            symbol: Symbol name (e.g., "EURUSD", "BTCUSDT", "XAUUSD", "BRENT")
+            asset_class: Optional asset class override (auto-detected if None)
+        
+        Returns:
+            Tuple of (price: float or None, reason: str or None, source: str)
+            source will be "TWELVE_DATA", "BINANCE", or "YAHOO"
+        
+        Raises:
+            ForbiddenDataSourceError: If attempting to use forbidden source
+        """
+        if asset_class is None:
+            asset_class = _detect_asset_class(symbol)
+        
+        # STRICT ENFORCEMENT: Verify detected class matches symbol patterns
+        symbol_upper = symbol.upper()
+        if asset_class == AssetClass.FOREX:
+            # FOREX symbols must NOT be Gold/Index/Crypto
+            if symbol_upper in ["XAUUSD", "GOLD", "XAU/USD"]:
+                raise ForbiddenDataSourceError(f"Symbol {symbol} detected as FOREX but is actually GOLD. Use GOLD asset class.")
+            if any(symbol_upper.endswith(suffix) for suffix in ["USDT", "BTC", "ETH"]):
+                raise ForbiddenDataSourceError(f"Symbol {symbol} detected as FOREX but is actually CRYPTO. Use CRYPTO asset class.")
+        elif asset_class == AssetClass.GOLD:
+            # GOLD must NOT be treated as FOREX
+            if symbol_upper not in ["XAUUSD", "GOLD", "XAU/USD"]:
+                raise ForbiddenDataSourceError(f"Symbol {symbol} detected as GOLD but doesn't match gold patterns.")
+        elif asset_class == AssetClass.CRYPTO:
+            # CRYPTO must have crypto suffixes
+            if not any(symbol_upper.endswith(suffix) for suffix in ["USDT", "BTC", "ETH", "BNB", "ADA", "SOL", "XRP", "DOT", "DOGE", "AVAX", "MATIC"]):
+                raise ForbiddenDataSourceError(f"Symbol {symbol} detected as CRYPTO but doesn't match crypto patterns.")
+        
+        start_time = time.time()
+        
+        if asset_class == AssetClass.FOREX:
+            # FOREX: Twelve Data only
+            if not self.twelve_data_client:
                 latency_ms = int((time.time() - start_time) * 1000)
                 print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, price=None, reason=twelve_data_client_not_initialized, latency={latency_ms}ms")
                 return None, "twelve_data_client_not_initialized", "TWELVE_DATA"
             
-            # Get price from Twelve Data (async call)
-            def _run_async(coro):
-                """Run async function in new event loop"""
-                try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        # Loop is running - use thread executor
-                        import concurrent.futures
-                        with concurrent.futures.ThreadPoolExecutor() as executor:
-                            future = executor.submit(asyncio.run, coro)
-                            return future.result(timeout=15)
-                    else:
+            try:
+                import asyncio
+                
+                # Get price from Twelve Data (async call)
+                def _run_async(coro):
+                    """Run async function in new event loop"""
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            # Loop is running - use thread executor
+                            import concurrent.futures
+                            with concurrent.futures.ThreadPoolExecutor() as executor:
+                                future = executor.submit(asyncio.run, coro)
+                                return future.result(timeout=15)
+                        else:
+                            return asyncio.run(coro)
+                    except RuntimeError:
+                        # No event loop - create new one
                         return asyncio.run(coro)
-                except RuntimeError:
-                    # No event loop - create new one
-                    return asyncio.run(coro)
-            
-            price = _run_async(twelve_data_client.get_price(symbol))
-            latency_ms = int((time.time() - start_time) * 1000)
-            
-            if price is not None:
-                print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, price={price:.5f}, latency={latency_ms}ms")
-                return price, None, "TWELVE_DATA"
-            else:
-                print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, price=None, reason=twelve_data_unavailable, latency={latency_ms}ms")
-                return None, "twelve_data_unavailable", "TWELVE_DATA"
-        except ImportError as e:
-            latency_ms = int((time.time() - start_time) * 1000)
-            print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, ERROR: ImportError: {e}, latency={latency_ms}ms")
-            return None, f"twelve_data_import_error: {e}", "TWELVE_DATA"
-        except Exception as e:
-            latency_ms = int((time.time() - start_time) * 1000)
-            print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, ERROR: {type(e).__name__}: {e}, latency={latency_ms}ms")
-            return None, f"twelve_data_error: {type(e).__name__}", "TWELVE_DATA"
-    
-    elif asset_class == AssetClass.CRYPTO:
-        # CRYPTO: Binance only
-        try:
-            from working_combined_bot import get_real_crypto_price
-            price = get_real_crypto_price(symbol)
-            latency_ms = int((time.time() - start_time) * 1000)
-            if price:
-                print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=BINANCE, price={price:.6f}, latency={latency_ms}ms")
-            else:
-                print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=BINANCE, price=None, latency={latency_ms}ms")
-            return price, None if price else "binance_unavailable", "BINANCE"
-        except ImportError:
-            raise ForbiddenDataSourceError(f"CRYPTO symbol {symbol} must use Binance API")
-    
-    elif asset_class in [AssetClass.GOLD, AssetClass.INDEX]:
-        # GOLD/INDEX: Yahoo Finance only
-        try:
-            # Use synchronous wrapper for async functions
-            # This avoids event loop conflicts
-            import asyncio
-            import concurrent.futures
-            
-            def _run_async(coro):
-                """Run async function in new event loop"""
-                try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        # Loop is running - use thread executor
-                        with concurrent.futures.ThreadPoolExecutor() as executor:
-                            future = executor.submit(asyncio.run, coro)
-                            return future.result(timeout=15)
-                    else:
+                
+                price = _run_async(self.twelve_data_client.get_price(symbol))
+                latency_ms = int((time.time() - start_time) * 1000)
+                
+                if price is not None:
+                    print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, price={price:.5f}, latency={latency_ms}ms")
+                    return price, None, "TWELVE_DATA"
+                else:
+                    print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, price=None, reason=twelve_data_unavailable, latency={latency_ms}ms")
+                    return None, "twelve_data_unavailable", "TWELVE_DATA"
+            except Exception as e:
+                latency_ms = int((time.time() - start_time) * 1000)
+                print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, ERROR: {type(e).__name__}: {e}, latency={latency_ms}ms")
+                return None, f"twelve_data_error: {type(e).__name__}", "TWELVE_DATA"
+        
+        elif asset_class == AssetClass.CRYPTO:
+            # CRYPTO: Binance only
+            try:
+                from working_combined_bot import get_real_crypto_price
+                price = get_real_crypto_price(symbol)
+                latency_ms = int((time.time() - start_time) * 1000)
+                if price:
+                    print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=BINANCE, price={price:.6f}, latency={latency_ms}ms")
+                else:
+                    print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=BINANCE, price=None, latency={latency_ms}ms")
+                return price, None if price else "binance_unavailable", "BINANCE"
+            except ImportError:
+                raise ForbiddenDataSourceError(f"CRYPTO symbol {symbol} must use Binance API")
+        
+        elif asset_class in [AssetClass.GOLD, AssetClass.INDEX]:
+            # GOLD/INDEX: Yahoo Finance only
+            try:
+                # Use synchronous wrapper for async functions
+                # This avoids event loop conflicts
+                import asyncio
+                import concurrent.futures
+                
+                def _run_async(coro):
+                    """Run async function in new event loop"""
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            # Loop is running - use thread executor
+                            with concurrent.futures.ThreadPoolExecutor() as executor:
+                                future = executor.submit(asyncio.run, coro)
+                                return future.result(timeout=15)
+                        else:
+                            return asyncio.run(coro)
+                    except RuntimeError:
+                        # No event loop - create new one
                         return asyncio.run(coro)
-                except RuntimeError:
-                    # No event loop - create new one
-                    return asyncio.run(coro)
-            
-            def _validate_price(symbol: str, price: Optional[float], asset_class: AssetClass) -> Tuple[bool, Optional[str]]:
-                """Validate price is within reasonable range (wide sanity check)
                 
-                Args:
-                    symbol: Symbol name
-                    price: Price value (can be None)
-                    asset_class: Asset class
-                
-                Returns:
-                    Tuple of (is_valid: bool, reason: str or None)
-                """
-                # CRITICAL: Handle None price first - never compare None with numbers
-                if price is None:
-                    return False, "yahoo_no_price: price is None"
-                
-                # Basic sanity: price must be > 0
-                if price <= 0:
-                    return False, f"yahoo_invalid_price: {price:.2f} is not positive"
+                def _validate_price(symbol: str, price: Optional[float], asset_class: AssetClass) -> Tuple[bool, Optional[str]]:
+                    """Validate price is within reasonable range (wide sanity check)
+                    
+                    Args:
+                        symbol: Symbol name
+                        price: Price value (can be None)
+                        asset_class: Asset class
+                    
+                    Returns:
+                        Tuple of (is_valid: bool, reason: str or None)
+                    """
+                    # CRITICAL: Handle None price first - never compare None with numbers
+                    if price is None:
+                        return False, "yahoo_no_price: price is None"
+                    
+                    # Basic sanity: price must be > 0
+                    if price <= 0:
+                        return False, f"yahoo_invalid_price: {price:.2f} is not positive"
+                    
+                    if asset_class == AssetClass.GOLD:
+                        # Gold: wide sanity range 50-20000 USD/oz (allows for extreme market conditions)
+                        # Note: For Yahoo futures (GC=F), price can be higher than spot, so range is wide
+                        if price < 50 or price > 20000:
+                            return False, f"yahoo_invalid_price: {price:.2f} outside sanity range [50, 20000]"
+                        return True, None
+                    elif asset_class == AssetClass.INDEX:
+                        # Indexes: reasonable range depends on symbol
+                        if symbol.upper() in ["BRENT", "USOIL"]:
+                            # Oil: wide sanity range 1-1000 USD/barrel
+                            if price < 1 or price > 1000:
+                                return False, f"yahoo_invalid_price: {price:.2f} outside sanity range [1, 1000]"
+                        else:
+                            # Other indexes: wide sanity range 1-100000
+                            if price < 1 or price > 100000:
+                                return False, f"yahoo_invalid_price: {price:.2f} outside sanity range [1, 100000]"
+                        return True, None
+                    return True, None
                 
                 if asset_class == AssetClass.GOLD:
-                    # Gold: wide sanity range 50-20000 USD/oz (allows for extreme market conditions)
-                    # Note: For Yahoo futures (GC=F), price can be higher than spot, so range is wide
-                    if price < 50 or price > 20000:
-                        return False, f"yahoo_invalid_price: {price:.2f} outside sanity range [50, 20000]"
-                    return True, None
-                elif asset_class == AssetClass.INDEX:
-                    # Indexes: reasonable range depends on symbol
-                    if symbol.upper() in ["BRENT", "USOIL"]:
-                        # Oil: wide sanity range 1-1000 USD/barrel
-                        if price < 1 or price > 1000:
-                            return False, f"yahoo_invalid_price: {price:.2f} outside sanity range [1, 1000]"
+                    # Gold: use Yahoo Finance with validation
+                    from working_combined_bot import get_gold_price_from_yahoo
+                    yahoo_data = _run_async(get_gold_price_from_yahoo())
+                    
+                    latency_ms = int((time.time() - start_time) * 1000)
+                    if yahoo_data and isinstance(yahoo_data, dict) and yahoo_data.get("price"):
+                        try:
+                            price = float(yahoo_data["price"])
+                            source_type = yahoo_data.get("source", "yahoo")
+                            ticker = yahoo_data.get("meta", {}).get("ticker", "unknown")
+                            
+                            # Validate price (sanity check)
+                            is_valid, validation_reason = _validate_price(symbol, price, asset_class)
+                            if not is_valid:
+                                print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO ({source_type}), ticker={ticker}, price={price:.2f}, valid=False, reason={validation_reason}, latency={latency_ms}ms")
+                                return None, validation_reason, f"YAHOO_{source_type.upper()}"
+                            
+                            print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO ({source_type}), ticker={ticker}, price={price:.2f}, valid=True, latency={latency_ms}ms")
+                            return price, None, f"YAHOO_{source_type.upper()}"
+                        except (ValueError, TypeError, KeyError) as e:
+                            print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO, price=None, reason=yahoo_parse_error ({type(e).__name__}: {e}), latency={latency_ms}ms")
+                            return None, f"yahoo_parse_error: {type(e).__name__}", "YAHOO"
                     else:
-                        # Other indexes: wide sanity range 1-100000
-                        if price < 1 or price > 100000:
-                            return False, f"yahoo_invalid_price: {price:.2f} outside sanity range [1, 100000]"
-                    return True, None
-                return True, None
-            
-            if asset_class == AssetClass.GOLD:
-                # Gold: use Yahoo Finance with validation
-                from working_combined_bot import get_gold_price_from_yahoo
-                yahoo_data = _run_async(get_gold_price_from_yahoo())
-                
-                latency_ms = int((time.time() - start_time) * 1000)
-                if yahoo_data and isinstance(yahoo_data, dict) and yahoo_data.get("price"):
-                    try:
-                        price = float(yahoo_data["price"])
-                        source_type = yahoo_data.get("source", "yahoo")
-                        ticker = yahoo_data.get("meta", {}).get("ticker", "unknown")
-                        
-                        # Validate price (sanity check)
+                        print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO, price=None, reason=yahoo_unavailable, latency={latency_ms}ms")
+                        return None, "yahoo_unavailable", "YAHOO"
+                else:
+                    # Index: use Yahoo Finance with validation
+                    from working_combined_bot import get_index_price_yahoo
+                    price = _run_async(get_index_price_yahoo(symbol))
+                    
+                    latency_ms = int((time.time() - start_time) * 1000)
+                    if price is not None:
+                        # Validate price (handles None internally, but double-check here)
                         is_valid, validation_reason = _validate_price(symbol, price, asset_class)
                         if not is_valid:
-                            print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO ({source_type}), ticker={ticker}, price={price:.2f}, valid=False, reason={validation_reason}, latency={latency_ms}ms")
-                            return None, validation_reason, f"YAHOO_{source_type.upper()}"
+                            print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO, price={price:.2f if price else None}, valid=False, reason={validation_reason}, latency={latency_ms}ms")
+                            return None, validation_reason, "YAHOO"
                         
-                        print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO ({source_type}), ticker={ticker}, price={price:.2f}, valid=True, latency={latency_ms}ms")
-                        return price, None, f"YAHOO_{source_type.upper()}"
-                    except (ValueError, TypeError, KeyError) as e:
-                        print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO, price=None, reason=yahoo_parse_error ({type(e).__name__}: {e}), latency={latency_ms}ms")
-                        return None, f"yahoo_parse_error: {type(e).__name__}", "YAHOO"
-                else:
-                    print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO, price=None, reason=yahoo_unavailable, latency={latency_ms}ms")
-                    return None, "yahoo_unavailable", "YAHOO"
-            else:
-                # Index: use Yahoo Finance with validation
-                from working_combined_bot import get_index_price_yahoo
-                price = _run_async(get_index_price_yahoo(symbol))
-                
+                        print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO, price={price:.2f}, valid=True, latency={latency_ms}ms")
+                        return price, None, "YAHOO"
+                    else:
+                        print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO, price=None, reason=yahoo_unavailable, latency={latency_ms}ms")
+                        return None, "yahoo_unavailable", "YAHOO"
+            except ImportError:
+                raise ForbiddenDataSourceError(f"{asset_class.value} symbol {symbol} must use Yahoo Finance")
+            except Exception as e:
                 latency_ms = int((time.time() - start_time) * 1000)
-                if price is not None:
-                    # Validate price (handles None internally, but double-check here)
-                    is_valid, validation_reason = _validate_price(symbol, price, asset_class)
-                    if not is_valid:
-                        print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO, price={price:.2f if price else None}, valid=False, reason={validation_reason}, latency={latency_ms}ms")
-                        return None, validation_reason, "YAHOO"
-                    
-                    print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO, price={price:.2f}, valid=True, latency={latency_ms}ms")
-                    return price, None, "YAHOO"
-                else:
-                    print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO, price=None, reason=yahoo_unavailable, latency={latency_ms}ms")
-                    return None, "yahoo_unavailable", "YAHOO"
-        except ImportError:
-            raise ForbiddenDataSourceError(f"{asset_class.value} symbol {symbol} must use Yahoo Finance")
-        except Exception as e:
-            latency_ms = int((time.time() - start_time) * 1000)
-            print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO, ERROR: {type(e).__name__}: {e}, latency={latency_ms}ms")
-            return None, f"yahoo_error: {type(e).__name__}", "YAHOO"
+                print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO, ERROR: {type(e).__name__}: {e}, latency={latency_ms}ms")
+                return None, f"yahoo_error: {type(e).__name__}", "YAHOO"
+        
+        else:
+            raise ValueError(f"Unknown asset class: {asset_class}")
     
+    def get_candles(self, symbol: str, timeframe: str = "1m", limit: int = 120, asset_class: Optional[AssetClass] = None) -> Tuple[Optional[List[Dict]], Optional[str], str]:
+        """
+        Get candles for symbol using strict source policy
+        
+        Args:
+            symbol: Symbol name
+            timeframe: Timeframe (e.g., "1m", "5m", "1h")
+            limit: Number of candles to return
+            asset_class: Optional asset class override
+        
+        Returns:
+            Tuple of (candles: List[Dict] or None, reason: str or None, source: str)
+        
+        Raises:
+            ForbiddenDataSourceError: If attempting to use forbidden source
+        """
+        if asset_class is None:
+            asset_class = _detect_asset_class(symbol)
+        
+        if asset_class == AssetClass.FOREX:
+            # FOREX: Twelve Data candles
+            if not self.twelve_data_client:
+                return None, "twelve_data_client_not_initialized", "TWELVE_DATA"
+            
+            try:
+                import asyncio
+                
+                # Map timeframe to Twelve Data interval
+                interval_map = {
+                    '1m': '1min',
+                    '5m': '5min',
+                    '15m': '15min',
+                    '30m': '30min',
+                    '1h': '1h',
+                    '4h': '4h',
+                    '1d': '1day',
+                    '1day': '1day',
+                }
+                interval = interval_map.get(timeframe, '1h')
+                
+                # Run async call
+                def _run_async(coro):
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            import concurrent.futures
+                            with concurrent.futures.ThreadPoolExecutor() as executor:
+                                future = executor.submit(asyncio.run, coro)
+                                return future.result(timeout=30)
+                        else:
+                            return asyncio.run(coro)
+                    except RuntimeError:
+                        return asyncio.run(coro)
+                
+                candles = _run_async(self.twelve_data_client.get_time_series(symbol, interval=interval, outputsize=limit))
+                
+                if candles:
+                    print(f"[DATA_ROUTER] {symbol}: CANDLES from TWELVE_DATA: {len(candles)} candles, interval={interval}")
+                    return candles, None, "TWELVE_DATA"
+                else:
+                    return None, "twelve_data_candles_unavailable", "TWELVE_DATA"
+            except Exception as e:
+                print(f"[DATA_ROUTER] {symbol}: CANDLES from TWELVE_DATA, ERROR: {type(e).__name__}: {e}")
+                return None, f"twelve_data_candles_error: {type(e).__name__}", "TWELVE_DATA"
+        
+        elif asset_class == AssetClass.CRYPTO:
+            # CRYPTO: Binance only (candles not implemented yet)
+            print(f"[DATA_ROUTER] {symbol}: CANDLES requested from BINANCE (not implemented yet)")
+            return None, "candles_not_implemented", "BINANCE"
+        
+        elif asset_class in [AssetClass.GOLD, AssetClass.INDEX]:
+            # GOLD/INDEX: Yahoo Finance only (candles not implemented yet)
+            print(f"[DATA_ROUTER] {symbol}: CANDLES requested from YAHOO (not implemented yet)")
+            return None, "candles_not_implemented", "YAHOO"
+        
+        else:
+            raise ValueError(f"Unknown asset class: {asset_class}")
+
+
+def set_data_router(router: DataRouter):
+    """Set global DataRouter instance (Dependency Injection)"""
+    global _data_router_instance
+    _data_router_instance = router
+
+
+def get_price(symbol: str, asset_class: Optional[AssetClass] = None) -> Tuple[Optional[float], Optional[str], str]:
+    """
+    Get price for symbol (wrapper function for backward compatibility)
+    
+    Uses global DataRouter instance if set, otherwise creates temporary one
+    """
+    global _data_router_instance
+    if _data_router_instance:
+        return _data_router_instance.get_price(symbol, asset_class)
     else:
-        raise ValueError(f"Unknown asset class: {asset_class}")
+        # Fallback: create temporary router (will fail for FOREX without client)
+        router = DataRouter(twelve_data_client=None)
+        return router.get_price(symbol, asset_class)
 
 
 def get_candles(symbol: str, timeframe: str = "1m", limit: int = 120, asset_class: Optional[AssetClass] = None) -> Tuple[Optional[List[Dict]], Optional[str], str]:
     """
-    Get candles for symbol using strict source policy
+    Get candles for symbol (wrapper function for backward compatibility)
     
-    Args:
-        symbol: Symbol name
-        timeframe: Timeframe (e.g., "1m", "5m", "1h")
-        limit: Number of candles to return
-        asset_class: Optional asset class override
-    
-    Returns:
-        Tuple of (candles: List[Dict] or None, reason: str or None, source: str)
-    
-    Raises:
-        ForbiddenDataSourceError: If attempting to use forbidden source
+    Uses global DataRouter instance if set, otherwise creates temporary one
     """
-    if asset_class is None:
-        asset_class = _detect_asset_class(symbol)
-    
-    if asset_class == AssetClass.FOREX:
-        # FOREX: Twelve Data candles
-        try:
-            from twelve_data_client import TwelveDataClient
-            import asyncio
-            
-            # Get Twelve Data client instance
-            twelve_data_client = None
-            try:
-                from bot import _twelve_data_client
-                twelve_data_client = _twelve_data_client
-            except (ImportError, AttributeError):
-                from config_hardcoded import get_hardcoded_config
-                config = get_hardcoded_config()
-                twelve_data_client = TwelveDataClient(
-                    api_key=config.twelve_data_api_key,
-                    base_url=config.twelve_data_base_url,
-                    timeout=config.twelve_data_timeout
-                )
-            
-            if not twelve_data_client:
-                return None, "twelve_data_client_not_initialized", "TWELVE_DATA"
-            
-            # Map timeframe to Twelve Data interval
-            interval_map = {
-                '1m': '1min',
-                '5m': '5min',
-                '15m': '15min',
-                '30m': '30min',
-                '1h': '1h',
-                '4h': '4h',
-                '1d': '1day',
-                '1day': '1day',
-            }
-            interval = interval_map.get(timeframe, '1h')
-            
-            # Run async call
-            def _run_async(coro):
-                try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        import concurrent.futures
-                        with concurrent.futures.ThreadPoolExecutor() as executor:
-                            future = executor.submit(asyncio.run, coro)
-                            return future.result(timeout=30)
-                    else:
-                        return asyncio.run(coro)
-                except RuntimeError:
-                    return asyncio.run(coro)
-            
-            candles = _run_async(twelve_data_client.get_time_series(symbol, interval=interval, outputsize=limit))
-            
-            if candles:
-                print(f"[DATA_ROUTER] {symbol}: CANDLES from TWELVE_DATA: {len(candles)} candles, interval={interval}")
-                return candles, None, "TWELVE_DATA"
-            else:
-                return None, "twelve_data_candles_unavailable", "TWELVE_DATA"
-        except Exception as e:
-            print(f"[DATA_ROUTER] {symbol}: CANDLES from TWELVE_DATA, ERROR: {type(e).__name__}: {e}")
-            return None, f"twelve_data_candles_error: {type(e).__name__}", "TWELVE_DATA"
-    
-    elif asset_class == AssetClass.CRYPTO:
-        # CRYPTO: Binance only (candles not implemented yet)
-        print(f"[DATA_ROUTER] {symbol}: CANDLES requested from BINANCE (not implemented yet)")
-        return None, "candles_not_implemented", "BINANCE"
-    
-    elif asset_class in [AssetClass.GOLD, AssetClass.INDEX]:
-        # GOLD/INDEX: Yahoo Finance only (candles not implemented yet)
-        print(f"[DATA_ROUTER] {symbol}: CANDLES requested from YAHOO (not implemented yet)")
-        return None, "candles_not_implemented", "YAHOO"
-    
+    global _data_router_instance
+    if _data_router_instance:
+        return _data_router_instance.get_candles(symbol, timeframe, limit, asset_class)
     else:
-        raise ValueError(f"Unknown asset class: {asset_class}")
+        # Fallback: create temporary router (will fail for FOREX without client)
+        router = DataRouter(twelve_data_client=None)
+        return router.get_candles(symbol, timeframe, limit, asset_class)
