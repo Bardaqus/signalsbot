@@ -3694,33 +3694,52 @@ async def send_index_signal(signal_data=None):
             # For manual signals, we still check but allow override if it's a manual call
             # However, we should respect the 36h rule even for manual signals
             print(f"⚠️ Cannot send {pair} signal: 36-hour interval not met for this pair in channel {CHANNEL_LINGRID_INDEXES}")
+            print(f"   Counter NOT incremented")
             return False
 
-        signals["indexes"].append(signal_data)
-        save_signals(signals)
+        # IMPORTANT: Do NOT increment counter before sending - only after successful send
+        index_count_before = len(signals.get("indexes", []))
 
         # Send to channel
         bot = Bot(token=BOT_TOKEN)
         message = format_index_signal(signal_data)
-        await bot.send_message(chat_id=CHANNEL_LINGRID_INDEXES, text=message)
+        
+        try:
+            sent_message = await bot.send_message(chat_id=CHANNEL_LINGRID_INDEXES, text=message)
+            message_id = sent_message.message_id if sent_message else None
+            
+            # ONLY increment counter AFTER successful send
+            signals["indexes"].append(signal_data)
+            save_signals(signals)
 
-        # Save signal to channel file
-        save_channel_signal(CHANNEL_LINGRID_INDEXES, signal_data)
+            # Save signal to channel file
+            save_channel_signal(CHANNEL_LINGRID_INDEXES, signal_data)
 
-        # Update last signal time (global, channel-specific, and pair-specific)
-        save_last_signal_time()
-        save_channel_last_signal_time(CHANNEL_LINGRID_INDEXES)
-        if pair:
-            save_channel_pair_last_signal_time(CHANNEL_LINGRID_INDEXES, pair)
+            # Update last signal time (global, channel-specific, and pair-specific)
+            save_last_signal_time()
+            save_channel_last_signal_time(CHANNEL_LINGRID_INDEXES)
+            if pair:
+                save_channel_pair_last_signal_time(CHANNEL_LINGRID_INDEXES, pair)
 
-        signal_type = signal_data.get('type', '')
+            signal_type = signal_data.get('type', '')
+            index_count_after = len(signals.get("indexes", []))
 
-        print(f"✅ Index signal sent: {pair} {signal_type} Buy now")
-        print(f"📊 Today's index signals: {len(signals['indexes'])}/{MAX_INDEX_SIGNALS}")
-        return True
+            print(f"✅ [INDEX_SENT] Index signal sent successfully: {pair} {signal_type} Buy now")
+            print(f"   Channel: {CHANNEL_LINGRID_INDEXES}, Message ID: {message_id}")
+            print(f"📌 [INDEX_COUNTER_INCREMENTED] {index_count_before} -> {index_count_after}/{MAX_INDEX_SIGNALS}")
+            return True
+            
+        except Exception as send_error:
+            # Send failed - do NOT increment counter
+            print(f"⛔ [INDEX_REJECT] EXCEPTION: Failed to send message to Telegram")
+            print(f"   Error: {type(send_error).__name__}: {send_error}")
+            print(f"   Counter NOT incremented (current: {index_count_before}/{MAX_INDEX_SIGNALS})")
+            return False
 
     except Exception as e:
         print(f"❌ Error sending index signal: {e}")
+        import traceback
+        print(traceback.format_exc())
         return False
 
 

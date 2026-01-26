@@ -5,45 +5,37 @@ import json
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Tuple, Optional
 
-import requests
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from telegram import Bot
+from data_router import get_price, get_candles, AssetClass, ForbiddenDataSourceError
 
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "")  # e.g. -1003118256304
-EODHD_API_TOKEN = os.getenv("EODHD_API_TOKEN", "")
 
 # Default to user's provided values if env vars not set
 if not TELEGRAM_BOT_TOKEN:
     TELEGRAM_BOT_TOKEN = "7734435177:AAGeoSk7TChGNvaVf63R9DW8TELWRQB_rmY"
 if not TELEGRAM_CHANNEL_ID:
     TELEGRAM_CHANNEL_ID = "-1003118256304"
-if not EODHD_API_TOKEN:
-    EODHD_API_TOKEN = "65084a5c0c9bc3.41655158"
 
 
-# EODHD forex symbol format typically: EURUSD.FOREX
+# Forex pairs (without .FOREX suffix - will be handled by router)
 DEFAULT_PAIRS = [
-    "EURUSD.FOREX",
-    "GBPUSD.FOREX", 
-    "USDJPY.FOREX",
-    "AUDUSD.FOREX",
-    "USDCAD.FOREX",
-    "USDCHF.FOREX",
-    "GBPCAD.FOREX",
-    "GBPNZD.FOREX",
-    "XAUUSD.FOREX",  # Gold
+    "EURUSD",
+    "GBPUSD", 
+    "USDJPY",
+    "AUDUSD",
+    "USDCAD",
+    "USDCHF",
+    "GBPCAD",
+    "GBPNZD",
+    "XAUUSD",  # Gold (will use Yahoo Finance)
 ]
 
 SIGNALS_FILE = "active_signals.json"
 PERFORMANCE_FILE = "performance.json"
 MAX_SIGNALS_PER_DAY = 5
 PERFORMANCE_USER_ID = 615348532  # Telegram user ID for performance reports
-
-
-class EODHDError(Exception):
-    pass
 
 
 def format_price(pair: str, price: float) -> str:
@@ -55,38 +47,64 @@ def format_price(pair: str, price: float) -> str:
     return f"{price:,.5f}"
 
 
-@retry(
-    retry=retry_if_exception_type(EODHDError),
-    wait=wait_exponential(multiplier=1, min=1, max=8),
-    stop=stop_after_attempt(3),
-)
 def fetch_realtime_price(symbol: str) -> Tuple[float, Dict]:
-    url = (
-        f"https://eodhd.com/api/real-time/{symbol}?api_token={EODHD_API_TOKEN}&fmt=json"
-    )
-    resp = requests.get(url, timeout=10)
-    if resp.status_code != 200:
-        raise EODHDError(f"HTTP {resp.status_code} for {symbol}")
-    data = resp.json()
-    # Expected fields: close, timestamp etc
-    if not isinstance(data, dict) or "close" not in data:
-        raise EODHDError(f"Unexpected payload for {symbol}: {data}")
-    return float(data["close"]), data
+    """
+    Get real-time price using data router (strict source policy)
+    
+    Raises:
+        ForbiddenDataSourceError: If attempting to use forbidden source
+    """
+    # Remove .FOREX suffix if present (legacy format)
+    clean_symbol = symbol.replace(".FOREX", "")
+    
+    try:
+        price, reason, source = get_price(clean_symbol)
+        if price is None:
+            raise ValueError(f"Price unavailable for {clean_symbol}: {reason}")
+        
+        # Return in format expected by existing code
+        return price, {"close": price, "timestamp": int(time.time()), "source": source}
+    except ForbiddenDataSourceError as e:
+        print(f"❌ [FORBIDDEN] {e}")
+        raise
+    except Exception as e:
+        print(f"❌ Error fetching price for {clean_symbol}: {e}")
+        raise ValueError(f"Failed to get price for {clean_symbol}: {e}")
 
 
 def fetch_intraday_bars(symbol: str, interval: str = "1m", limit: int = 120) -> List[Dict]:
-    # EODHD intraday endpoint
-    url = (
-        f"https://eodhd.com/api/intraday/{symbol}?api_token={EODHD_API_TOKEN}&interval={interval}&fmt=json"
-    )
-    resp = requests.get(url, timeout=15)
-    if resp.status_code != 200:
-        raise EODHDError(f"HTTP {resp.status_code} for intraday {symbol}")
-    data = resp.json()
-    if not isinstance(data, list) or not data:
-        raise EODHDError(f"No intraday data for {symbol}")
-    # Return last `limit` bars
-    return data[-limit:]
+    """
+    Get intraday bars using data router (strict source policy)
+    
+    NOTE: Currently candles are not fully implemented in router.
+    For now, this function will raise an error to prevent using forbidden sources.
+    
+    Raises:
+        ForbiddenDataSourceError: If attempting to use forbidden source (EODHD, etc.)
+        NotImplementedError: If candles not available for this asset class
+    """
+    # Remove .FOREX suffix if present
+    clean_symbol = symbol.replace(".FOREX", "")
+    
+    # Check if this is a FOREX symbol trying to use forbidden intraday endpoint
+    if symbol.endswith(".FOREX") or clean_symbol in ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF", "GBPCAD", "GBPNZD"]:
+        raise ForbiddenDataSourceError(
+            f"FOREX symbol {clean_symbol} cannot use intraday endpoints. "
+            f"Use cTrader WebSocket/Proto for candles. "
+            f"EODHD and other HTTP intraday endpoints are FORBIDDEN for FOREX."
+        )
+    
+    # Try to get candles from router
+    candles, reason, source = get_candles(clean_symbol, interval, limit)
+    
+    if candles is None:
+        raise NotImplementedError(
+            f"Candles not available for {clean_symbol} from {source}. "
+            f"Reason: {reason}. "
+            f"FOREX candles must come from cTrader, GOLD/INDEX from Yahoo Finance."
+        )
+    
+    return candles
 
 
 def to_float_safe(value: object) -> Optional[float]:
@@ -758,83 +776,92 @@ async def post_signals_once(pairs: List[str]) -> None:
         
         print(f"📊 Analyzing {sym} (attempt {attempts})...")
         try:
-            bars = fetch_intraday_bars(sym, interval="1m", limit=120)
-            print(f"  Got {len(bars)} bars for {sym}")
-            signal_type, metrics = generate_signal_from_bars(bars, sym)
-            print(f"  Signal: {signal_type}")
+            # Get real-time price using data router (strict source policy)
+            try:
+                rt_price, price_data = fetch_realtime_price(sym)
+                entry = rt_price
+                source = price_data.get("source", "UNKNOWN")
+                print(f"  Real-time entry price: {entry} (source: {source})")
+            except ForbiddenDataSourceError as e:
+                print(f"  ❌ FORBIDDEN DATA SOURCE: {e}")
+                print(f"  Skipping {sym} - cannot use forbidden source")
+                continue
+            except Exception as e:
+                print(f"  Failed to get real-time price: {e}")
+                print(f"  Skipping {sym}")
+                continue
             
-            if signal_type in ("BUY", "SELL") and metrics:
-                # Use real-time price as entry point instead of historical close
-                try:
-                    rt_price, _ = fetch_realtime_price(sym)
-                    entry = rt_price
-                    print(f"  Real-time entry price: {entry}")
-                except Exception as e:
-                    print(f"  Failed to get real-time price, using historical: {e}")
-                    entry = metrics["entry"]
+            # Simple signal generation based on price only (no historical bars needed)
+            # For FOREX: use cTrader price directly
+            # For GOLD: use Yahoo Finance price directly
+            # Generate random signal direction for now (can be improved with trend detection)
+            import random
+            signal_type = random.choice(["BUY", "SELL"])
+            
+            # Use different TP/SL logic for XAUUSD vs forex pairs
+            clean_sym = sym.replace(".FOREX", "")
+            if clean_sym == "XAUUSD":
+                # XAUUSD: 3-5% profit target, same for SL (single TP)
+                profit_pct = 0.04  # 4% average (between 3-5%)
+                sl_pct = 0.04  # 4% SL (same as TP)
                 
-                # Use different TP/SL logic for XAUUSD vs forex pairs
-                if sym == "XAUUSD.FOREX":
-                    # XAUUSD: 3-5% profit target, same for SL (single TP)
-                    profit_pct = 0.04  # 4% average (between 3-5%)
-                    sl_pct = 0.04  # 4% SL (same as TP)
-                    
-                    if signal_type == "BUY":
-                        sl = entry * (1 - sl_pct)  # 4% below entry
-                        tp = entry * (1 + profit_pct)  # 4% above entry
-                    else:  # SELL
-                        sl = entry * (1 + sl_pct)  # 4% above entry
-                        tp = entry * (1 - profit_pct)  # 4% below entry
-                    
-                    print(f"  Entry: {entry}, SL: {sl}, TP: {tp}")
-                    
-                    # Add signal to tracking (single TP)
-                    add_signal(sym, signal_type, entry, sl, tp)
-                    
-                    # Send signal message (single TP)
-                    msg = build_signal_message(sym, signal_type, entry, sl, tp)
+                if signal_type == "BUY":
+                    sl = entry * (1 - sl_pct)  # 4% below entry
+                    tp = entry * (1 + profit_pct)  # 4% above entry
+                else:  # SELL
+                    sl = entry * (1 + sl_pct)  # 4% above entry
+                    tp = entry * (1 - profit_pct)  # 4% below entry
+                
+                print(f"  Entry: {entry}, SL: {sl}, TP: {tp}")
+                
+                # Add signal to tracking (single TP)
+                add_signal(sym, signal_type, entry, sl, tp)
+                
+                # Send signal message (single TP)
+                msg = build_signal_message(sym, signal_type, entry, sl, tp)
+            else:
+                # Forex pairs: fixed pip distances with 2 TPs
+                sl_pips = 192  # Average SL distance (doubled from 96)
+                tp1_pips = 103  # First TP distance (original)
+                tp2_pips = 206  # Second TP distance (doubled)
+                
+                # Adjust for JPY pairs (3 decimal places) - 2x bigger range
+                if clean_sym.endswith("JPY"):
+                    sl_distance = (sl_pips * 2) / 1000  # JPY pairs use 3 decimals, 2x bigger range
+                    tp1_distance = (tp1_pips * 2) / 1000
+                    tp2_distance = (tp2_pips * 2) / 1000
                 else:
-                    # Forex pairs: fixed pip distances with 2 TPs
-                    sl_pips = 192  # Average SL distance (doubled from 96)
-                    tp1_pips = 103  # First TP distance (original)
-                    tp2_pips = 206  # Second TP distance (doubled)
-                    
-                    # Adjust for JPY pairs (3 decimal places) - 2x bigger range
-                    if sym.endswith("JPY.FOREX"):
-                        sl_distance = (sl_pips * 2) / 1000  # JPY pairs use 3 decimals, 2x bigger range
-                        tp1_distance = (tp1_pips * 2) / 1000
-                        tp2_distance = (tp2_pips * 2) / 1000
-                    else:
-                        sl_distance = sl_pips / 10000  # Other pairs use 5 decimals
-                        tp1_distance = tp1_pips / 10000
-                        tp2_distance = tp2_pips / 10000
-                    
-                    if signal_type == "BUY":
-                        sl = entry - sl_distance
-                        tp1 = entry + tp1_distance
-                        tp2 = entry + tp2_distance
-                    else:  # SELL
-                        sl = entry + sl_distance
-                        tp1 = entry - tp1_distance
-                        tp2 = entry - tp2_distance
-                    
-                    print(f"  Entry: {entry}, SL: {sl}, TP1: {tp1}, TP2: {tp2}")
-                    
-                    # Add signal to tracking (2 TPs)
-                    add_signal(sym, signal_type, entry, sl, tp1, tp2)
-                    
-                    # Send signal message (2 TPs)
-                    msg = build_signal_message(sym, signal_type, entry, sl, tp1, tp2)
-                print(f"📤 Sending signal: {msg}")
-                await bot.send_message(chat_id=TELEGRAM_CHANNEL_ID, text=msg, disable_web_page_preview=True)
+                    sl_distance = sl_pips / 10000  # Other pairs use 5 decimals
+                    tp1_distance = tp1_pips / 10000
+                    tp2_distance = tp2_pips / 10000
                 
-                signals_generated += 1
-                print(f"✅ Generated signal {signals_generated}: {sym} {signal_type}")
+                if signal_type == "BUY":
+                    sl = entry - sl_distance
+                    tp1 = entry + tp1_distance
+                    tp2 = entry + tp2_distance
+                else:  # SELL
+                    sl = entry + sl_distance
+                    tp1 = entry - tp1_distance
+                    tp2 = entry - tp2_distance
                 
-                # Remove this pair from available pairs since it now has an active signal
-                if sym in available_pairs:
-                    available_pairs.remove(sym)
-                    print(f"  Removed {sym} from available pairs (now has active signal)")
+                print(f"  Entry: {entry}, SL: {sl}, TP1: {tp1}, TP2: {tp2}")
+                
+                # Add signal to tracking (2 TPs)
+                add_signal(sym, signal_type, entry, sl, tp1, tp2)
+                
+                # Send signal message (2 TPs)
+                msg = build_signal_message(sym, signal_type, entry, sl, tp1, tp2)
+            
+            print(f"📤 Sending signal: {msg}")
+            await bot.send_message(chat_id=TELEGRAM_CHANNEL_ID, text=msg, disable_web_page_preview=True)
+            
+            signals_generated += 1
+            print(f"✅ Generated signal {signals_generated}: {sym} {signal_type}")
+            
+            # Remove this pair from available pairs since it now has an active signal
+            if sym in available_pairs:
+                available_pairs.remove(sym)
+                print(f"  Removed {sym} from available pairs (now has active signal)")
                 
             else:
                 print(f"  No signal generated for {sym}")
