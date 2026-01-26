@@ -117,23 +117,27 @@ class DataRouter:
                 import asyncio
                 
                 # Get price from Twelve Data (async call)
-                def _run_async(coro):
-                    """Run async function in new event loop"""
-                    try:
-                        loop = asyncio.get_event_loop()
-                        if loop.is_running():
-                            # Loop is running - use thread executor
-                            import concurrent.futures
-                            with concurrent.futures.ThreadPoolExecutor() as executor:
-                                future = executor.submit(asyncio.run, coro)
-                                return future.result(timeout=15)
-                        else:
-                            return asyncio.run(coro)
-                    except RuntimeError:
-                        # No event loop - create new one
-                        return asyncio.run(coro)
+                # IMPORTANT: This sync method should NOT be called from async context
+                # If called from async context, use get_price_async() instead
+                # For sync calls, we need to create a new event loop (but this is problematic)
+                # The proper solution: all callers should use async version
+                try:
+                    # Check if we're in async context
+                    asyncio.get_running_loop()
+                    # We're in async context - this is an error
+                    raise RuntimeError("Cannot call sync get_price() from async context. Use async get_price_async() instead.")
+                except RuntimeError:
+                    # No running loop - we're in sync context
+                    # Create a new loop ONLY if no loop exists
+                    # This is the problematic case, but necessary for backward compatibility
+                    price = asyncio.run(self.twelve_data_client.get_price(symbol))
+                except Exception as e:
+                    # If get_running_loop() raised different error, re-raise
+                    if "no running event loop" not in str(e).lower():
+                        raise
+                    # No running loop - create new one
+                    price = asyncio.run(self.twelve_data_client.get_price(symbol))
                 
-                price = _run_async(self.twelve_data_client.get_price(symbol))
                 latency_ms = int((time.time() - start_time) * 1000)
                 
                 if price is not None:
@@ -276,9 +280,69 @@ class DataRouter:
         else:
             raise ValueError(f"Unknown asset class: {asset_class}")
     
+    async def get_price_async(self, symbol: str, asset_class: Optional[AssetClass] = None) -> Tuple[Optional[float], Optional[str], str]:
+        """
+        Async version of get_price - must be called from async context
+        
+        Args:
+            symbol: Symbol name (e.g., "EURUSD", "BTCUSDT", "XAUUSD", "BRENT")
+            asset_class: Optional asset class override (auto-detected if None)
+        
+        Returns:
+            Tuple of (price: float or None, reason: str or None, source: str)
+        """
+        if asset_class is None:
+            asset_class = _detect_asset_class(symbol)
+        
+        # STRICT ENFORCEMENT: Verify detected class matches symbol patterns
+        symbol_upper = symbol.upper()
+        if asset_class == AssetClass.FOREX:
+            # FOREX symbols must NOT be Gold/Index/Crypto
+            if symbol_upper in ["XAUUSD", "GOLD", "XAU/USD"]:
+                raise ForbiddenDataSourceError(f"Symbol {symbol} detected as FOREX but is actually GOLD. Use GOLD asset class.")
+            if any(symbol_upper.endswith(suffix) for suffix in ["USDT", "BTC", "ETH"]):
+                raise ForbiddenDataSourceError(f"Symbol {symbol} detected as FOREX but is actually CRYPTO. Use CRYPTO asset class.")
+        elif asset_class == AssetClass.GOLD:
+            # GOLD must NOT be treated as FOREX
+            if symbol_upper not in ["XAUUSD", "GOLD", "XAU/USD"]:
+                raise ForbiddenDataSourceError(f"Symbol {symbol} detected as GOLD but doesn't match gold patterns.")
+        elif asset_class == AssetClass.CRYPTO:
+            # CRYPTO must have crypto suffixes
+            if not any(symbol_upper.endswith(suffix) for suffix in ["USDT", "BTC", "ETH", "BNB", "ADA", "SOL", "XRP", "DOT", "DOGE", "AVAX", "MATIC"]):
+                raise ForbiddenDataSourceError(f"Symbol {symbol} detected as CRYPTO but doesn't match crypto patterns.")
+        
+        start_time = time.time()
+        
+        if asset_class == AssetClass.FOREX:
+            # FOREX: Twelve Data only
+            if not self.twelve_data_client:
+                latency_ms = int((time.time() - start_time) * 1000)
+                print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, price=None, reason=twelve_data_client_not_initialized, latency={latency_ms}ms")
+                return None, "twelve_data_client_not_initialized", "TWELVE_DATA"
+            
+            try:
+                # Direct async call - no loop creation needed
+                price = await self.twelve_data_client.get_price(symbol)
+                latency_ms = int((time.time() - start_time) * 1000)
+                
+                if price is not None:
+                    print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, price={price:.5f}, latency={latency_ms}ms")
+                    return price, None, "TWELVE_DATA"
+                else:
+                    print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, price=None, reason=twelve_data_unavailable, latency={latency_ms}ms")
+                    return None, "twelve_data_unavailable", "TWELVE_DATA"
+            except Exception as e:
+                latency_ms = int((time.time() - start_time) * 1000)
+                print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, ERROR: {type(e).__name__}: {e}, latency={latency_ms}ms")
+                return None, f"twelve_data_error: {type(e).__name__}", "TWELVE_DATA"
+        
+        # For non-FOREX, delegate to sync version (they don't use async)
+        # This is a bit of a hack, but keeps the code simpler
+        return self.get_price(symbol, asset_class)
+    
     def get_candles(self, symbol: str, timeframe: str = "1m", limit: int = 120, asset_class: Optional[AssetClass] = None) -> Tuple[Optional[List[Dict]], Optional[str], str]:
         """
-        Get candles for symbol using strict source policy
+        Get candles for symbol using strict source policy (sync version)
         
         Args:
             symbol: Symbol name
@@ -316,21 +380,23 @@ class DataRouter:
                 }
                 interval = interval_map.get(timeframe, '1h')
                 
-                # Run async call
-                def _run_async(coro):
-                    try:
-                        loop = asyncio.get_event_loop()
-                        if loop.is_running():
-                            import concurrent.futures
-                            with concurrent.futures.ThreadPoolExecutor() as executor:
-                                future = executor.submit(asyncio.run, coro)
-                                return future.result(timeout=30)
-                        else:
-                            return asyncio.run(coro)
-                    except RuntimeError:
-                        return asyncio.run(coro)
-                
-                candles = _run_async(self.twelve_data_client.get_time_series(symbol, interval=interval, outputsize=limit))
+                # IMPORTANT: This sync method should NOT be called from async context
+                # If called from async context, use get_candles_async() instead
+                try:
+                    # Check if we're in async context
+                    asyncio.get_running_loop()
+                    # We're in async context - this is an error
+                    raise RuntimeError("Cannot call sync get_candles() from async context. Use async get_candles_async() instead.")
+                except RuntimeError:
+                    # No running loop - we're in sync context
+                    # Create a new loop ONLY if no loop exists
+                    candles = asyncio.run(self.twelve_data_client.get_time_series(symbol, interval=interval, outputsize=limit))
+                except Exception as e:
+                    # If get_running_loop() raised different error, re-raise
+                    if "no running event loop" not in str(e).lower():
+                        raise
+                    # No running loop - create new one
+                    candles = asyncio.run(self.twelve_data_client.get_time_series(symbol, interval=interval, outputsize=limit))
                 
                 if candles:
                     print(f"[DATA_ROUTER] {symbol}: CANDLES from TWELVE_DATA: {len(candles)} candles, interval={interval}")
@@ -361,11 +427,19 @@ def set_data_router(router: DataRouter):
     _data_router_instance = router
 
 
+def get_data_router() -> Optional[DataRouter]:
+    """Get global DataRouter instance"""
+    return _data_router_instance
+
+
 def get_price(symbol: str, asset_class: Optional[AssetClass] = None) -> Tuple[Optional[float], Optional[str], str]:
     """
     Get price for symbol (wrapper function for backward compatibility)
     
     Uses global DataRouter instance if set, otherwise creates temporary one
+    
+    WARNING: This sync function creates a new event loop for FOREX (Twelve Data).
+    If called from async context, use get_price_async() instead.
     """
     global _data_router_instance
     if _data_router_instance:

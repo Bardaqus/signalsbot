@@ -14,7 +14,7 @@ class TwelveDataClient:
     
     def __init__(self, api_key: str, base_url: str = "https://api.twelvedata.com", timeout: int = 10):
         """
-        Initialize Twelve Data client
+        Initialize Twelve Data client (lazy initialization)
         
         Args:
             api_key: Twelve Data API key
@@ -26,29 +26,57 @@ class TwelveDataClient:
         self.timeout = timeout
         
         # Rate limiting: simple semaphore (max 8 concurrent requests)
-        self.semaphore = asyncio.Semaphore(8)
+        # Created lazily in _ensure_started() to avoid event loop issues
+        self._semaphore: Optional[asyncio.Semaphore] = None
         
         # Last request time for rate limiting (min 0.1s between requests)
         self.last_request_time = 0.0
         self.min_request_interval = 0.1
         
         # HTTP client (reused for connection pooling)
+        # Created lazily in _ensure_started() to avoid event loop issues
         self._client: Optional[httpx.AsyncClient] = None
+        
+        # Closed flag to prevent double closing
+        self._closed = False
     
-    async def _get_client(self) -> httpx.AsyncClient:
-        """Get or create HTTP client"""
+    async def _ensure_started(self):
+        """Ensure client and semaphore are initialized (must be called from running event loop)"""
+        if self._closed:
+            raise RuntimeError("TwelveDataClient is closed")
+        
+        # Create semaphore if not exists (must be in running loop)
+        if self._semaphore is None:
+            self._semaphore = asyncio.Semaphore(8)
+        
+        # Create HTTP client if not exists
         if self._client is None:
             self._client = httpx.AsyncClient(
                 timeout=httpx.Timeout(self.timeout),
                 limits=httpx.Limits(max_keepalive_connections=5, max_connections=10)
             )
+    
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Get or create HTTP client (ensures initialization)"""
+        await self._ensure_started()
         return self._client
     
     async def close(self):
-        """Close HTTP client"""
+        """Close HTTP client (idempotent)"""
+        if self._closed:
+            return
+        
+        self._closed = True
+        
         if self._client:
-            await self._client.aclose()
-            self._client = None
+            try:
+                await self._client.aclose()
+            except Exception as e:
+                print(f"[TWELVE_DATA] ⚠️ Error closing client: {type(e).__name__}: {e}")
+            finally:
+                self._client = None
+        
+        self._semaphore = None
     
     def _safe_preview(self, value: str, length: int = 6) -> str:
         """Create safe preview of sensitive value"""
@@ -78,18 +106,19 @@ class TwelveDataClient:
         Returns:
             JSON response dict or None on failure
         """
+        # Ensure client is initialized (must be in running loop)
+        await self._ensure_started()
+        
         url = f"{self.base_url}{endpoint}"
         params['apikey'] = self.api_key
-        
-        # Rate limiting
-        async with self.semaphore:
-            await self._rate_limit()
         
         client = await self._get_client()
         
         for attempt in range(max_retries):
             try:
-                async with self.semaphore:
+                # Rate limiting
+                async with self._semaphore:
+                    await self._rate_limit()
                     response = await client.get(url, params=params)
                     
                     # Check status code

@@ -6,7 +6,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Tuple, Optional
 
 from telegram import Bot
-from data_router import get_price, get_candles, AssetClass, ForbiddenDataSourceError
+from data_router import get_price, get_candles, AssetClass, ForbiddenDataSourceError, get_data_router
 from config import Config
 
 
@@ -43,6 +43,27 @@ SIGNALS_FILE = "active_signals.json"
 PERFORMANCE_FILE = "performance.json"
 MAX_SIGNALS_PER_DAY = 5
 PERFORMANCE_USER_ID = 615348532  # Telegram user ID for performance reports
+
+# Channel definitions
+CHANNEL_DEGRAM = "-1001220540048"  # DeGRAM (Forex)
+CHANNEL_LINGRID_FOREX = "-1001286609636"  # Lingrid Forex
+CHANNEL_GAINMUSE = "-1002978318746"  # GainMuse
+CHANNEL_LINGRID_INDEXES = "-1001247341118"  # Lingrid Indexes
+CHANNEL_GOLD_PRIVATE = "-1003506500177"  # GOLD Private
+
+# Signal limits per channel per day
+MAX_GOLD_SIGNALS = 2
+MAX_FOREX_SIGNALS_PER_CHANNEL = 5  # Per Degram and Lingrid Forex
+MAX_GAINMUSE_SIGNALS = 5
+MAX_INDEX_SIGNALS = 5
+
+# Time constraints (in seconds)
+MIN_TIME_BETWEEN_SIGNALS = 5 * 60  # 5 minutes between any signals
+MIN_TIME_BETWEEN_CHANNEL_SIGNALS = 30 * 60  # 30 minutes between signals in same channel
+
+# Files for tracking signal times
+LAST_SIGNAL_TIME_FILE = "last_signal_time.json"  # Global last signal time
+CHANNEL_LAST_SIGNAL_FILE = "channel_last_signal_time.json"  # Last signal time per channel
 
 
 def format_price(pair: str, price: float) -> str:
@@ -272,6 +293,76 @@ def save_active_signals(signals: List[Dict]) -> None:
         pass
 
 
+def load_last_signal_times() -> Dict:
+    """Load last signal times from file"""
+    try:
+        if os.path.exists(LAST_SIGNAL_TIME_FILE):
+            with open(LAST_SIGNAL_TIME_FILE, 'r') as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+
+def save_last_signal_time() -> None:
+    """Save current time as last signal time"""
+    try:
+        with open(LAST_SIGNAL_TIME_FILE, 'w') as f:
+            json.dump({"last_signal_time": time.time()}, f)
+    except Exception:
+        pass
+
+
+def load_channel_last_signal_times() -> Dict:
+    """Load last signal times per channel from file"""
+    try:
+        if os.path.exists(CHANNEL_LAST_SIGNAL_FILE):
+            with open(CHANNEL_LAST_SIGNAL_FILE, 'r') as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+
+def save_channel_last_signal_time(channel_id: str) -> None:
+    """Save current time as last signal time for channel"""
+    try:
+        channel_times = load_channel_last_signal_times()
+        channel_times[channel_id] = time.time()
+        with open(CHANNEL_LAST_SIGNAL_FILE, 'w') as f:
+            json.dump(channel_times, f)
+    except Exception:
+        pass
+
+
+def can_send_signal(channel_id: str) -> Tuple[bool, Optional[str]]:
+    """Check if we can send a signal (time constraints)"""
+    current_time = time.time()
+    
+    # Check global time constraint (5 minutes)
+    last_signal_times = load_last_signal_times()
+    last_global_time = last_signal_times.get("last_signal_time", 0)
+    if current_time - last_global_time < MIN_TIME_BETWEEN_SIGNALS:
+        remaining = MIN_TIME_BETWEEN_SIGNALS - (current_time - last_global_time)
+        return False, f"Wait {int(remaining/60)} minutes (global constraint)"
+    
+    # Check channel-specific time constraint (30 minutes)
+    channel_times = load_channel_last_signal_times()
+    last_channel_time = channel_times.get(channel_id, 0)
+    if current_time - last_channel_time < MIN_TIME_BETWEEN_CHANNEL_SIGNALS:
+        remaining = MIN_TIME_BETWEEN_CHANNEL_SIGNALS - (current_time - last_channel_time)
+        return False, f"Wait {int(remaining/60)} minutes (channel constraint)"
+    
+    return True, None
+
+
+def get_today_channel_signals_count(channel_id: str) -> int:
+    """Count signals sent to channel today"""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    active_signals = load_active_signals()
+    return len([s for s in active_signals if s.get("channel_id") == channel_id and s.get("date") == today])
+
+
 def get_today_signals_count() -> int:
     """Count signals generated today"""
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -298,7 +389,7 @@ def get_available_pairs(all_pairs: List[str]) -> List[str]:
     return [pair for pair in all_pairs if pair not in active_pairs]
 
 
-def add_signal(symbol: str, signal_type: str, entry: float, sl: float, tp1: float, tp2: float = None) -> None:
+def add_signal(symbol: str, signal_type: str, entry: float, sl: float, tp1: float, tp2: float = None, channel_id: str = None) -> None:
     """Add new signal to tracking with 2 TPs"""
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     
@@ -313,7 +404,8 @@ def add_signal(symbol: str, signal_type: str, entry: float, sl: float, tp1: floa
             "tp2": tp2,
             "date": today,
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "status": "active"  # active, hit_sl, hit_tp1, hit_tp2
+            "status": "active",  # active, hit_sl, hit_tp1, hit_tp2
+            "channel_id": channel_id
         }
     else:
         # XAUUSD signals with 1 TP (backward compatibility)
@@ -325,7 +417,8 @@ def add_signal(symbol: str, signal_type: str, entry: float, sl: float, tp1: floa
             "tp": tp1,
             "date": today,
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "status": "active"  # active, hit_sl, hit_tp
+            "status": "active",  # active, hit_sl, hit_tp
+            "channel_id": channel_id
         }
     active_signals = load_active_signals()
     active_signals.append(signal)
@@ -415,7 +508,7 @@ def add_completed_signal(symbol: str, signal_type: str, entry: float, exit_price
     save_performance_data(performance_data)
 
 
-def check_signal_hits() -> List[Dict]:
+async def check_signal_hits() -> List[Dict]:
     """Check for SL/TP hits and return profit messages"""
     active_signals = load_active_signals()
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -428,13 +521,30 @@ def check_signal_hits() -> List[Dict]:
             continue
             
         try:
-            current_price, price_data = fetch_realtime_price(signal["symbol"])
+            # Get price using DataRouter (async version)
+            clean_symbol = signal["symbol"].replace(".FOREX", "")
+            
+            data_router = get_data_router()
+            if data_router:
+                price, reason, source = await data_router.get_price_async(clean_symbol)
+            else:
+                # Fallback to sync version (creates new loop, but works)
+                price, reason, source = get_price(clean_symbol)
+            
+            # Build price_data dict for compatibility
+            price_data = {
+                "close": price if price else None,
+                "timestamp": int(time.time()),
+                "source": source,
+                "reason": reason if price is None else None
+            }
+            current_price = price
             
             # CRITICAL: Skip if price is None (source unavailable)
             if current_price is None:
-                reason = price_data.get("reason", "unknown")
-                source = price_data.get("source", "unknown")
-                print(f"⏸️ Skipping TP/SL check for {signal['symbol']}: price unavailable (source={source}, reason={reason})")
+                reason_str = price_data.get("reason", "unknown")
+                source_str = price_data.get("source", "unknown")
+                print(f"⏸️ Skipping TP/SL check for {signal['symbol']}: price unavailable (source={source_str}, reason={reason_str})")
                 # Keep signal active - will check again next time
                 updated_signals.append(signal)
                 continue
@@ -548,21 +658,31 @@ def check_signal_hits() -> List[Dict]:
 
 
 def build_signal_message(symbol: str, signal_type: str, entry: float, sl: float, tp1: float, tp2: float = None) -> str:
-    """Build signal message in the requested format with 2 TPs"""
+    """Build signal message in the requested format"""
     # Remove .FOREX suffix for display
     display_symbol = symbol.replace(".FOREX", "")
     
+    # Format prices as simple numbers (no special formatting, but keep reasonable precision)
+    def format_simple(price: float) -> str:
+        # For JPY pairs (3 decimals), for others (5 decimals)
+        if display_symbol.endswith("JPY"):
+            return f"{price:.3f}".rstrip('0').rstrip('.')
+        elif display_symbol == "XAUUSD":
+            return f"{price:.2f}".rstrip('0').rstrip('.')
+        else:
+            return f"{price:.5f}".rstrip('0').rstrip('.')
+    
     if tp2 is not None:
         # Forex signals with 2 TPs
-        return f"""{display_symbol} {signal_type} {format_price(symbol, entry)}
-SL {format_price(symbol, sl)}
-TP1 {format_price(symbol, tp1)}
-TP2 {format_price(symbol, tp2)}"""
+        return f"""{display_symbol} {signal_type} {format_simple(entry)}
+SL {format_simple(sl)}
+TP1 {format_simple(tp1)}
+TP2 {format_simple(tp2)}"""
     else:
-        # XAUUSD signals with 1 TP (backward compatibility)
-        return f"""{display_symbol} {signal_type} {format_price(symbol, entry)}
-SL {format_price(symbol, sl)}
-TP {format_price(symbol, tp1)}"""
+        # XAUUSD signals with 1 TP (but still use TP1 format as requested)
+        return f"""{display_symbol} {signal_type} {format_simple(entry)}
+SL {format_simple(sl)}
+TP1 {format_simple(tp1)}"""
 
 
 def get_performance_report(days: int = 1) -> str:
@@ -733,7 +853,7 @@ async def post_signals_once(pairs: List[str]) -> None:
         # Still check for TP hits and reports even on weekends
         await check_and_send_reports(bot)
         print("🔍 Checking for TP hits...")
-        profit_messages = check_signal_hits()
+        profit_messages = await check_signal_hits()
         print(f"Found {len(profit_messages)} TP hits")
         for msg in profit_messages:
             print(f"Sending TP message: {msg}")
@@ -748,7 +868,7 @@ async def post_signals_once(pairs: List[str]) -> None:
         # Still check for TP hits and reports even outside trading hours
         await check_and_send_reports(bot)
         print("🔍 Checking for TP hits...")
-        profit_messages = check_signal_hits()
+        profit_messages = await check_signal_hits()
         print(f"Found {len(profit_messages)} TP hits")
         for msg in profit_messages:
             print(f"Sending TP message: {msg}")
@@ -761,153 +881,15 @@ async def post_signals_once(pairs: List[str]) -> None:
     
     # Then check for TP hits
     print("🔍 Checking for TP hits...")
-    profit_messages = check_signal_hits()
+    profit_messages = await check_signal_hits()
     print(f"Found {len(profit_messages)} TP hits")
     for msg in profit_messages:
         print(f"Sending TP message: {msg}")
         await bot.send_message(chat_id=TELEGRAM_CHANNEL_ID, text=msg, disable_web_page_preview=True)
         await asyncio.sleep(0.4)
     
-    # FOREX signals now use Twelve Data (no cTrader dependency)
-    
-    # Check if we've already generated max signals today
-    today_count = get_today_signals_count()
-    print(f"Today's signal count: {today_count}/{MAX_SIGNALS_PER_DAY}")
-    if today_count >= MAX_SIGNALS_PER_DAY:
-        print(f"Already generated {today_count} signals today (max: {MAX_SIGNALS_PER_DAY})")
-        return
-    
-    # Generate new signals
-    signals_needed = MAX_SIGNALS_PER_DAY - today_count
-    print(f"🎯 Generating new signals (need {signals_needed} more)...")
-    
-    if signals_needed <= 0:
-        print("✅ Already have 4 signals for today")
-        return
-    
-    # Get available pairs (no active signals)
-    available_pairs = get_available_pairs(pairs)
-    print(f"📊 Available pairs: {len(available_pairs)} (active pairs excluded)")
-    
-    if not available_pairs:
-        print("⚠️ No available pairs - all pairs have active signals")
-        return
-    
-    signals_generated = 0
-    attempts = 0
-    max_attempts = len(available_pairs) * 2  # Try each pair twice max
-    
-    while signals_generated < signals_needed and attempts < max_attempts:
-        # Cycle through available pairs
-        sym = available_pairs[attempts % len(available_pairs)]
-        attempts += 1
-        
-        print(f"📊 Analyzing {sym} (attempt {attempts})...")
-        try:
-            # Get real-time price using data router (strict source policy)
-            try:
-                rt_price, price_data = fetch_realtime_price(sym)
-                entry = rt_price
-                source = price_data.get("source", "UNKNOWN")
-                
-                # Check if price unavailable (skip this pair)
-                if entry is None:
-                    reason = price_data.get("reason", "unknown")
-                    print(f"  ⏸️ Price unavailable for {sym}: {reason} (will retry next loop)")
-                    continue
-                
-                print(f"  Real-time entry price: {entry} (source: {source})")
-            except ForbiddenDataSourceError as e:
-                print(f"  ❌ FORBIDDEN DATA SOURCE: {e}")
-                print(f"  Skipping {sym} - cannot use forbidden source")
-                continue
-            except Exception as e:
-                print(f"  Failed to get real-time price: {e}")
-                print(f"  Skipping {sym}")
-                continue
-            
-            # Simple signal generation based on price only (no historical bars needed)
-            # For FOREX: use Twelve Data price (via router)
-            # For GOLD: use Yahoo Finance price directly
-            # Generate random signal direction for now (can be improved with trend detection)
-            import random
-            signal_type = random.choice(["BUY", "SELL"])
-            
-            # Use different TP/SL logic for XAUUSD vs forex pairs
-            clean_sym = sym.replace(".FOREX", "")
-            if clean_sym == "XAUUSD":
-                # XAUUSD: 3-5% profit target, same for SL (single TP)
-                profit_pct = 0.04  # 4% average (between 3-5%)
-                sl_pct = 0.04  # 4% SL (same as TP)
-                
-                if signal_type == "BUY":
-                    sl = entry * (1 - sl_pct)  # 4% below entry
-                    tp = entry * (1 + profit_pct)  # 4% above entry
-                else:  # SELL
-                    sl = entry * (1 + sl_pct)  # 4% above entry
-                    tp = entry * (1 - profit_pct)  # 4% below entry
-                
-                print(f"  Entry: {entry}, SL: {sl}, TP: {tp}")
-                
-                # Add signal to tracking (single TP)
-                add_signal(sym, signal_type, entry, sl, tp)
-                
-                # Send signal message (single TP)
-                msg = build_signal_message(sym, signal_type, entry, sl, tp)
-            else:
-                # Forex pairs: fixed pip distances with 2 TPs
-                sl_pips = 192  # Average SL distance (doubled from 96)
-                tp1_pips = 103  # First TP distance (original)
-                tp2_pips = 206  # Second TP distance (doubled)
-                
-                # Adjust for JPY pairs (3 decimal places) - 2x bigger range
-                if clean_sym.endswith("JPY"):
-                    sl_distance = (sl_pips * 2) / 1000  # JPY pairs use 3 decimals, 2x bigger range
-                    tp1_distance = (tp1_pips * 2) / 1000
-                    tp2_distance = (tp2_pips * 2) / 1000
-                else:
-                    sl_distance = sl_pips / 10000  # Other pairs use 5 decimals
-                    tp1_distance = tp1_pips / 10000
-                    tp2_distance = tp2_pips / 10000
-                
-                if signal_type == "BUY":
-                    sl = entry - sl_distance
-                    tp1 = entry + tp1_distance
-                    tp2 = entry + tp2_distance
-                else:  # SELL
-                    sl = entry + sl_distance
-                    tp1 = entry - tp1_distance
-                    tp2 = entry - tp2_distance
-                
-                print(f"  Entry: {entry}, SL: {sl}, TP1: {tp1}, TP2: {tp2}")
-                
-                # Add signal to tracking (2 TPs)
-                add_signal(sym, signal_type, entry, sl, tp1, tp2)
-                
-                # Send signal message (2 TPs)
-                msg = build_signal_message(sym, signal_type, entry, sl, tp1, tp2)
-            
-            print(f"📤 Sending signal: {msg}")
-            await bot.send_message(chat_id=TELEGRAM_CHANNEL_ID, text=msg, disable_web_page_preview=True)
-            
-            signals_generated += 1
-            print(f"✅ Generated signal {signals_generated}: {sym} {signal_type}")
-            
-            # Remove this pair from available pairs since it now has an active signal
-            if sym in available_pairs:
-                available_pairs.remove(sym)
-                print(f"  Removed {sym} from available pairs (now has active signal)")
-                
-            else:
-                print(f"  No signal generated for {sym}")
-                
-            time.sleep(0.5)  # polite pacing for API calls
-            
-        except Exception as e:
-            print(f"❌ Error processing {sym}: {e}")
-            time.sleep(0.5)
-    
-    print(f"🏁 Finished. Generated {signals_generated} new signals.")
+    # Generate signals for different channels
+    await generate_channel_signals(bot, pairs)
 
 
 async def startup_init():
@@ -955,16 +937,18 @@ async def startup_init():
         set_data_router(data_router)
         print("[STARTUP] ✅ DataRouter initialized with Twelve Data client")
         
-        # Self-check: verify router can get price
-        print("[STARTUP] Self-check: testing DataRouter.get_price('EURUSD')...")
+        # Self-check: verify router can get price (use async version since we're in async context)
+        print("[STARTUP] Self-check: testing DataRouter.get_price_async('EURUSD')...")
         try:
-            check_price, check_reason, check_source = data_router.get_price("EURUSD")
+            check_price, check_reason, check_source = await data_router.get_price_async("EURUSD")
             if check_price:
                 print(f"[STARTUP] ✅ Self-check passed: EURUSD={check_price:.5f} (source={check_source})")
             else:
                 print(f"[STARTUP] ⚠️ Self-check warning: EURUSD=None (reason={check_reason}, source={check_source})")
         except Exception as e:
             print(f"[STARTUP] ⚠️ Self-check error: {type(e).__name__}: {e}")
+            import traceback
+            print(traceback.format_exc())
         
         print("[STARTUP] ✅ Twelve Data client initialized - FOREX signals enabled")
         return True
@@ -982,6 +966,201 @@ async def startup_init():
         return False
 
 
+async def generate_channel_signals(bot: Bot, pairs: List[str]) -> None:
+    """Generate signals for different channels with proper limits and time constraints"""
+    
+    # Define channel configurations
+    channel_configs = [
+        {
+            "name": "GOLD",
+            "channel_id": CHANNEL_GOLD_PRIVATE,
+            "symbols": ["XAUUSD"],
+            "max_signals": MAX_GOLD_SIGNALS,
+            "has_tp2": False
+        },
+        {
+            "name": "FOREX_DEGRAM",
+            "channel_id": CHANNEL_DEGRAM,
+            "symbols": pairs,  # Forex pairs
+            "max_signals": MAX_FOREX_SIGNALS_PER_CHANNEL,
+            "has_tp2": True
+        },
+        {
+            "name": "FOREX_LINGRID",
+            "channel_id": CHANNEL_LINGRID_FOREX,
+            "symbols": pairs,  # Forex pairs
+            "max_signals": MAX_FOREX_SIGNALS_PER_CHANNEL,
+            "has_tp2": True
+        },
+        {
+            "name": "GAINMUSE",
+            "channel_id": CHANNEL_GAINMUSE,
+            "symbols": pairs,  # Forex pairs
+            "max_signals": MAX_GAINMUSE_SIGNALS,
+            "has_tp2": True
+        },
+        {
+            "name": "INDEXES",
+            "channel_id": CHANNEL_LINGRID_INDEXES,
+            "symbols": ["BRENT", "USOIL", "XAUUSD"],  # Index pairs (including gold for indexes channel)
+            "max_signals": MAX_INDEX_SIGNALS,
+            "has_tp2": True
+        }
+    ]
+    
+    for config in channel_configs:
+        channel_id = config["channel_id"]
+        channel_name = config["name"]
+        symbols = config["symbols"]
+        max_signals = config["max_signals"]
+        has_tp2 = config["has_tp2"]
+        
+        # Check channel limit
+        today_count = get_today_channel_signals_count(channel_id)
+        if today_count >= max_signals:
+            print(f"✅ {channel_name}: Already have {today_count}/{max_signals} signals today")
+            continue
+        
+        signals_needed = max_signals - today_count
+        print(f"🎯 {channel_name}: Need {signals_needed} more signals (current: {today_count}/{max_signals})")
+        
+        # Get available pairs for this channel
+        available_pairs = get_available_pairs(symbols)
+        if not available_pairs:
+            print(f"⚠️ {channel_name}: No available pairs")
+            continue
+        
+        signals_generated = 0
+        attempts = 0
+        max_attempts = len(available_pairs) * 3
+        
+        while signals_generated < signals_needed and attempts < max_attempts:
+            # Check time constraints
+            can_send, reason = can_send_signal(channel_id)
+            if not can_send:
+                print(f"  ⏸️ {channel_name}: {reason}")
+                await asyncio.sleep(10)  # Wait a bit before retry
+                attempts += 1
+                continue
+            
+            # Cycle through available pairs
+            sym = available_pairs[attempts % len(available_pairs)]
+            attempts += 1
+            
+            print(f"📊 {channel_name}: Analyzing {sym} (attempt {attempts})...")
+            try:
+                # Get real-time price using data router
+                try:
+                    data_router = get_data_router()
+                    if data_router:
+                        rt_price, reason, source = await data_router.get_price_async(sym)
+                    else:
+                        rt_price, reason, source = get_price(sym)
+                    
+                    if rt_price is None:
+                        print(f"  ⏸️ Price unavailable for {sym}: {reason}")
+                        continue
+                    
+                    entry = rt_price
+                    print(f"  Real-time entry price: {entry} (source: {source})")
+                except Exception as e:
+                    print(f"  Failed to get price for {sym}: {e}")
+                    continue
+                
+                # Generate signal direction
+                import random
+                signal_type = random.choice(["BUY", "SELL"])
+                
+                # Calculate TP/SL
+                clean_sym = sym.replace(".FOREX", "")
+                
+                # Check if it's an index (BRENT, USOIL) or gold
+                is_index = clean_sym in ["BRENT", "USOIL"]
+                is_gold = clean_sym == "XAUUSD"
+                
+                if is_gold and not has_tp2:
+                    # XAUUSD single TP: 3-5% profit target
+                    profit_pct = 0.04
+                    sl_pct = 0.04
+                    
+                    if signal_type == "BUY":
+                        sl = entry * (1 - sl_pct)
+                        tp1 = entry * (1 + profit_pct)
+                        tp2 = None
+                    else:  # SELL
+                        sl = entry * (1 + sl_pct)
+                        tp1 = entry * (1 - profit_pct)
+                        tp2 = None
+                elif is_index:
+                    # Index pairs (BRENT, USOIL): percentage-based with 2 TPs
+                    profit_pct1 = 0.02  # 2% for TP1
+                    profit_pct2 = 0.04  # 4% for TP2
+                    sl_pct = 0.03  # 3% SL
+                    
+                    if signal_type == "BUY":
+                        sl = entry * (1 - sl_pct)
+                        tp1 = entry * (1 + profit_pct1)
+                        tp2 = entry * (1 + profit_pct2)
+                    else:  # SELL
+                        sl = entry * (1 + sl_pct)
+                        tp1 = entry * (1 - profit_pct1)
+                        tp2 = entry * (1 - profit_pct2)
+                else:
+                    # Forex pairs: fixed pip distances with 2 TPs
+                    sl_pips = 192
+                    tp1_pips = 103
+                    tp2_pips = 206
+                    
+                    if clean_sym.endswith("JPY"):
+                        sl_distance = (sl_pips * 2) / 1000
+                        tp1_distance = (tp1_pips * 2) / 1000
+                        tp2_distance = (tp2_pips * 2) / 1000
+                    else:
+                        sl_distance = sl_pips / 10000
+                        tp1_distance = tp1_pips / 10000
+                        tp2_distance = tp2_pips / 10000
+                    
+                    if signal_type == "BUY":
+                        sl = entry - sl_distance
+                        tp1 = entry + tp1_distance
+                        tp2 = entry + tp2_distance
+                    else:  # SELL
+                        sl = entry + sl_distance
+                        tp1 = entry - tp1_distance
+                        tp2 = entry - tp2_distance
+                
+                # Build and send message
+                msg = build_signal_message(sym, signal_type, entry, sl, tp1, tp2)
+                print(f"📤 {channel_name}: Sending signal: {msg}")
+                
+                await bot.send_message(chat_id=channel_id, text=msg, disable_web_page_preview=True)
+                
+                # Save signal with channel_id
+                add_signal(sym, signal_type, entry, sl, tp1, tp2, channel_id=channel_id)
+                
+                # Update time constraints
+                save_last_signal_time()
+                save_channel_last_signal_time(channel_id)
+                
+                signals_generated += 1
+                print(f"✅ {channel_name}: Generated signal {signals_generated}/{signals_needed}: {sym} {signal_type}")
+                
+                # Remove pair from available
+                if sym in available_pairs:
+                    available_pairs.remove(sym)
+                
+                # Wait before next signal (respect time constraints)
+                await asyncio.sleep(5)
+                
+            except Exception as e:
+                print(f"❌ {channel_name}: Error processing {sym}: {e}")
+                import traceback
+                print(traceback.format_exc())
+                await asyncio.sleep(1)
+        
+        print(f"🏁 {channel_name}: Finished. Generated {signals_generated}/{signals_needed} signals.")
+
+
 async def main_async():
     # Initialize Twelve Data client for FOREX
     twelve_data_init_success = await startup_init()
@@ -990,15 +1169,19 @@ async def main_async():
         print("⚠️ [MAIN] Twelve Data initialization failed - FOREX signals may be unavailable")
         print("   Bot will continue working, but FOREX pairs may fail")
     
-    # Generate signals (client stays open during execution)
-    pairs = DEFAULT_PAIRS
-    await post_signals_once(pairs)
-    
-    # Cleanup: close Twelve Data client only at the very end
-    global _twelve_data_client
-    if _twelve_data_client:
-        await _twelve_data_client.close()
-        print("[MAIN] ✅ Twelve Data client closed")
+    try:
+        # Generate signals (client stays open during execution)
+        pairs = DEFAULT_PAIRS
+        await post_signals_once(pairs)
+    finally:
+        # Cleanup: close Twelve Data client only at the very end (in same event loop)
+        global _twelve_data_client
+        if _twelve_data_client:
+            try:
+                await _twelve_data_client.close()
+                print("[MAIN] ✅ Twelve Data client closed")
+            except Exception as e:
+                print(f"[MAIN] ⚠️ Error closing Twelve Data client: {type(e).__name__}: {e}")
 
 
 async def ctrader_auth_test():
