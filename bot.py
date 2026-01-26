@@ -7,19 +7,28 @@ from typing import Dict, List, Tuple, Optional
 
 from telegram import Bot
 from data_router import get_price, get_candles, AssetClass, ForbiddenDataSourceError
+from config import Config
 
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "")  # e.g. -1003118256304
+# Telegram configuration: HARDCODED PRIMARY, ENV override
+# Import hardcoded config for Telegram
+try:
+    from config_hardcoded import get_hardcoded_config
+    _hardcoded_config = get_hardcoded_config()
+    TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", _hardcoded_config.telegram_bot_token)
+    TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", _hardcoded_config.telegram_channel_id)
+except ImportError:
+    # Fallback if config_hardcoded not available
+    TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "7734435177:AAGeoSk7TChGNvaVf63R9DW8TELWRQB_rmY")
+    TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "-1003118256304")
 
-# Default to user's provided values if env vars not set
-if not TELEGRAM_BOT_TOKEN:
-    TELEGRAM_BOT_TOKEN = "7734435177:AAGeoSk7TChGNvaVf63R9DW8TELWRQB_rmY"
-if not TELEGRAM_CHANNEL_ID:
-    TELEGRAM_CHANNEL_ID = "-1003118256304"
+# Global cTrader client state
+_ctrader_client = None
+CTRADER_READY = False
 
 
 # Forex pairs (without .FOREX suffix - will be handled by router)
+# NOTE: XAUUSD is GOLD (Yahoo Finance), NOT FOREX - removed from this list
 DEFAULT_PAIRS = [
     "EURUSD",
     "GBPUSD", 
@@ -29,7 +38,6 @@ DEFAULT_PAIRS = [
     "USDCHF",
     "GBPCAD",
     "GBPNZD",
-    "XAUUSD",  # Gold (will use Yahoo Finance)
 ]
 
 SIGNALS_FILE = "active_signals.json"
@@ -47,9 +55,13 @@ def format_price(pair: str, price: float) -> str:
     return f"{price:,.5f}"
 
 
-def fetch_realtime_price(symbol: str) -> Tuple[float, Dict]:
+def fetch_realtime_price(symbol: str) -> Tuple[Optional[float], Dict]:
     """
     Get real-time price using data router (strict source policy)
+    
+    Returns:
+        Tuple of (price: float or None, data_dict)
+        If price is None, data_dict contains "reason" field
     
     Raises:
         ForbiddenDataSourceError: If attempting to use forbidden source
@@ -59,17 +71,22 @@ def fetch_realtime_price(symbol: str) -> Tuple[float, Dict]:
     
     try:
         price, reason, source = get_price(clean_symbol)
-        if price is None:
-            raise ValueError(f"Price unavailable for {clean_symbol}: {reason}")
         
         # Return in format expected by existing code
-        return price, {"close": price, "timestamp": int(time.time()), "source": source}
+        result_data = {
+            "close": price if price else None,
+            "timestamp": int(time.time()),
+            "source": source,
+            "reason": reason if price is None else None
+        }
+        
+        return price, result_data
     except ForbiddenDataSourceError as e:
         print(f"❌ [FORBIDDEN] {e}")
         raise
     except Exception as e:
         print(f"❌ Error fetching price for {clean_symbol}: {e}")
-        raise ValueError(f"Failed to get price for {clean_symbol}: {e}")
+        return None, {"close": None, "timestamp": int(time.time()), "source": "ERROR", "reason": str(e)}
 
 
 def fetch_intraday_bars(symbol: str, interval: str = "1m", limit: int = 120) -> List[Dict]:
@@ -412,7 +429,17 @@ def check_signal_hits() -> List[Dict]:
             continue
             
         try:
-            current_price, _ = fetch_realtime_price(signal["symbol"])
+            current_price, price_data = fetch_realtime_price(signal["symbol"])
+            
+            # CRITICAL: Skip if price is None (source unavailable)
+            if current_price is None:
+                reason = price_data.get("reason", "unknown")
+                source = price_data.get("source", "unknown")
+                print(f"⏸️ Skipping TP/SL check for {signal['symbol']}: price unavailable (source={source}, reason={reason})")
+                # Keep signal active - will check again next time
+                updated_signals.append(signal)
+                continue
+            
             signal_type = signal["type"]
             entry = signal["entry"]
             sl = signal["sl"]
@@ -742,6 +769,12 @@ async def post_signals_once(pairs: List[str]) -> None:
         await bot.send_message(chat_id=TELEGRAM_CHANNEL_ID, text=msg, disable_web_page_preview=True)
         await asyncio.sleep(0.4)
     
+    # STRICT CHECK: If cTrader is not ready, skip FOREX signal generation entirely
+    if not CTRADER_READY or _ctrader_client is None:
+        print("⏸️ [CTRADER_NOT_READY] cTrader client not initialized or not ready - skipping FOREX signal generation")
+        print("   Bot will continue working for GOLD/INDEX/CRYPTO signals")
+        return
+    
     # Check if we've already generated max signals today
     today_count = get_today_signals_count()
     print(f"Today's signal count: {today_count}/{MAX_SIGNALS_PER_DAY}")
@@ -781,6 +814,12 @@ async def post_signals_once(pairs: List[str]) -> None:
                 rt_price, price_data = fetch_realtime_price(sym)
                 entry = rt_price
                 source = price_data.get("source", "UNKNOWN")
+                
+                # Check if price unavailable due to cTrader not ready
+                if entry is None and price_data.get("reason") == "ctrader_not_ready":
+                    print(f"  ⏸️ CTRADER_NOT_READY: skipping {sym} (will retry next loop)")
+                    continue
+                
                 print(f"  Real-time entry price: {entry} (source: {source})")
             except ForbiddenDataSourceError as e:
                 print(f"  ❌ FORBIDDEN DATA SOURCE: {e}")
@@ -875,10 +914,303 @@ async def post_signals_once(pairs: List[str]) -> None:
     print(f"🏁 Finished. Generated {signals_generated} new signals.")
 
 
+async def startup_init():
+    """Initialize cTrader client before signal generation"""
+    global _ctrader_client, CTRADER_READY
+    
+    print("[STARTUP] Initializing cTrader client...")
+    print("[STARTUP] Configuration: HARDCODED (primary) + ENV (override)")
+    
+    # Import first - handle import errors separately
+    try:
+        from ctrader_async_client import CTraderAsyncClient, CTraderAsyncError
+    except (ImportError, SyntaxError, IndentationError) as e:
+        print(f"[STARTUP] ❌ Failed to import ctrader_async_client: {type(e).__name__}: {e}")
+        print(f"[STARTUP] ⚠️ Please fix syntax/import errors in ctrader_async_client.py")
+        CTRADER_READY = False
+        _ctrader_client = None
+        return False
+    
+    try:
+        
+        # Get cTrader config from Config (HARDCODED PRIMARY, ENV override)
+        ctrader_config = Config.get_ctrader_config()
+        # Log config preview
+        ctrader_config.log_preview()
+        
+        # Get WebSocket URL
+        ws_url, ws_source = ctrader_config.get_ws_url()
+        
+        # Extract config values
+        account_id = ctrader_config.account_id
+        client_id = ctrader_config.client_id
+        client_secret = ctrader_config.client_secret
+        access_token = ctrader_config.access_token
+        refresh_token = getattr(ctrader_config, 'refresh_token', None)
+        is_demo = ctrader_config.is_demo
+        # Get token_url_base from config_hardcoded (official endpoint base)
+        from config_hardcoded import get_hardcoded_config
+        hardcoded = get_hardcoded_config()
+        token_url_base = getattr(ctrader_config, 'oauth_token_url_base', None) or getattr(hardcoded, 'ctrader_oauth_token_url_base', 'https://openapi.ctrader.com')
+        oauth_timeout = getattr(ctrader_config, 'oauth_timeout', 10)
+        
+        # Log source information
+        source_map = getattr(ctrader_config, 'source_map', {})
+        access_token_source = source_map.get('access_token', 'UNKNOWN')
+        refresh_token_source = source_map.get('refresh_token', 'UNKNOWN')
+        account_id_source = source_map.get('account_id', 'UNKNOWN')
+        is_demo_source = source_map.get('is_demo', 'UNKNOWN')
+        
+        def safe_preview(value: str, length: int = 6) -> str:
+            if not value:
+                return "(not set)"
+            if len(value) <= length:
+                return value[:length] + "..."
+            return value[:length] + "..."
+        
+        print(f"[STARTUP] [CTRADER] Config loaded:")
+        print(f"   ws_url={ws_url} (source={ws_source})")
+        print(f"   is_demo={is_demo} (source={is_demo_source})")
+        if account_id is not None:
+            print(f"   account_id={account_id} (source={account_id_source})")
+        else:
+            print(f"   account_id=None (source={account_id_source}) - FOREX will be disabled")
+        print(f"   client_id={safe_preview(client_id, 8)} (source={source_map.get('client_id', 'UNKNOWN')})")
+        print(f"   access_token={safe_preview(access_token, 6)} (source={access_token_source})")
+        if refresh_token:
+            print(f"   refresh_token={safe_preview(refresh_token, 6)} (source={refresh_token_source})")
+        else:
+            print(f"   refresh_token=(not set) - token refresh will be unavailable")
+        
+        # Validate critical config - gracefully handle missing values
+        if account_id is None or account_id <= 0:
+            if account_id is None:
+                print(f"[STARTUP] ⚠️ CTRADER_ACCOUNT_ID is not set in .env")
+            else:
+                print(f"[STARTUP] ⚠️ CTRADER_ACCOUNT_ID is invalid: {account_id}")
+            print(f"[STARTUP] ⚠️ Please set CTRADER_ACCOUNT_ID in .env to enable FOREX signals")
+            print(f"[STARTUP] ⚠️ Bot will continue working for GOLD/INDEX/CRYPTO signals only")
+            CTRADER_READY = False
+            _ctrader_client = None
+            return False
+        
+        if not access_token:
+            print(f"[STARTUP] ⚠️ CTRADER_ACCESS_TOKEN is not set in .env")
+            print(f"[STARTUP] ⚠️ Please set CTRADER_ACCESS_TOKEN in .env to enable FOREX signals")
+            print(f"[STARTUP] ⚠️ Bot will continue working for GOLD/INDEX/CRYPTO signals only")
+            CTRADER_READY = False
+            _ctrader_client = None
+            return False
+        
+        # Create client
+        _ctrader_client = CTraderAsyncClient(
+            ws_url=ws_url,
+            client_id=client_id,
+            client_secret=client_secret,
+            access_token=access_token,
+            account_id=account_id,
+            is_demo=is_demo,
+            refresh_token=refresh_token,
+            token_url=token_url_base  # Pass token_url_base (base URL, not full endpoint)
+        )
+        # Set oauth_timeout if available
+        if hasattr(ctrader_config, 'oauth_timeout'):
+            _ctrader_client.oauth_timeout = ctrader_config.oauth_timeout
+        
+        # Connect
+        print("[STARTUP] Connecting to cTrader WebSocket...")
+        await _ctrader_client.connect()
+        print("[STARTUP] ✅ WebSocket connected")
+        
+        # Authenticate application (step 1)
+        print("[STARTUP] Authenticating application...")
+        await _ctrader_client.auth_application()
+        print("[STARTUP] ✅ Application authenticated")
+        
+        # Get account list by access token (step 2) - official auth flow
+        print("[STARTUP] Getting account list by access token...")
+        try:
+            accounts = await _ctrader_client.get_account_list_by_access_token(retry_on_error=True)
+            if not accounts:
+                print("[STARTUP] ⚠️ No accounts found or account list request failed")
+                CTRADER_READY = False
+                _ctrader_client = None
+                return False
+            
+            # Select account: prefer demo if is_demo=True, otherwise first account
+            selected_account = None
+            for acc in accounts:
+                acc_is_live = acc.get('isLive', False)
+                if is_demo and not acc_is_live:
+                    selected_account = acc
+                    break
+                elif not is_demo and acc_is_live:
+                    selected_account = acc
+                    break
+            
+            # If no match found, use first account
+            if not selected_account and accounts:
+                selected_account = accounts[0]
+            
+            if selected_account:
+                selected_account_id = selected_account.get('ctidTraderAccountId')
+                if selected_account_id and selected_account_id != account_id:
+                    print(f"[STARTUP] ⚠️ Selected account {selected_account_id} differs from config account_id {account_id}")
+                    print(f"[STARTUP] ⚠️ Using selected account {selected_account_id} from account list")
+                    # Update client's account_id to match selected account
+                    _ctrader_client.account_id = selected_account_id
+                    account_id = selected_account_id
+                print(f"[STARTUP] ✅ Selected account: {account_id} ({'Live' if selected_account.get('isLive') else 'Demo'})")
+            else:
+                print("[STARTUP] ⚠️ Could not select account from list")
+                CTRADER_READY = False
+                _ctrader_client = None
+                return False
+        except CTraderAsyncError as e:
+            if e.reason in ("TOKEN_INVALID", "GET_ACCOUNTS_FAILED"):
+                print(f"[STARTUP] ❌ GetAccountListByAccessToken failed: {e.message}")
+                print(f"[STARTUP] ⚠️ Token refresh failed or not available")
+                print(f"[STARTUP] ⚠️ Please update CTRADER_ACCESS_TOKEN and CTRADER_REFRESH_TOKEN in .env")
+                CTRADER_READY = False
+                _ctrader_client = None
+                return False
+            else:
+                raise
+        
+        # Authenticate account (step 3) - with automatic retry on token error
+        print("[STARTUP] Authenticating account...")
+        try:
+            await _ctrader_client.auth_account(retry_on_error=True)
+            print("[STARTUP] ✅ Account authenticated")
+        except CTraderAsyncError as e:
+            if e.reason == "TOKEN_INVALID":
+                print(f"[STARTUP] ❌ AccountAuth failed: {e.message}")
+                print(f"[STARTUP] ⚠️ Token refresh failed or not available")
+                print(f"[STARTUP] ⚠️ Please update CTRADER_ACCESS_TOKEN and CTRADER_REFRESH_TOKEN in .env")
+                CTRADER_READY = False
+                _ctrader_client = None
+                return False
+            else:
+                raise
+        
+        # Resolve and subscribe to FOREX pairs
+        forex_pairs = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF", "GBPCAD", "GBPNZD"]
+        print("[STARTUP] Resolving and subscribing to FOREX symbols...")
+        for pair in forex_pairs:
+            try:
+                symbol_id = await _ctrader_client.ensure_symbol_id(pair)
+                if symbol_id:
+                    await _ctrader_client.subscribe_spot(symbol_id)
+                    print(f"[STARTUP] ✅ {pair} subscribed (symbol_id={symbol_id})")
+                else:
+                    print(f"[STARTUP] ⚠️ {pair} symbol not found in cTrader")
+            except Exception as e:
+                print(f"[STARTUP] ⚠️ Error subscribing {pair}: {e}")
+        
+        CTRADER_READY = True
+        print("[STARTUP] ✅ cTrader initialization complete - CTRADER_READY=True")
+        return True
+        
+    except CTraderAsyncError as e:
+        print(f"[STARTUP] ❌ cTrader error: {e.reason}: {e.message}")
+        CTRADER_READY = False
+        _ctrader_client = None
+        return False
+    except Exception as e:
+        print(f"[STARTUP] ❌ Error initializing cTrader: {type(e).__name__}: {e}")
+        import traceback
+        print(traceback.format_exc())
+        CTRADER_READY = False
+        _ctrader_client = None
+        return False
+
+
 async def main_async():
+    # Initialize cTrader client FIRST
+    ctrader_init_success = await startup_init()
+    
+    if not ctrader_init_success:
+        print("⚠️ [MAIN] cTrader initialization failed - FOREX signals will be unavailable")
+        print("   Continuing with GOLD/INDEX/CRYPTO signals only (Yahoo Finance / Binance)")
+        print("   FOREX pairs will be skipped until cTrader is ready")
+        # Set global flag to prevent FOREX generation attempts
+        global CTRADER_READY
+        CTRADER_READY = False
+    
     pairs = DEFAULT_PAIRS
     await post_signals_once(pairs)
 
 
+async def ctrader_auth_test():
+    """Test cTrader authentication flow without starting full bot"""
+    print("[CTRADER_AUTH_TEST] Starting cTrader authentication test...")
+    
+    try:
+        from ctrader_async_client import CTraderAsyncClient, CTraderAsyncError
+        from config import Config
+        
+        # Get cTrader config
+        ctrader_config = Config.get_ctrader_config()
+        ws_url, ws_source = ctrader_config.get_ws_url()
+        
+        print(f"[CTRADER_AUTH_TEST] Config: ws_url={ws_url}, account_id={ctrader_config.account_id}, is_demo={ctrader_config.is_demo}")
+        
+        # Create client
+        client = CTraderAsyncClient(
+            ws_url=ws_url,
+            client_id=ctrader_config.client_id,
+            client_secret=ctrader_config.client_secret,
+            access_token=ctrader_config.access_token,
+            account_id=ctrader_config.account_id,
+            is_demo=ctrader_config.is_demo
+        )
+        
+        # Connect
+        print("[CTRADER_AUTH_TEST] Step 1: Connecting to WebSocket...")
+        await client.connect()
+        print("[CTRADER_AUTH_TEST] ✅ WebSocket connected")
+        
+        # ApplicationAuth
+        print("[CTRADER_AUTH_TEST] Step 2: ApplicationAuth...")
+        await client.auth_application()
+        print("[CTRADER_AUTH_TEST] ✅ ApplicationAuth succeeded")
+        
+        # AccountAuth
+        print("[CTRADER_AUTH_TEST] Step 3: AccountAuth...")
+        await client.auth_account()
+        print("[CTRADER_AUTH_TEST] ✅ AccountAuth succeeded")
+        
+        # Test price fetch
+        print("[CTRADER_AUTH_TEST] Step 4: Testing price fetch for EURUSD...")
+        price = client.get_last_price("EURUSD")
+        if price:
+            print(f"[CTRADER_AUTH_TEST] ✅ Price fetch OK: EURUSD = {price:.5f}")
+        else:
+            print("[CTRADER_AUTH_TEST] ⚠️ Price fetch returned None (symbol may need subscription)")
+        
+        # Close
+        await client.close()
+        print("[CTRADER_AUTH_TEST] ✅ Test completed successfully")
+        return True
+        
+    except CTraderAsyncError as e:
+        print(f"[CTRADER_AUTH_TEST] ❌ FAILED: {e.reason}: {e.message}")
+        import traceback
+        print(traceback.format_exc())
+        return False
+    except Exception as e:
+        print(f"[CTRADER_AUTH_TEST] ❌ FAILED: {type(e).__name__}: {e}")
+        import traceback
+        print(traceback.format_exc())
+        return False
+
+
 if __name__ == "__main__":
-    asyncio.run(main_async())
+    import sys
+    if "--ctrader-auth-test" in sys.argv:
+        # Run authentication test only
+        success = asyncio.run(ctrader_auth_test())
+        sys.exit(0 if success else 1)
+    else:
+        # Run normal bot
+        asyncio.run(main_async())

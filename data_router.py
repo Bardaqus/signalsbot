@@ -72,11 +72,51 @@ def get_price(symbol: str, asset_class: Optional[AssetClass] = None) -> Tuple[Op
     if asset_class is None:
         asset_class = _detect_asset_class(symbol)
     
+    # STRICT ENFORCEMENT: Verify detected class matches symbol patterns
+    symbol_upper = symbol.upper()
+    if asset_class == AssetClass.FOREX:
+        # FOREX symbols must NOT be Gold/Index/Crypto
+        if symbol_upper in ["XAUUSD", "GOLD", "XAU/USD"]:
+            raise ForbiddenDataSourceError(f"Symbol {symbol} detected as FOREX but is actually GOLD. Use GOLD asset class.")
+        if any(symbol_upper.endswith(suffix) for suffix in ["USDT", "BTC", "ETH"]):
+            raise ForbiddenDataSourceError(f"Symbol {symbol} detected as FOREX but is actually CRYPTO. Use CRYPTO asset class.")
+    elif asset_class == AssetClass.GOLD:
+        # GOLD must NOT be treated as FOREX
+        if symbol_upper not in ["XAUUSD", "GOLD", "XAU/USD"]:
+            raise ForbiddenDataSourceError(f"Symbol {symbol} detected as GOLD but doesn't match gold patterns.")
+    elif asset_class == AssetClass.CRYPTO:
+        # CRYPTO must have crypto suffixes
+        if not any(symbol_upper.endswith(suffix) for suffix in ["USDT", "BTC", "ETH", "BNB", "ADA", "SOL", "XRP", "DOT", "DOGE", "AVAX", "MATIC"]):
+            raise ForbiddenDataSourceError(f"Symbol {symbol} detected as CRYPTO but doesn't match crypto patterns.")
+    
     start_time = time.time()
     
     if asset_class == AssetClass.FOREX:
         # FOREX: cTrader only
         try:
+            # Check if cTrader is ready (try bot.py first, then working_combined_bot.py)
+            ctrader_ready = False
+            ctrader_client = None
+            
+            try:
+                from bot import CTRADER_READY, _ctrader_client
+                ctrader_ready = CTRADER_READY
+                ctrader_client = _ctrader_client
+            except ImportError:
+                # Fallback: try working_combined_bot
+                try:
+                    from working_combined_bot import _ctrader_async_client
+                    ctrader_client = _ctrader_async_client
+                    ctrader_ready = ctrader_client is not None and ctrader_client.connected
+                except ImportError:
+                    pass
+            
+            if not ctrader_ready or ctrader_client is None:
+                latency_ms = int((time.time() - start_time) * 1000)
+                print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=CTRADER, price=None, reason=ctrader_not_ready, latency={latency_ms}ms")
+                return None, "ctrader_not_ready", "CTRADER"
+            
+            # Get price from cTrader
             from working_combined_bot import get_forex_price_ctrader
             price, reason = get_forex_price_ctrader(symbol)
             latency_ms = int((time.time() - start_time) * 1000)
@@ -125,28 +165,84 @@ def get_price(symbol: str, asset_class: Optional[AssetClass] = None) -> Tuple[Op
                     # No event loop - create new one
                     return asyncio.run(coro)
             
+            def _validate_price(symbol: str, price: Optional[float], asset_class: AssetClass) -> Tuple[bool, Optional[str]]:
+                """Validate price is within reasonable range (wide sanity check)
+                
+                Args:
+                    symbol: Symbol name
+                    price: Price value (can be None)
+                    asset_class: Asset class
+                
+                Returns:
+                    Tuple of (is_valid: bool, reason: str or None)
+                """
+                # CRITICAL: Handle None price first - never compare None with numbers
+                if price is None:
+                    return False, "yahoo_no_price: price is None"
+                
+                # Basic sanity: price must be > 0
+                if price <= 0:
+                    return False, f"yahoo_invalid_price: {price:.2f} is not positive"
+                
+                if asset_class == AssetClass.GOLD:
+                    # Gold: wide sanity range 50-20000 USD/oz (allows for extreme market conditions)
+                    # Note: For Yahoo futures (GC=F), price can be higher than spot, so range is wide
+                    if price < 50 or price > 20000:
+                        return False, f"yahoo_invalid_price: {price:.2f} outside sanity range [50, 20000]"
+                    return True, None
+                elif asset_class == AssetClass.INDEX:
+                    # Indexes: reasonable range depends on symbol
+                    if symbol.upper() in ["BRENT", "USOIL"]:
+                        # Oil: wide sanity range 1-1000 USD/barrel
+                        if price < 1 or price > 1000:
+                            return False, f"yahoo_invalid_price: {price:.2f} outside sanity range [1, 1000]"
+                    else:
+                        # Other indexes: wide sanity range 1-100000
+                        if price < 1 or price > 100000:
+                            return False, f"yahoo_invalid_price: {price:.2f} outside sanity range [1, 100000]"
+                    return True, None
+                return True, None
+            
             if asset_class == AssetClass.GOLD:
-                # Gold: use Yahoo Finance
+                # Gold: use Yahoo Finance with validation
                 from working_combined_bot import get_gold_price_from_yahoo
                 yahoo_data = _run_async(get_gold_price_from_yahoo())
                 
                 latency_ms = int((time.time() - start_time) * 1000)
-                if yahoo_data and yahoo_data.get("price"):
-                    price = yahoo_data["price"]
-                    source_type = yahoo_data.get("source", "yahoo")
-                    print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO ({source_type}), price={price:.2f}, latency={latency_ms}ms")
-                    return price, None, f"YAHOO_{source_type.upper()}"
+                if yahoo_data and isinstance(yahoo_data, dict) and yahoo_data.get("price"):
+                    try:
+                        price = float(yahoo_data["price"])
+                        source_type = yahoo_data.get("source", "yahoo")
+                        ticker = yahoo_data.get("meta", {}).get("ticker", "unknown")
+                        
+                        # Validate price (sanity check)
+                        is_valid, validation_reason = _validate_price(symbol, price, asset_class)
+                        if not is_valid:
+                            print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO ({source_type}), ticker={ticker}, price={price:.2f}, valid=False, reason={validation_reason}, latency={latency_ms}ms")
+                            return None, validation_reason, f"YAHOO_{source_type.upper()}"
+                        
+                        print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO ({source_type}), ticker={ticker}, price={price:.2f}, valid=True, latency={latency_ms}ms")
+                        return price, None, f"YAHOO_{source_type.upper()}"
+                    except (ValueError, TypeError, KeyError) as e:
+                        print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO, price=None, reason=yahoo_parse_error ({type(e).__name__}: {e}), latency={latency_ms}ms")
+                        return None, f"yahoo_parse_error: {type(e).__name__}", "YAHOO"
                 else:
                     print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO, price=None, reason=yahoo_unavailable, latency={latency_ms}ms")
                     return None, "yahoo_unavailable", "YAHOO"
             else:
-                # Index: use Yahoo Finance
+                # Index: use Yahoo Finance with validation
                 from working_combined_bot import get_index_price_yahoo
                 price = _run_async(get_index_price_yahoo(symbol))
                 
                 latency_ms = int((time.time() - start_time) * 1000)
-                if price:
-                    print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO, price={price:.2f}, latency={latency_ms}ms")
+                if price is not None:
+                    # Validate price (handles None internally, but double-check here)
+                    is_valid, validation_reason = _validate_price(symbol, price, asset_class)
+                    if not is_valid:
+                        print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO, price={price:.2f if price else None}, valid=False, reason={validation_reason}, latency={latency_ms}ms")
+                        return None, validation_reason, "YAHOO"
+                    
+                    print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO, price={price:.2f}, valid=True, latency={latency_ms}ms")
                     return price, None, "YAHOO"
                 else:
                     print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO, price=None, reason=yahoo_unavailable, latency={latency_ms}ms")
