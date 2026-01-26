@@ -1313,15 +1313,24 @@ async def startup_init():
         print(f"   backoff_max_ms={getattr(config, 'twelve_data_backoff_max_ms', 5000)}ms")
         
         # Create Twelve Data client with rate limiting configuration
-        _twelve_data_client = TwelveDataClient(
-            api_key=config.twelve_data_api_key,
-            base_url=config.twelve_data_base_url,
-            timeout=config.twelve_data_timeout,
-            min_interval_ms=getattr(config, 'twelve_data_min_interval_ms', 400),
-            max_retries=getattr(config, 'twelve_data_max_retries', 3),
-            backoff_base_ms=getattr(config, 'twelve_data_backoff_base_ms', 500),
-            backoff_max_ms=getattr(config, 'twelve_data_backoff_max_ms', 5000)
-        )
+        # Use inspect to filter kwargs to only supported parameters (defensive programming)
+        import inspect
+        client_kwargs = {
+            'api_key': config.twelve_data_api_key,
+            'base_url': config.twelve_data_base_url,
+            'timeout': config.twelve_data_timeout,
+            'min_interval_ms': getattr(config, 'twelve_data_min_interval_ms', 400),
+            'max_retries': getattr(config, 'twelve_data_max_retries', 3),
+            'backoff_base_ms': getattr(config, 'twelve_data_backoff_base_ms', 500),
+            'backoff_max_ms': getattr(config, 'twelve_data_backoff_max_ms', 5000)
+        }
+        
+        # Filter kwargs to only include parameters supported by TwelveDataClient.__init__
+        sig = inspect.signature(TwelveDataClient.__init__)
+        supported_params = set(sig.parameters.keys())
+        filtered_kwargs = {k: v for k, v in client_kwargs.items() if k in supported_params}
+        
+        _twelve_data_client = TwelveDataClient(**filtered_kwargs)
         
         # Test connection with a simple price request
         print("[STARTUP] Testing Twelve Data connection...")

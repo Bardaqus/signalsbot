@@ -7,12 +7,30 @@ import httpx
 from typing import Optional, List, Dict, Any
 import time
 import json
+import random
+
+
+# Configuration constants
+TWELVE_MIN_INTERVAL_MS = 400  # Minimum interval between requests (milliseconds)
+TWELVE_MAX_RETRIES = 3  # Maximum retry attempts
+TWELVE_BACKOFF_BASE_MS = 500  # Base backoff time (milliseconds)
+TWELVE_BACKOFF_MAX_MS = 5000  # Maximum backoff time (milliseconds)
 
 
 class TwelveDataClient:
-    """Asynchronous client for Twelve Data API"""
+    """Asynchronous client for Twelve Data API with rate limiting and retry logic"""
     
-    def __init__(self, api_key: str, base_url: str = "https://api.twelvedata.com", timeout: int = 10):
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str = "https://api.twelvedata.com",
+        timeout: int = 10,
+        min_interval_ms: int = TWELVE_MIN_INTERVAL_MS,
+        max_retries: int = TWELVE_MAX_RETRIES,
+        backoff_base_ms: int = TWELVE_BACKOFF_BASE_MS,
+        backoff_max_ms: int = TWELVE_BACKOFF_MAX_MS,
+        **kwargs
+    ):
         """
         Initialize Twelve Data client (lazy initialization)
         
@@ -20,18 +38,30 @@ class TwelveDataClient:
             api_key: Twelve Data API key
             base_url: Base URL for API (default: https://api.twelvedata.com)
             timeout: Request timeout in seconds (default: 10)
+            min_interval_ms: Minimum interval between requests in milliseconds (default: 400)
+            max_retries: Maximum number of retry attempts (default: 3)
+            backoff_base_ms: Base backoff time in milliseconds (default: 500)
+            backoff_max_ms: Maximum backoff time in milliseconds (default: 5000)
         """
         self.api_key = api_key
         self.base_url = base_url.rstrip('/')
         self.timeout = timeout
         
+        # Rate limiting configuration
+        self.min_interval_ms = min_interval_ms
+        self.min_interval = min_interval_ms / 1000.0  # Convert to seconds
+        self.max_retries = max_retries
+        self.backoff_base_ms = backoff_base_ms
+        self.backoff_max_ms = backoff_max_ms
+        
+        # Throttling state (using monotonic time to avoid clock adjustments)
+        # Created lazily in _ensure_started() to avoid event loop issues
+        self._throttle_lock: Optional[asyncio.Lock] = None
+        self._next_allowed_time = 0.0  # Monotonic time
+        
         # Rate limiting: simple semaphore (max 8 concurrent requests)
         # Created lazily in _ensure_started() to avoid event loop issues
         self._semaphore: Optional[asyncio.Semaphore] = None
-        
-        # Last request time for rate limiting (min 0.1s between requests)
-        self.last_request_time = 0.0
-        self.min_request_interval = 0.1
         
         # HTTP client (reused for connection pooling)
         # Created lazily in _ensure_started() to avoid event loop issues
@@ -41,9 +71,13 @@ class TwelveDataClient:
         self._closed = False
     
     async def _ensure_started(self):
-        """Ensure client and semaphore are initialized (must be called from running event loop)"""
+        """Ensure client, semaphore, and lock are initialized (must be called from running event loop)"""
         if self._closed:
             raise RuntimeError("TwelveDataClient is closed")
+        
+        # Create throttle lock if not exists (must be in running loop)
+        if self._throttle_lock is None:
+            self._throttle_lock = asyncio.Lock()
         
         # Create semaphore if not exists (must be in running loop)
         if self._semaphore is None:
@@ -77,6 +111,7 @@ class TwelveDataClient:
                 self._client = None
         
         self._semaphore = None
+        self._throttle_lock = None
     
     def _safe_preview(self, value: str, length: int = 6) -> str:
         """Create safe preview of sensitive value"""
@@ -86,26 +121,106 @@ class TwelveDataClient:
             return value[:length] + "..."
         return value[:length] + "..."
     
-    async def _rate_limit(self):
-        """Simple rate limiting: ensure minimum interval between requests"""
-        current_time = time.time()
-        elapsed = current_time - self.last_request_time
-        if elapsed < self.min_request_interval:
-            await asyncio.sleep(self.min_request_interval - elapsed)
-        self.last_request_time = time.time()
-    
-    async def _make_request(self, endpoint: str, params: Dict[str, Any], max_retries: int = 3) -> Optional[Dict]:
+    async def _throttle(self):
         """
-        Make HTTP request with retry logic
+        Throttle requests to respect minimum interval between requests
+        Uses monotonic time and asyncio.Lock for thread-safe throttling
+        """
+        await self._ensure_started()
+        
+        async with self._throttle_lock:
+            now = time.monotonic()
+            
+            # Calculate how long to wait
+            wait_time = self._next_allowed_time - now
+            
+            if wait_time > 0:
+                wait_ms = int(wait_time * 1000)
+                print(f"[TWELVE_DATA] [THROTTLE] Waiting {wait_ms}ms before next request (min_interval={self.min_interval_ms}ms)")
+                await asyncio.sleep(wait_time)
+            
+            # Update next allowed time
+            self._next_allowed_time = time.monotonic() + self.min_interval
+    
+    def _calculate_backoff(self, attempt: int) -> float:
+        """
+        Calculate backoff time with exponential backoff and jitter
+        
+        Args:
+            attempt: Current attempt number (0-based)
+        
+        Returns:
+            Backoff time in seconds
+        """
+        # Exponential backoff: base * 2^attempt
+        backoff_ms = min(self.backoff_base_ms * (2 ** attempt), self.backoff_max_ms)
+        
+        # Add jitter (±20% random variation)
+        jitter_ms = backoff_ms * 0.2 * (random.random() * 2 - 1)  # -20% to +20%
+        total_ms = backoff_ms + jitter_ms
+        
+        return total_ms / 1000.0  # Convert to seconds
+    
+    def _is_rate_limit_error(self, response: httpx.Response) -> bool:
+        """Check if response indicates rate limit"""
+        if response.status_code == 429:
+            return True
+        
+        # Check JSON response for rate limit indicators
+        try:
+            data = response.json()
+            if isinstance(data, dict):
+                message = str(data.get('message', '')).lower()
+                status = str(data.get('status', '')).lower()
+                code = str(data.get('code', '')).lower()
+                
+                rate_limit_indicators = ['rate limit', '429', 'limit', 'too many', 'quota', 'throttle']
+                if any(indicator in message or indicator in status or indicator in code for indicator in rate_limit_indicators):
+                    return True
+        except (json.JSONDecodeError, ValueError, TypeError):
+            pass
+        
+        return False
+    
+    def _is_permanent_error(self, response: httpx.Response) -> bool:
+        """Check if error is permanent (should not retry)"""
+        # 401, 403, 404 are permanent errors
+        if response.status_code in [401, 403, 404]:
+            return True
+        
+        # Check JSON response for permanent error indicators
+        try:
+            data = response.json()
+            if isinstance(data, dict):
+                message = str(data.get('message', '')).lower()
+                code = str(data.get('code', '')).lower()
+                
+                permanent_indicators = [
+                    'invalid api key', 'permission', 'unauthorized', 'forbidden',
+                    'symbol not found', 'invalid symbol', 'not found'
+                ]
+                if any(indicator in message or indicator in code for indicator in permanent_indicators):
+                    return True
+        except (json.JSONDecodeError, ValueError, TypeError):
+            pass
+        
+        return False
+    
+    async def _make_request(self, endpoint: str, params: Dict[str, Any], max_retries: Optional[int] = None) -> Optional[Dict]:
+        """
+        Make HTTP request with throttling, retry logic, and backoff
         
         Args:
             endpoint: API endpoint (e.g., "/price")
             params: Query parameters
-            max_retries: Maximum number of retries (default: 3)
+            max_retries: Maximum number of retries (default: self.max_retries)
         
         Returns:
             JSON response dict or None on failure
         """
+        if max_retries is None:
+            max_retries = self.max_retries
+        
         # Ensure client is initialized (must be in running loop)
         await self._ensure_started()
         
@@ -116,9 +231,11 @@ class TwelveDataClient:
         
         for attempt in range(max_retries):
             try:
-                # Rate limiting
+                # Throttle: ensure minimum interval between requests
+                await self._throttle()
+                
+                # Make request with semaphore (concurrency limit)
                 async with self._semaphore:
-                    await self._rate_limit()
                     response = await client.get(url, params=params)
                     
                     # Check status code
@@ -130,6 +247,24 @@ class TwelveDataClient:
                             if isinstance(data, dict) and data.get('status') == 'error':
                                 error_code = data.get('code', 'UNKNOWN')
                                 error_message = data.get('message', 'No error message')
+                                
+                                # Check if it's a rate limit error in JSON
+                                if self._is_rate_limit_error(response):
+                                    if attempt < max_retries - 1:
+                                        backoff_time = self._calculate_backoff(attempt)
+                                        print(f"[TWELVE_DATA] ⚠️ Rate limit detected (JSON error), waiting {backoff_time:.2f}s before retry {attempt + 1}/{max_retries}")
+                                        await asyncio.sleep(backoff_time)
+                                        continue
+                                    else:
+                                        print(f"[TWELVE_DATA] ❌ Rate limit after {max_retries} attempts: code={error_code}, message={error_message}")
+                                        return None
+                                
+                                # Check if it's a permanent error
+                                if self._is_permanent_error(response):
+                                    print(f"[TWELVE_DATA] ❌ Permanent error (no retry): code={error_code}, message={error_message}")
+                                    return None
+                                
+                                # Other errors: don't retry
                                 print(f"[TWELVE_DATA] ❌ API error: code={error_code}, message={error_message}")
                                 return None
                             
@@ -139,43 +274,56 @@ class TwelveDataClient:
                             print(f"[TWELVE_DATA] Response preview: {response.text[:200]}")
                             return None
                     
-                    elif response.status_code == 429:
-                        # Rate limit - wait and retry
-                        wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
-                        print(f"[TWELVE_DATA] ⚠️ Rate limit (429), waiting {wait_time}s before retry {attempt + 1}/{max_retries}")
-                        await asyncio.sleep(wait_time)
-                        continue
+                    elif self._is_rate_limit_error(response):
+                        # Rate limit - wait and retry with backoff
+                        if attempt < max_retries - 1:
+                            backoff_time = self._calculate_backoff(attempt)
+                            print(f"[TWELVE_DATA] ⚠️ Rate limit (429), waiting {backoff_time:.2f}s before retry {attempt + 1}/{max_retries}")
+                            await asyncio.sleep(backoff_time)
+                            continue
+                        else:
+                            print(f"[TWELVE_DATA] ❌ Rate limit after {max_retries} attempts")
+                            return None
                     
                     elif 500 <= response.status_code < 600:
                         # Server error - retry with backoff
-                        wait_time = 2 ** attempt
-                        print(f"[TWELVE_DATA] ⚠️ Server error {response.status_code}, waiting {wait_time}s before retry {attempt + 1}/{max_retries}")
-                        await asyncio.sleep(wait_time)
-                        continue
+                        if attempt < max_retries - 1:
+                            backoff_time = self._calculate_backoff(attempt)
+                            print(f"[TWELVE_DATA] ⚠️ Server error {response.status_code}, waiting {backoff_time:.2f}s before retry {attempt + 1}/{max_retries}")
+                            await asyncio.sleep(backoff_time)
+                            continue
+                        else:
+                            print(f"[TWELVE_DATA] ❌ Server error {response.status_code} after {max_retries} attempts")
+                            return None
+                    
+                    elif self._is_permanent_error(response):
+                        # Permanent error - don't retry
+                        print(f"[TWELVE_DATA] ❌ Permanent error {response.status_code}: {response.text[:200]}")
+                        return None
                     
                     else:
-                        # Client error (4xx) - don't retry
+                        # Other client error (4xx) - don't retry
                         print(f"[TWELVE_DATA] ❌ HTTP {response.status_code}: {response.text[:200]}")
                         return None
                         
             except httpx.TimeoutException:
-                wait_time = 2 ** attempt
-                print(f"[TWELVE_DATA] ⚠️ Timeout, waiting {wait_time}s before retry {attempt + 1}/{max_retries}")
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(wait_time)
+                    backoff_time = self._calculate_backoff(attempt)
+                    print(f"[TWELVE_DATA] ⚠️ Timeout, waiting {backoff_time:.2f}s before retry {attempt + 1}/{max_retries}")
+                    await asyncio.sleep(backoff_time)
                     continue
                 else:
                     print(f"[TWELVE_DATA] ❌ Timeout after {max_retries} attempts")
                     return None
                     
-            except httpx.RequestError as e:
-                wait_time = 2 ** attempt
-                print(f"[TWELVE_DATA] ⚠️ Request error: {type(e).__name__}: {e}, waiting {wait_time}s before retry {attempt + 1}/{max_retries}")
+            except (httpx.RequestError, httpx.TransportError) as e:
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(wait_time)
+                    backoff_time = self._calculate_backoff(attempt)
+                    print(f"[TWELVE_DATA] ⚠️ Network error {type(e).__name__}: {e}, waiting {backoff_time:.2f}s before retry {attempt + 1}/{max_retries}")
+                    await asyncio.sleep(backoff_time)
                     continue
                 else:
-                    print(f"[TWELVE_DATA] ❌ Request failed after {max_retries} attempts: {type(e).__name__}: {e}")
+                    print(f"[TWELVE_DATA] ❌ Network error after {max_retries} attempts: {type(e).__name__}: {e}")
                     return None
                     
             except Exception as e:
