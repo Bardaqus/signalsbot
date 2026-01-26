@@ -307,11 +307,13 @@ MAX_DEGRAM_INDEX_SIGNALS = 5
 # Time constraints (in seconds)
 MIN_TIME_BETWEEN_SIGNALS = 5 * 60  # 5 minutes between any signals
 MIN_TIME_BETWEEN_CHANNEL_SIGNALS = 30 * 60  # 30 minutes between signals in same channel
+MIN_TIME_BETWEEN_PAIR_DIRECTION_SIGNALS = 24 * 60 * 60  # 24 hours between same pair+direction in same channel
 
 # Files for tracking signal times
 LAST_SIGNAL_TIME_FILE = "last_signal_time.json"  # Global last signal time
 CHANNEL_LAST_SIGNAL_FILE = "channel_last_signal_time.json"  # Last signal time per channel
 CHANNEL_PAIR_LAST_SIGNAL_FILE = "channel_pair_last_signal_time.json"  # Last signal time per pair per channel
+CHANNEL_PAIR_DIRECTION_LAST_SIGNAL_FILE = "channel_pair_direction_last_signal_time.json"  # Last signal time per pair+direction per channel
 
 
 def format_price(pair: str, price: float) -> str:
@@ -688,6 +690,95 @@ def save_channel_last_signal_time(channel_id: str) -> None:
             json.dump(channel_times, f)
     except Exception as e:
         print(f"[SAVE_STATE] ⚠️ Error saving channel_last_signal_time: {e}")
+
+
+def load_channel_pair_direction_last_signal_times() -> Dict:
+    """Load last signal times per channel+pair+direction from file with normalization
+    
+    Structure: {channel_id: {pair: {direction: timestamp}}}
+    """
+    try:
+        if os.path.exists(CHANNEL_PAIR_DIRECTION_LAST_SIGNAL_FILE):
+            with open(CHANNEL_PAIR_DIRECTION_LAST_SIGNAL_FILE, 'r') as f:
+                data = json.load(f)
+                
+                # Normalize all timestamps
+                needs_migration = False
+                for channel_id, pairs_dict in data.items():
+                    if not isinstance(pairs_dict, dict):
+                        continue
+                    for pair, directions_dict in pairs_dict.items():
+                        if not isinstance(directions_dict, dict):
+                            continue
+                        for direction, raw_value in directions_dict.items():
+                            if raw_value is not None:
+                                normalized = normalize_timestamp(raw_value, f"channel_pair_direction[{channel_id}][{pair}][{direction}]")
+                                if normalized != raw_value:
+                                    directions_dict[direction] = normalized
+                                    needs_migration = True
+                
+                # Auto-migrate if needed
+                if needs_migration:
+                    try:
+                        with open(CHANNEL_PAIR_DIRECTION_LAST_SIGNAL_FILE, 'w') as wf:
+                            json.dump(data, wf)
+                        print(f"[LOAD_STATE] ✅ Auto-migrated channel_pair_direction_last_signal_times to float format")
+                    except Exception as e:
+                        print(f"[LOAD_STATE] ⚠️ Failed to auto-migrate: {e}")
+                
+                return data
+    except Exception as e:
+        print(f"[LOAD_STATE] ⚠️ Error loading channel_pair_direction_last_signal_times: {e}")
+    return {}
+
+
+def save_channel_pair_direction_last_signal_time(channel_id: str, pair: str, direction: str) -> None:
+    """Save current time as last signal time for channel+pair+direction (always as float)"""
+    try:
+        current_time = float(time.time())
+        data = load_channel_pair_direction_last_signal_times()
+        
+        if channel_id not in data:
+            data[channel_id] = {}
+        if pair not in data[channel_id]:
+            data[channel_id][pair] = {}
+        
+        data[channel_id][pair][direction] = current_time
+        
+        with open(CHANNEL_PAIR_DIRECTION_LAST_SIGNAL_FILE, 'w') as f:
+            json.dump(data, f)
+    except Exception as e:
+        print(f"[SAVE_STATE] ⚠️ Error saving channel_pair_direction_last_signal_time: {e}")
+
+
+def can_send_pair_direction_signal(channel_id: str, pair: str, direction: str) -> Tuple[bool, Optional[str]]:
+    """Check if we can send a signal for this pair+direction in this channel (24 hour rule)
+    
+    Args:
+        channel_id: Channel ID
+        pair: Trading pair (e.g., "EURUSD", "XAUUSD")
+        direction: Signal direction ("BUY" or "SELL")
+    
+    Returns:
+        Tuple of (can_send: bool, reason: Optional[str])
+    """
+    current_time = time.time()
+    
+    # Load last signal times for this channel+pair+direction
+    data = load_channel_pair_direction_last_signal_times()
+    
+    channel_data = data.get(channel_id, {})
+    pair_data = channel_data.get(pair, {})
+    last_time_raw = pair_data.get(direction, 0)
+    last_time = normalize_timestamp(last_time_raw, f"channel_pair_direction[{channel_id}][{pair}][{direction}]")
+    
+    if last_time > 0:
+        time_since_last = current_time - last_time
+        if time_since_last < MIN_TIME_BETWEEN_PAIR_DIRECTION_SIGNALS:
+            remaining_hours = (MIN_TIME_BETWEEN_PAIR_DIRECTION_SIGNALS - time_since_last) / 3600
+            return False, f"Pair {pair} {direction} already sent to this channel {remaining_hours:.1f}h ago (24h rule)"
+    
+    return True, None
 
 
 def can_send_signal(channel_id: str) -> Tuple[bool, Optional[str]]:
@@ -1497,12 +1588,29 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str]) -> None
                     print(f"  Failed to get price for {sym}: {e}")
                     continue
                 
-                # Generate signal direction
+                # Generate signal direction - check 24h rule first
                 import random
-                signal_type = random.choice(["BUY", "SELL"])
+                clean_sym = sym.replace(".FOREX", "")
+                
+                # Try both directions, checking 24h rule
+                directions = ["BUY", "SELL"]
+                random.shuffle(directions)  # Randomize order
+                
+                signal_type = None
+                for direction in directions:
+                    can_send_pair_dir, reason_pair_dir = can_send_pair_direction_signal(channel_id, clean_sym, direction)
+                    if can_send_pair_dir:
+                        signal_type = direction
+                        break
+                    else:
+                        print(f"  ⏸️ {channel_name}: {reason_pair_dir}")
+                
+                # If both directions are blocked, skip this pair
+                if signal_type is None:
+                    print(f"  ⏸️ {channel_name}: Cannot send {clean_sym} (both BUY and SELL blocked by 24h rule)")
+                    continue
                 
                 # Calculate TP/SL
-                clean_sym = sym.replace(".FOREX", "")
                 
                 # Check if it's an index (BRENT, USOIL) or gold
                 is_index = clean_sym in ["BRENT", "USOIL"]
@@ -1589,6 +1697,7 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str]) -> None
                     # Update time constraints only after successful send
                     save_last_signal_time()
                     save_channel_last_signal_time(channel_id)
+                    save_channel_pair_direction_last_signal_time(channel_id, clean_sym, signal_type)
                 
                 signals_generated += 1
                 print(f"✅ {channel_name}: Generated signal {signals_generated}/{signals_needed}: {sym} {signal_type}")
@@ -1620,6 +1729,7 @@ def migrate_state_files() -> None:
         (LAST_SIGNAL_TIME_FILE, "last_signal_time"),
         (CHANNEL_LAST_SIGNAL_FILE, None),  # None means it's a dict with channel_id keys
         (CHANNEL_PAIR_LAST_SIGNAL_FILE, None),  # Dict with nested structure
+        (CHANNEL_PAIR_DIRECTION_LAST_SIGNAL_FILE, None),  # Dict with nested structure: {channel_id: {pair: {direction: timestamp}}}
     ]
     
     for file_path, timestamp_key in files_to_migrate:
