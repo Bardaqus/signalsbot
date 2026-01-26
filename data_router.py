@@ -1,6 +1,6 @@
 """
 Unified Data Router - Strict source policy enforcement
-FOREX -> cTrader only
+FOREX -> Twelve Data only
 CRYPTO -> Binance only  
 GOLD/INDEXES -> Yahoo Finance only
 """
@@ -64,7 +64,7 @@ def get_price(symbol: str, asset_class: Optional[AssetClass] = None) -> Tuple[Op
     
     Returns:
         Tuple of (price: float or None, reason: str or None, source: str)
-        source will be "CTRADER", "BINANCE", or "YAHOO"
+        source will be "TWELVE_DATA", "BINANCE", or "YAHOO"
     
     Raises:
         ForbiddenDataSourceError: If attempting to use forbidden source
@@ -92,41 +92,67 @@ def get_price(symbol: str, asset_class: Optional[AssetClass] = None) -> Tuple[Op
     start_time = time.time()
     
     if asset_class == AssetClass.FOREX:
-        # FOREX: cTrader only
+        # FOREX: Twelve Data only
         try:
-            # Check if cTrader is ready (try bot.py first, then working_combined_bot.py)
-            ctrader_ready = False
-            ctrader_client = None
+            # Import Twelve Data client (lazy import to avoid circular dependencies)
+            from twelve_data_client import TwelveDataClient
+            import asyncio
             
+            # Get Twelve Data client instance (singleton pattern via module-level variable)
+            # Check if client already exists in bot.py or create new one
+            twelve_data_client = None
             try:
-                from bot import CTRADER_READY, _ctrader_client
-                ctrader_ready = CTRADER_READY
-                ctrader_client = _ctrader_client
-            except ImportError:
-                # Fallback: try working_combined_bot
-                try:
-                    from working_combined_bot import _ctrader_async_client
-                    ctrader_client = _ctrader_async_client
-                    ctrader_ready = ctrader_client is not None and ctrader_client.connected
-                except ImportError:
-                    pass
+                from bot import _twelve_data_client
+                twelve_data_client = _twelve_data_client
+            except (ImportError, AttributeError):
+                # Create new client instance
+                from config_hardcoded import get_hardcoded_config
+                config = get_hardcoded_config()
+                twelve_data_client = TwelveDataClient(
+                    api_key=config.twelve_data_api_key,
+                    base_url=config.twelve_data_base_url,
+                    timeout=config.twelve_data_timeout
+                )
             
-            if not ctrader_ready or ctrader_client is None:
+            if not twelve_data_client:
                 latency_ms = int((time.time() - start_time) * 1000)
-                print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=CTRADER, price=None, reason=ctrader_not_ready, latency={latency_ms}ms")
-                return None, "ctrader_not_ready", "CTRADER"
+                print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, price=None, reason=twelve_data_client_not_initialized, latency={latency_ms}ms")
+                return None, "twelve_data_client_not_initialized", "TWELVE_DATA"
             
-            # Get price from cTrader
-            from working_combined_bot import get_forex_price_ctrader
-            price, reason = get_forex_price_ctrader(symbol)
+            # Get price from Twelve Data (async call)
+            def _run_async(coro):
+                """Run async function in new event loop"""
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        # Loop is running - use thread executor
+                        import concurrent.futures
+                        with concurrent.futures.ThreadPoolExecutor() as executor:
+                            future = executor.submit(asyncio.run, coro)
+                            return future.result(timeout=15)
+                    else:
+                        return asyncio.run(coro)
+                except RuntimeError:
+                    # No event loop - create new one
+                    return asyncio.run(coro)
+            
+            price = _run_async(twelve_data_client.get_price(symbol))
             latency_ms = int((time.time() - start_time) * 1000)
-            if price:
-                print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=CTRADER, price={price:.5f}, latency={latency_ms}ms")
+            
+            if price is not None:
+                print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, price={price:.5f}, latency={latency_ms}ms")
+                return price, None, "TWELVE_DATA"
             else:
-                print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=CTRADER, price=None, reason={reason}, latency={latency_ms}ms")
-            return price, reason, "CTRADER"
-        except ImportError:
-            raise ForbiddenDataSourceError(f"FOREX symbol {symbol} must use cTrader, but cTrader client not available")
+                print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, price=None, reason=twelve_data_unavailable, latency={latency_ms}ms")
+                return None, "twelve_data_unavailable", "TWELVE_DATA"
+        except ImportError as e:
+            latency_ms = int((time.time() - start_time) * 1000)
+            print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, ERROR: ImportError: {e}, latency={latency_ms}ms")
+            return None, f"twelve_data_import_error: {e}", "TWELVE_DATA"
+        except Exception as e:
+            latency_ms = int((time.time() - start_time) * 1000)
+            print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, ERROR: {type(e).__name__}: {e}, latency={latency_ms}ms")
+            return None, f"twelve_data_error: {type(e).__name__}", "TWELVE_DATA"
     
     elif asset_class == AssetClass.CRYPTO:
         # CRYPTO: Binance only
@@ -278,9 +304,65 @@ def get_candles(symbol: str, timeframe: str = "1m", limit: int = 120, asset_clas
         asset_class = _detect_asset_class(symbol)
     
     if asset_class == AssetClass.FOREX:
-        # FOREX: cTrader only (candles not implemented yet, return None)
-        print(f"[DATA_ROUTER] {symbol}: CANDLES requested from CTRADER (not implemented yet)")
-        return None, "candles_not_implemented", "CTRADER"
+        # FOREX: Twelve Data candles
+        try:
+            from twelve_data_client import TwelveDataClient
+            import asyncio
+            
+            # Get Twelve Data client instance
+            twelve_data_client = None
+            try:
+                from bot import _twelve_data_client
+                twelve_data_client = _twelve_data_client
+            except (ImportError, AttributeError):
+                from config_hardcoded import get_hardcoded_config
+                config = get_hardcoded_config()
+                twelve_data_client = TwelveDataClient(
+                    api_key=config.twelve_data_api_key,
+                    base_url=config.twelve_data_base_url,
+                    timeout=config.twelve_data_timeout
+                )
+            
+            if not twelve_data_client:
+                return None, "twelve_data_client_not_initialized", "TWELVE_DATA"
+            
+            # Map timeframe to Twelve Data interval
+            interval_map = {
+                '1m': '1min',
+                '5m': '5min',
+                '15m': '15min',
+                '30m': '30min',
+                '1h': '1h',
+                '4h': '4h',
+                '1d': '1day',
+                '1day': '1day',
+            }
+            interval = interval_map.get(timeframe, '1h')
+            
+            # Run async call
+            def _run_async(coro):
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        import concurrent.futures
+                        with concurrent.futures.ThreadPoolExecutor() as executor:
+                            future = executor.submit(asyncio.run, coro)
+                            return future.result(timeout=30)
+                    else:
+                        return asyncio.run(coro)
+                except RuntimeError:
+                    return asyncio.run(coro)
+            
+            candles = _run_async(twelve_data_client.get_time_series(symbol, interval=interval, outputsize=limit))
+            
+            if candles:
+                print(f"[DATA_ROUTER] {symbol}: CANDLES from TWELVE_DATA: {len(candles)} candles, interval={interval}")
+                return candles, None, "TWELVE_DATA"
+            else:
+                return None, "twelve_data_candles_unavailable", "TWELVE_DATA"
+        except Exception as e:
+            print(f"[DATA_ROUTER] {symbol}: CANDLES from TWELVE_DATA, ERROR: {type(e).__name__}: {e}")
+            return None, f"twelve_data_candles_error: {type(e).__name__}", "TWELVE_DATA"
     
     elif asset_class == AssetClass.CRYPTO:
         # CRYPTO: Binance only (candles not implemented yet)
