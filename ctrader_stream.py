@@ -126,6 +126,9 @@ if _missing_classes:
 # This constant is kept for backward compatibility but should not be used
 _DEPRECATED_LIVE_WS = "wss://openapi.ctrader.com:5035"
 
+# Connection timeout (hardcoded, not from .env)
+CONNECT_TIMEOUT_SEC = 30.0  # 30 seconds timeout for WebSocket connection
+
 
 # Custom exceptions with reason codes
 class CTraderStreamerError(Exception):
@@ -397,28 +400,88 @@ class CTraderStreamer:
         # WebSocket event callbacks with detailed logging
         def on_connected():
             """Callback when WebSocket connection is established (OPEN event)"""
-            logger.info("[GOLD_CTRADER] [WS_EVENT] WebSocket OPEN - connection established")
+            logger.info("[GOLD_CTRADER] [WS_EVENT] ✅ WebSocket OPEN - connection established")
             logger.info(f"[GOLD_CTRADER] [WS_EVENT] Transport: {protocol}://{host}:{port}")
+            logger.info(f"[GOLD_CTRADER] [WS_EVENT] Connection established (final)")
             self.is_connected = True
             connection_established.set()
         
         def on_disconnected():
             """Callback when WebSocket is disconnected"""
-            logger.warning("[GOLD_CTRADER] [WS_EVENT] WebSocket CLOSED - disconnected")
+            logger.warning("[GOLD_CTRADER] [WS_EVENT] ❌ WebSocket CLOSED - disconnected")
             self.is_connected = False
             connection_established.clear()
+        
+        def on_tcp_connected():
+            """Callback when TCP connection is established (if available)"""
+            logger.info("[GOLD_CTRADER] [WS_EVENT] ✅ TCP connected")
+        
+        def on_tls_started():
+            """Callback when TLS handshake starts (if available)"""
+            logger.info("[GOLD_CTRADER] [WS_EVENT] 🔐 TLS handshake started")
+        
+        def on_tls_completed():
+            """Callback when TLS handshake completes (if available)"""
+            logger.info("[GOLD_CTRADER] [WS_EVENT] ✅ TLS handshake success")
+        
+        def on_tls_failed(error):
+            """Callback when TLS handshake fails (if available)"""
+            logger.error(f"[GOLD_CTRADER] [WS_EVENT] ❌ TLS handshake failed: {repr(error)}")
+            import traceback
+            logger.error(f"[GOLD_CTRADER] [WS_EVENT] TLS error stack:\n{traceback.format_exc()}")
+        
+        def on_ws_handshake_started():
+            """Callback when WebSocket handshake starts (if available)"""
+            logger.info("[GOLD_CTRADER] [WS_EVENT] 🔄 WebSocket handshake started")
+        
+        def on_ws_handshake_completed():
+            """Callback when WebSocket handshake completes (if available)"""
+            logger.info("[GOLD_CTRADER] [WS_EVENT] ✅ WebSocket handshake success")
+        
+        def on_ws_handshake_failed(error):
+            """Callback when WebSocket handshake fails (if available)"""
+            logger.error(f"[GOLD_CTRADER] [WS_EVENT] ❌ WebSocket handshake failed: {repr(error)}")
+            import traceback
+            logger.error(f"[GOLD_CTRADER] [WS_EVENT] WebSocket handshake error stack:\n{traceback.format_exc()}")
         
         # Set callbacks
         self.client.setConnectedCallback(on_connected)
         self.client.setDisconnectedCallback(on_disconnected)
         
+        # Try to set additional callbacks if available (may not be supported by all client versions)
+        try:
+            if hasattr(self.client, 'setTcpConnectedCallback'):
+                self.client.setTcpConnectedCallback(on_tcp_connected)
+            if hasattr(self.client, 'setTlsStartedCallback'):
+                self.client.setTlsStartedCallback(on_tls_started)
+            if hasattr(self.client, 'setTlsCompletedCallback'):
+                self.client.setTlsCompletedCallback(on_tls_completed)
+            if hasattr(self.client, 'setTlsFailedCallback'):
+                self.client.setTlsFailedCallback(on_tls_failed)
+            if hasattr(self.client, 'setWsHandshakeStartedCallback'):
+                self.client.setWsHandshakeStartedCallback(on_ws_handshake_started)
+            if hasattr(self.client, 'setWsHandshakeCompletedCallback'):
+                self.client.setWsHandshakeCompletedCallback(on_ws_handshake_completed)
+            if hasattr(self.client, 'setWsHandshakeFailedCallback'):
+                self.client.setWsHandshakeFailedCallback(on_ws_handshake_failed)
+        except Exception as callback_error:
+            logger.debug(f"[GOLD_CTRADER] Some callbacks not available: {callback_error}")
+        
         # Log WebSocket handshake start
-        logger.info(f"[GOLD_CTRADER] [WS_EVENT] WebSocket handshake starting...")
+        logger.info(f"[GOLD_CTRADER] [WS_EVENT] 🔄 Start connect")
         logger.info(f"[GOLD_CTRADER] [WS_EVENT] Protocol: {protocol}, Host: {host}, Port: {port}")
+        logger.info(f"[GOLD_CTRADER] [WS_EVENT] WebSocket handshake starting...")
         
         # Start the service
-        logger.info("[GOLD_CTRADER] Starting Twisted service...")
-        self.client.startService()
+        logger.info("[GOLD_CTRADER] [WS_EVENT] Starting Twisted service...")
+        try:
+            self.client.startService()
+            logger.info("[GOLD_CTRADER] [WS_EVENT] Twisted service started")
+        except Exception as start_error:
+            logger.error(f"[GOLD_CTRADER] [WS_EVENT] ❌ Failed to start Twisted service: {repr(start_error)}")
+            import traceback
+            logger.error(f"[GOLD_CTRADER] [WS_EVENT] Start service error stack:\n{traceback.format_exc()}")
+            raise CTraderStreamerError("WS_START_SERVICE_FAILED", f"Failed to start Twisted service: {start_error}")
         
         # TCP precheck before WebSocket connection
         import socket
@@ -448,11 +511,12 @@ class CTraderStreamer:
         
         logger.info(f"[GOLD_CTRADER] [WS_EVENT] TLS handshake will start after WebSocket connection...")
         
-        # Get connection timeout from config
-        from config import Config
-        connection_timeout = float(Config.CTRADER_WS_CONNECT_TIMEOUT)
-        reconnect_attempts = Config.CTRADER_WS_RETRY_COUNT
+        # Use hardcoded timeout (not from .env)
+        connection_timeout = CONNECT_TIMEOUT_SEC
+        reconnect_attempts = 3  # Hardcoded retry count
         last_error = None
+        
+        logger.info(f"[GOLD_CTRADER] [WS_EVENT] Connection timeout: {connection_timeout}s, Max attempts: {reconnect_attempts}")
         
         # Backoff delays: 2s, 5s
         backoff_delays = [2, 5]
@@ -506,7 +570,47 @@ class CTraderStreamer:
                     )
             except Exception as e:
                 last_error = str(e)
-                logger.error(f"[GOLD_CTRADER] Connection attempt {attempt} error: {type(e).__name__}: {last_error}")
+                error_type = type(e).__name__
+                
+                # Detailed error logging
+                logger.error(f"[GOLD_CTRADER] [WS_EVENT] ❌ Connection attempt {attempt} error: {error_type}: {last_error}")
+                
+                # Extract error details
+                error_details = {
+                    "exception_type": error_type,
+                    "exception_repr": repr(e),
+                    "error_message": str(e),
+                }
+                
+                # Try to extract socket/network error details
+                if hasattr(e, 'errno'):
+                    error_details["errno"] = e.errno
+                if hasattr(e, 'strerror'):
+                    error_details["strerror"] = e.strerror
+                
+                # Try to extract SSL error details
+                import ssl
+                if isinstance(e, ssl.SSLError):
+                    error_details["ssl_reason"] = str(e.reason) if hasattr(e, 'reason') else None
+                    error_details["ssl_library"] = str(e.library) if hasattr(e, 'library') else None
+                    logger.error(f"[GOLD_CTRADER] [WS_EVENT] SSL Error details: reason={error_details.get('ssl_reason')}, library={error_details.get('ssl_library')}")
+                
+                # Log peer information if available
+                try:
+                    if hasattr(self.client, 'transport') and self.client.transport:
+                        peer = self.client.transport.getPeer()
+                        if peer:
+                            error_details["peer_host"] = peer.host if hasattr(peer, 'host') else None
+                            error_details["peer_port"] = peer.port if hasattr(peer, 'port') else None
+                            logger.error(f"[GOLD_CTRADER] [WS_EVENT] Peer: {error_details.get('peer_host')}:{error_details.get('peer_port')}")
+                except:
+                    pass
+                
+                # Log full error details
+                logger.error(f"[GOLD_CTRADER] [WS_EVENT] Error details: {error_details}")
+                import traceback
+                logger.error(f"[GOLD_CTRADER] [WS_EVENT] Full stacktrace:\n{traceback.format_exc()}")
+                
                 if attempt < reconnect_attempts:
                     logger.info(f"[GOLD_CTRADER] Retrying connection in 2 seconds...")
                     await asyncio.sleep(2)
@@ -517,7 +621,10 @@ class CTraderStreamer:
                         pass
                     self.client.startService()
                 else:
-                    raise CTraderStreamerError("WS_CONNECTION_ERROR", f"Connection failed: {type(e).__name__}: {last_error}")
+                    error_msg = f"Connection failed after {reconnect_attempts} attempts: {error_type}: {last_error}"
+                    if error_details.get("ssl_reason"):
+                        error_msg += f" (SSL: {error_details['ssl_reason']})"
+                    raise CTraderStreamerError("WS_CONNECTION_ERROR", error_msg)
         
         if not self.is_connected:
             raise CTraderStreamerError("WS_NOT_CONNECTED", "Connection callback fired but is_connected=False")
