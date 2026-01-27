@@ -326,8 +326,8 @@ MAX_DEGRAM_INDEX_SIGNALS = 5
 
 # Time constraints (in seconds)
 MIN_TIME_BETWEEN_SIGNALS = 5 * 60  # 5 minutes between any signals
-MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MIN = 50 * 60  # 50 minutes minimum between signals in same channel
-MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MAX = 80 * 60  # 80 minutes maximum between signals in same channel
+MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MIN = 70 * 60  # 70 minutes minimum between signals in same channel
+MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MAX = 100 * 60  # 100 minutes maximum between signals in same channel
 MIN_TIME_BETWEEN_PAIR_DIRECTION_SIGNALS = 24 * 60 * 60  # 24 hours between same pair+direction in same channel
 
 # Files for tracking signal times
