@@ -326,7 +326,8 @@ MAX_DEGRAM_INDEX_SIGNALS = 5
 
 # Time constraints (in seconds)
 MIN_TIME_BETWEEN_SIGNALS = 5 * 60  # 5 minutes between any signals
-MIN_TIME_BETWEEN_CHANNEL_SIGNALS = 30 * 60  # 30 minutes between signals in same channel
+MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MIN = 50 * 60  # 50 minutes minimum between signals in same channel
+MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MAX = 80 * 60  # 80 minutes maximum between signals in same channel
 MIN_TIME_BETWEEN_PAIR_DIRECTION_SIGNALS = 24 * 60 * 60  # 24 hours between same pair+direction in same channel
 
 # Files for tracking signal times
@@ -669,28 +670,56 @@ def save_last_signal_time() -> None:
 
 
 def load_channel_last_signal_times() -> Dict:
-    """Load last signal times per channel from file with normalization"""
+    """Load last signal times and wait times per channel from file with normalization
+    
+    Returns:
+        Dict with structure: {channel_id: {"last_time": float, "wait_time": float}}
+        Or legacy format: {channel_id: float} (for backward compatibility)
+    """
     try:
         if os.path.exists(CHANNEL_LAST_SIGNAL_FILE):
             with open(CHANNEL_LAST_SIGNAL_FILE, 'r') as f:
                 data = json.load(f)
                 
-                # Normalize all channel timestamps
+                # Normalize all channel timestamps and migrate to new format if needed
                 needs_migration = False
                 for channel_id, raw_value in data.items():
-                    if raw_value is not None:
-                        print(f"[LOAD_STATE] channel_last_signal[{channel_id}]: type={type(raw_value).__name__}, value={raw_value}")
-                        normalized = normalize_timestamp(raw_value, f"channel_last_signal[{channel_id}]")
-                        if normalized != raw_value:
-                            data[channel_id] = normalized
-                            needs_migration = True
+                    if raw_value is None:
+                        continue
+                    
+                    # Check if it's legacy format (just a timestamp) or new format (dict)
+                    if isinstance(raw_value, dict):
+                        # New format: {"last_time": timestamp, "wait_time": wait_seconds}
+                        if "last_time" in raw_value:
+                            normalized_time = normalize_timestamp(raw_value["last_time"], f"channel_last_signal[{channel_id}].last_time")
+                            if normalized_time != raw_value["last_time"]:
+                                data[channel_id]["last_time"] = normalized_time
+                                needs_migration = True
+                        # wait_time should already be a float, but normalize just in case
+                        if "wait_time" in raw_value:
+                            wait_time = raw_value["wait_time"]
+                            if not isinstance(wait_time, (int, float)):
+                                data[channel_id]["wait_time"] = float(wait_time) if wait_time else MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MIN
+                                needs_migration = True
+                    else:
+                        # Legacy format: just a timestamp - migrate to new format
+                        print(f"[LOAD_STATE] Migrating channel_last_signal[{channel_id}] from legacy format")
+                        normalized_time = normalize_timestamp(raw_value, f"channel_last_signal[{channel_id}]")
+                        # Generate random wait time for legacy data
+                        import random
+                        wait_time = random.uniform(MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MIN, MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MAX)
+                        data[channel_id] = {
+                            "last_time": normalized_time,
+                            "wait_time": wait_time
+                        }
+                        needs_migration = True
                 
                 # Auto-migrate if needed
                 if needs_migration:
                     try:
                         with open(CHANNEL_LAST_SIGNAL_FILE, 'w') as wf:
                             json.dump(data, wf)
-                        print(f"[LOAD_STATE] ✅ Auto-migrated channel_last_signal_times to float format")
+                        print(f"[LOAD_STATE] ✅ Auto-migrated channel_last_signal_times to new format with wait_time")
                     except Exception as e:
                         print(f"[LOAD_STATE] ⚠️ Failed to auto-migrate: {e}")
                 
@@ -701,13 +730,27 @@ def load_channel_last_signal_times() -> Dict:
 
 
 def save_channel_last_signal_time(channel_id: str) -> None:
-    """Save current time as last signal time for channel (always as float)"""
+    """Save current time as last signal time for channel with random wait time (50-80 minutes)
+    
+    Saves structure: {channel_id: {"last_time": timestamp, "wait_time": random_wait_seconds}}
+    """
     try:
+        import random
         current_time = float(time.time())
+        # Generate random wait time between 50 and 80 minutes
+        wait_time = random.uniform(MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MIN, MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MAX)
+        
         channel_times = load_channel_last_signal_times()
-        channel_times[channel_id] = current_time
+        channel_times[channel_id] = {
+            "last_time": current_time,
+            "wait_time": wait_time
+        }
+        
         with open(CHANNEL_LAST_SIGNAL_FILE, 'w') as f:
             json.dump(channel_times, f)
+        
+        wait_minutes = int(wait_time / 60)
+        print(f"[SAVE_STATE] ✅ Saved channel_last_signal_time for {channel_id}: wait_time={wait_minutes} minutes")
     except Exception as e:
         print(f"[SAVE_STATE] ⚠️ Error saving channel_last_signal_time: {e}")
 
@@ -802,7 +845,10 @@ def can_send_pair_direction_signal(channel_id: str, pair: str, direction: str) -
 
 
 def can_send_signal(channel_id: str) -> Tuple[bool, Optional[str]]:
-    """Check if we can send a signal (time constraints)"""
+    """Check if we can send a signal (time constraints)
+    
+    Uses random wait time (50-80 minutes) per channel that was saved when last signal was sent.
+    """
     current_time = time.time()
     
     # Check global time constraint (5 minutes)
@@ -814,14 +860,32 @@ def can_send_signal(channel_id: str) -> Tuple[bool, Optional[str]]:
         remaining = MIN_TIME_BETWEEN_SIGNALS - (current_time - last_global_time)
         return False, f"Wait {int(remaining/60)} minutes (global constraint)"
     
-    # Check channel-specific time constraint (30 minutes)
+    # Check channel-specific time constraint (random 50-80 minutes)
     channel_times = load_channel_last_signal_times()
-    last_channel_time_raw = channel_times.get(channel_id, 0)
+    channel_data = channel_times.get(channel_id)
+    
+    if channel_data is None:
+        # No previous signal for this channel - allow sending
+        return True, None
+    
+    # Handle both new format (dict) and legacy format (float)
+    if isinstance(channel_data, dict):
+        # New format: {"last_time": timestamp, "wait_time": wait_seconds}
+        last_channel_time_raw = channel_data.get("last_time", 0)
+        wait_time = channel_data.get("wait_time", MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MIN)
+    else:
+        # Legacy format: just a timestamp - use minimum wait time
+        last_channel_time_raw = channel_data
+        wait_time = MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MIN
+    
     last_channel_time = normalize_timestamp(last_channel_time_raw, f"last_channel_time[{channel_id}]")
     
-    if current_time - last_channel_time < MIN_TIME_BETWEEN_CHANNEL_SIGNALS:
-        remaining = MIN_TIME_BETWEEN_CHANNEL_SIGNALS - (current_time - last_channel_time)
-        return False, f"Wait {int(remaining/60)} minutes (channel constraint)"
+    if last_channel_time > 0:
+        time_since_last = current_time - last_channel_time
+        if time_since_last < wait_time:
+            remaining = wait_time - time_since_last
+            remaining_minutes = int(remaining / 60)
+            return False, f"Wait {remaining_minutes} minutes (channel constraint: {int(wait_time/60)} min interval)"
     
     return True, None
 
