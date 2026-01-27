@@ -966,12 +966,27 @@ def get_available_pairs(all_pairs: List[str], channel_id: Optional[str] = None) 
     return [pair for pair in all_pairs if pair not in active_pairs]
 
 
-def add_signal(symbol: str, signal_type: str, entry: float, sl: float, tp1: float, tp2: float = None, channel_id: str = None) -> None:
-    """Add new signal to tracking with 2 TPs"""
+def add_signal(symbol: str, signal_type: str, entry: float, sl: float, tp1: float, tp2: float = None, tp3: float = None, channel_id: str = None) -> None:
+    """Add new signal to tracking with 2 or 3 TPs"""
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     
-    if tp2 is not None:
-        # Forex signals with 2 TPs
+    if tp3 is not None:
+        # Signals with 3 TPs (Forex, Crypto, Index, Gold)
+        signal = {
+            "symbol": symbol,
+            "type": signal_type,
+            "entry": entry,
+            "sl": sl,
+            "tp1": tp1,
+            "tp2": tp2,
+            "tp3": tp3,
+            "date": today,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "status": "active",  # active, hit_sl, hit_tp1, hit_tp2, hit_tp3
+            "channel_id": channel_id
+        }
+    elif tp2 is not None:
+        # Signals with 2 TPs (backward compatibility)
         signal = {
             "symbol": symbol,
             "type": signal_type,
@@ -985,7 +1000,7 @@ def add_signal(symbol: str, signal_type: str, entry: float, sl: float, tp1: floa
             "channel_id": channel_id
         }
     else:
-        # XAUUSD signals with 1 TP (backward compatibility)
+        # Signals with 1 TP (backward compatibility)
         signal = {
             "symbol": symbol,
             "type": signal_type,
@@ -1133,8 +1148,30 @@ async def check_signal_hits() -> List[Dict]:
             hit_sl = False
             hit_tp = None
             
-            # Check for 2 TPs (forex signals)
-            if "tp1" in signal and "tp2" in signal:
+            # Check for 3 TPs (forex, crypto, index, gold signals)
+            if "tp1" in signal and "tp2" in signal and "tp3" in signal:
+                tp1 = signal["tp1"]
+                tp2 = signal["tp2"]
+                tp3 = signal["tp3"]
+                
+                if signal_type == "BUY":
+                    hit_sl = current_price <= sl
+                    if current_price >= tp3:
+                        hit_tp = "TP3"
+                    elif current_price >= tp2:
+                        hit_tp = "TP2"
+                    elif current_price >= tp1:
+                        hit_tp = "TP1"
+                else:  # SELL
+                    hit_sl = current_price >= sl
+                    if current_price <= tp3:
+                        hit_tp = "TP3"
+                    elif current_price <= tp2:
+                        hit_tp = "TP2"
+                    elif current_price <= tp1:
+                        hit_tp = "TP1"
+            elif "tp1" in signal and "tp2" in signal:
+                # 2 TPs (backward compatibility)
                 tp1 = signal["tp1"]
                 tp2 = signal["tp2"]
                 
@@ -1151,7 +1188,7 @@ async def check_signal_hits() -> List[Dict]:
                     elif current_price <= tp1:
                         hit_tp = "TP1"
             else:
-                # Single TP (XAUUSD signals - backward compatibility)
+                # Single TP (backward compatibility)
                 tp = signal["tp"]
                 
                 if signal_type == "BUY":
@@ -1180,10 +1217,12 @@ async def check_signal_hits() -> List[Dict]:
                 signal_symbol = signal["symbol"]
                 is_crypto_signal = signal_symbol.endswith("USDT") or (not signal_symbol.endswith(".FOREX") and not signal_symbol in ["XAUUSD", "BRENT", "USOIL"])
                 
-                if "tp1" in signal and "tp2" in signal:
+                if "tp1" in signal and "tp2" in signal and "tp3" in signal:
+                    original_signal_msg = build_signal_message(signal["symbol"], signal_type, entry, sl, signal["tp1"], signal["tp2"], tp3=signal["tp3"], is_crypto=is_crypto_signal)
+                elif "tp1" in signal and "tp2" in signal:
                     original_signal_msg = build_signal_message(signal["symbol"], signal_type, entry, sl, signal["tp1"], signal["tp2"], is_crypto=is_crypto_signal)
                 else:
-                    original_signal_msg = build_signal_message(signal["symbol"], signal_type, entry, sl, signal["tp"], is_crypto=is_crypto_signal)
+                    original_signal_msg = build_signal_message(signal["symbol"], signal_type, entry, sl, signal.get("tp", signal["tp1"]), is_crypto=is_crypto_signal)
                 
                 # Calculate R/R ratio
                 if signal_type == "BUY":
@@ -1192,22 +1231,28 @@ async def check_signal_hits() -> List[Dict]:
                         reward_pips = (signal["tp1"] - entry) * multiplier
                     elif hit_tp == "TP2":
                         reward_pips = (signal["tp2"] - entry) * multiplier
-                    else:  # Single TP
-                        reward_pips = (signal["tp"] - entry) * multiplier
+                    elif hit_tp == "TP3":
+                        reward_pips = (signal["tp3"] - entry) * multiplier
+                    else:  # Single TP (backward compatibility)
+                        reward_pips = (signal.get("tp", signal["tp1"]) - entry) * multiplier
                 else:  # SELL
                     risk_pips = (sl - entry) * multiplier
                     if hit_tp == "TP1":
                         reward_pips = (entry - signal["tp1"]) * multiplier
                     elif hit_tp == "TP2":
                         reward_pips = (entry - signal["tp2"]) * multiplier
-                    else:  # Single TP
-                        reward_pips = (entry - signal["tp"]) * multiplier
+                    elif hit_tp == "TP3":
+                        reward_pips = (entry - signal["tp3"]) * multiplier
+                    else:  # Single TP (backward compatibility)
+                        reward_pips = (entry - signal.get("tp", signal["tp1"])) * multiplier
                 
                 rr_ratio = reward_pips / risk_pips if risk_pips > 0 else 0
                 
                 # Create TP hit message
-                if hit_tp == "TP2":
-                    profit_msg = f"#{signal['symbol'].replace('.FOREX', '')}: Both targets 🔥🔥🔥 hit +{profit_pips:.1f} pips total gain!"
+                if hit_tp == "TP3":
+                    profit_msg = f"#{signal['symbol'].replace('.FOREX', '')}: All targets 🔥🔥🔥 hit +{profit_pips:.1f} pips total gain!"
+                elif hit_tp == "TP2":
+                    profit_msg = f"#{signal['symbol'].replace('.FOREX', '')}: TP2 reached 🎯💰 +{profit_pips:.1f} pips (R/R 1:{rr_ratio:.1f})"
                 else:
                     profit_msg = f"#{signal['symbol'].replace('.FOREX', '')}: TP1 reached 🎯💰 +{profit_pips:.1f} pips (R/R 1:{rr_ratio:.1f})"
                 
@@ -1238,7 +1283,7 @@ async def check_signal_hits() -> List[Dict]:
     return profit_messages
 
 
-def build_signal_message(symbol: str, signal_type: str, entry: float, sl: float, tp1: float, tp2: float = None, is_crypto: bool = False) -> str:
+def build_signal_message(symbol: str, signal_type: str, entry: float, sl: float, tp1: float, tp2: float = None, tp3: float = None, is_crypto: bool = False) -> str:
     """Build signal message in the requested format
     
     Args:
@@ -1248,6 +1293,7 @@ def build_signal_message(symbol: str, signal_type: str, entry: float, sl: float,
         sl: Stop loss price
         tp1: Take profit 1 price
         tp2: Take profit 2 price (optional)
+        tp3: Take profit 3 price (optional)
         is_crypto: Whether this is a crypto signal (adds "USE x5 margin" footer)
     """
     # Remove .FOREX suffix for display
@@ -1267,14 +1313,21 @@ def build_signal_message(symbol: str, signal_type: str, entry: float, sl: float,
             return f"{price:.5f}".rstrip('0').rstrip('.')
     
     # Build main message
-    if tp2 is not None:
-        # Signals with 2 TPs (Forex, Crypto, Index)
+    if tp3 is not None:
+        # Signals with 3 TPs (Forex, Crypto, Index, Gold)
+        msg = f"""{display_symbol} {signal_type} {format_simple(entry)}
+SL {format_simple(sl)}
+TP1 {format_simple(tp1)}
+TP2 {format_simple(tp2)}
+TP3 {format_simple(tp3)}"""
+    elif tp2 is not None:
+        # Signals with 2 TPs (backward compatibility)
         msg = f"""{display_symbol} {signal_type} {format_simple(entry)}
 SL {format_simple(sl)}
 TP1 {format_simple(tp1)}
 TP2 {format_simple(tp2)}"""
     else:
-        # XAUUSD signals with 1 TP
+        # Signals with 1 TP (backward compatibility)
         msg = f"""{display_symbol} {signal_type} {format_simple(entry)}
 SL {format_simple(sl)}
 TP1 {format_simple(tp1)}"""
@@ -1785,74 +1838,93 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str]) -> None
                 is_gold = clean_sym == "XAUUSD"
                 is_crypto = asset_type == "CRYPTO" or clean_sym.endswith("USDT")
                 
-                if is_gold and not has_tp2:
-                    # XAUUSD single TP: 3-5% profit target
-                    profit_pct = 0.04
-                    sl_pct = 0.04
-                    
-                    if signal_type == "BUY":
-                        sl = entry * (1 - sl_pct)
-                        tp1 = entry * (1 + profit_pct)
-                        tp2 = None
-                    else:  # SELL
-                        sl = entry * (1 + sl_pct)
-                        tp1 = entry * (1 - profit_pct)
-                        tp2 = None
-                elif is_crypto:
-                    # Crypto pairs: percentage-based with 2 TPs
-                    # SL: 2%, TP1: 2%, TP2: 4%
-                    sl_pct = 0.02  # 2% stop loss
-                    profit_pct1 = 0.02  # 2% for TP1
-                    profit_pct2 = 0.04  # 4% for TP2
-                    
-                    if signal_type == "BUY":
-                        sl = round(entry * (1 - sl_pct), 6)
-                        tp1 = round(entry * (1 + profit_pct1), 6)
-                        tp2 = round(entry * (1 + profit_pct2), 6)
-                    else:  # SELL
-                        sl = round(entry * (1 + sl_pct), 6)
-                        tp1 = round(entry * (1 - profit_pct1), 6)
-                        tp2 = round(entry * (1 - profit_pct2), 6)
-                elif is_index:
-                    # Index pairs (BRENT, USOIL): percentage-based with 2 TPs
-                    profit_pct1 = 0.02  # 2% for TP1
-                    profit_pct2 = 0.04  # 4% for TP2
-                    sl_pct = 0.03  # 3% SL
+                if is_gold:
+                    # Gold (XAUUSD): percentage-based with 3 TPs
+                    # SL: 3%, TP1: 1%, TP2: 3%, TP3: 5% (similar to crypto/index)
+                    sl_pct = 0.03  # 3% stop loss
+                    profit_pct1 = 0.01  # 1% for TP1
+                    profit_pct2 = 0.03  # 3% for TP2
+                    profit_pct3 = 0.05  # 5% for TP3
                     
                     if signal_type == "BUY":
                         sl = entry * (1 - sl_pct)
                         tp1 = entry * (1 + profit_pct1)
                         tp2 = entry * (1 + profit_pct2)
+                        tp3 = entry * (1 + profit_pct3)
                     else:  # SELL
                         sl = entry * (1 + sl_pct)
                         tp1 = entry * (1 - profit_pct1)
                         tp2 = entry * (1 - profit_pct2)
+                        tp3 = entry * (1 - profit_pct3)
+                elif is_crypto:
+                    # Crypto pairs: percentage-based with 3 TPs
+                    # SL: 3%, TP1: 1%, TP2: 3%, TP3: 5%
+                    sl_pct = 0.03  # 3% stop loss
+                    profit_pct1 = 0.01  # 1% for TP1
+                    profit_pct2 = 0.03  # 3% for TP2
+                    profit_pct3 = 0.05  # 5% for TP3
+                    
+                    if signal_type == "BUY":
+                        sl = round(entry * (1 - sl_pct), 6)
+                        tp1 = round(entry * (1 + profit_pct1), 6)
+                        tp2 = round(entry * (1 + profit_pct2), 6)
+                        tp3 = round(entry * (1 + profit_pct3), 6)
+                    else:  # SELL
+                        sl = round(entry * (1 + sl_pct), 6)
+                        tp1 = round(entry * (1 - profit_pct1), 6)
+                        tp2 = round(entry * (1 - profit_pct2), 6)
+                        tp3 = round(entry * (1 - profit_pct3), 6)
+                elif is_index:
+                    # Index pairs (BRENT, USOIL): percentage-based with 3 TPs
+                    # SL: 3%, TP1: 1%, TP2: 3%, TP3: 5% (similar to crypto)
+                    sl_pct = 0.03  # 3% stop loss
+                    profit_pct1 = 0.01  # 1% for TP1
+                    profit_pct2 = 0.03  # 3% for TP2
+                    profit_pct3 = 0.05  # 5% for TP3
+                    
+                    if signal_type == "BUY":
+                        sl = entry * (1 - sl_pct)
+                        tp1 = entry * (1 + profit_pct1)
+                        tp2 = entry * (1 + profit_pct2)
+                        tp3 = entry * (1 + profit_pct3)
+                    else:  # SELL
+                        sl = entry * (1 + sl_pct)
+                        tp1 = entry * (1 - profit_pct1)
+                        tp2 = entry * (1 - profit_pct2)
+                        tp3 = entry * (1 - profit_pct3)
                 else:
-                    # Forex pairs: fixed pip distances with 2 TPs
-                    sl_pips = 192
-                    tp1_pips = 103
-                    tp2_pips = 206
+                    # Forex pairs: fixed pip distances with 3 TPs
+                    # TP1: 20 pips, SL: 50 pips, TP2: 60 pips, TP3: 100 pips
+                    sl_pips = 50
+                    tp1_pips = 20
+                    tp2_pips = 60
+                    tp3_pips = 100
                     
                     if clean_sym.endswith("JPY"):
-                        sl_distance = (sl_pips * 2) / 1000
-                        tp1_distance = (tp1_pips * 2) / 1000
-                        tp2_distance = (tp2_pips * 2) / 1000
+                        sl_distance = sl_pips / 1000  # JPY pairs use 3 decimals
+                        tp1_distance = tp1_pips / 1000
+                        tp2_distance = tp2_pips / 1000
+                        tp3_distance = tp3_pips / 1000
                     else:
-                        sl_distance = sl_pips / 10000
+                        sl_distance = sl_pips / 10000  # Other pairs use 5 decimals
                         tp1_distance = tp1_pips / 10000
                         tp2_distance = tp2_pips / 10000
+                        tp3_distance = tp3_pips / 10000
                     
                     if signal_type == "BUY":
                         sl = entry - sl_distance
                         tp1 = entry + tp1_distance
                         tp2 = entry + tp2_distance
+                        tp3 = entry + tp3_distance
                     else:  # SELL
                         sl = entry + sl_distance
                         tp1 = entry - tp1_distance
                         tp2 = entry - tp2_distance
+                        tp3 = entry - tp3_distance
                 
                 # Build message (pass is_crypto flag for crypto signals)
-                msg = build_signal_message(sym, signal_type, entry, sl, tp1, tp2, is_crypto=is_crypto)
+                # All signals now have 3 TPs (forex, crypto, index, gold)
+                msg = build_signal_message(sym, signal_type, entry, sl, tp1, tp2, tp3=tp3, is_crypto=is_crypto)
                 
                 # Try to send to Telegram (if bot available)
                 send_success = False
@@ -1877,7 +1949,8 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str]) -> None
                 # Only save signal if send was successful (or bot is None for local generation)
                 if send_success:
                     # Save signal BEFORE updating counters to ensure it's counted
-                    add_signal(sym, signal_type, entry, sl, tp1, tp2, channel_id=channel_id)
+                    # All signals now have 3 TPs (forex, crypto, index, gold)
+                    add_signal(sym, signal_type, entry, sl, tp1, tp2, tp3=tp3, channel_id=channel_id)
                     
                     # Verify signal was saved and counted
                     new_count = get_today_channel_signals_count(channel_id)
