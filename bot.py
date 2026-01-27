@@ -1782,6 +1782,7 @@ def migrate_state_files() -> None:
 
 
 async def main_async():
+    """Main async entrypoint - runs forever until interrupted (Ctrl+C)"""
     # Migrate state files first (fix old format if needed)
     migrate_state_files()
     
@@ -1792,12 +1793,82 @@ async def main_async():
         print("⚠️ [MAIN] Twelve Data initialization failed - FOREX signals may be unavailable")
         print("   Bot will continue working, but FOREX pairs may fail")
     
+    # Create Telegram bot once
+    bot = await create_telegram_bot_with_check()
+    if not bot:
+        logger.warning("[MAIN] ❌ Failed to create Telegram bot - continuing without Telegram send")
+        logger.warning("[MAIN] Bot will generate signals but not send them to Telegram")
+    
+    pairs = DEFAULT_PAIRS
+    
+    # Track last execution times for periodic tasks
+    last_tp_check_time = 0.0
+    last_signal_generation_time = 0.0
+    
+    # TP hits check interval: 20 seconds
+    TP_CHECK_INTERVAL = 20.0
+    
+    # Signal generation interval: 60 seconds
+    SIGNAL_GENERATION_INTERVAL = 60.0
+    
+    print("[MAIN] 🤖 Bot started - running forever (Ctrl+C to stop)")
+    print(f"[MAIN] TP check interval: {TP_CHECK_INTERVAL}s")
+    print(f"[MAIN] Signal generation interval: {SIGNAL_GENERATION_INTERVAL}s")
+    
     try:
-        # Generate signals (client stays open during execution)
-        pairs = DEFAULT_PAIRS
-        await post_signals_once(pairs)
+        while True:
+            try:
+                current_time = time.time()
+                
+                # Check for TP hits every 20 seconds
+                if current_time - last_tp_check_time >= TP_CHECK_INTERVAL:
+                    try:
+                        print("[MAIN] 🔍 Checking for TP hits...")
+                        profit_messages = await check_signal_hits()
+                        if profit_messages:
+                            print(f"[MAIN] Found {len(profit_messages)} TP hits")
+                            for msg in profit_messages:
+                                print(f"[MAIN] Sending TP message: {msg}")
+                                await safe_send_message(bot, chat_id=TELEGRAM_CHANNEL_ID, text=msg, disable_web_page_preview=True)
+                                await asyncio.sleep(0.4)
+                        last_tp_check_time = current_time
+                    except Exception as e:
+                        logger.exception(f"[MAIN] Error in TP check: {type(e).__name__}: {e}")
+                        # Continue loop even if TP check fails
+                
+                # Check for performance reports
+                try:
+                    await check_and_send_reports(bot)
+                except Exception as e:
+                    logger.exception(f"[MAIN] Error in report check: {type(e).__name__}: {e}")
+                    # Continue loop even if report check fails
+                
+                # Generate signals every 60 seconds
+                if current_time - last_signal_generation_time >= SIGNAL_GENERATION_INTERVAL:
+                    try:
+                        print("[MAIN] 📊 Generating signals for all channels...")
+                        await generate_channel_signals(bot, pairs)
+                        last_signal_generation_time = current_time
+                    except Exception as e:
+                        logger.exception(f"[MAIN] Error in signal generation: {type(e).__name__}: {e}")
+                        # Continue loop even if signal generation fails
+                
+                # Sleep 1 second between iterations to prevent high CPU usage
+                await asyncio.sleep(1)
+                
+            except KeyboardInterrupt:
+                # Ctrl+C - break out of loop gracefully
+                print("\n[MAIN] ⏹️ Received KeyboardInterrupt (Ctrl+C) - shutting down gracefully...")
+                break
+            except Exception as e:
+                # Catch any unexpected exceptions and log them, but continue running
+                logger.exception(f"[MAIN] Unexpected error in main loop: {type(e).__name__}: {e}")
+                print(f"[MAIN] ⚠️ Error occurred, waiting 5 seconds before continuing...")
+                await asyncio.sleep(5)
+                
     finally:
         # Cleanup: close Twelve Data client only at the very end (in same event loop)
+        # This happens only on process termination (Ctrl+C or exception that breaks loop)
         global _twelve_data_client
         if _twelve_data_client:
             try:
@@ -1805,6 +1876,8 @@ async def main_async():
                 print("[MAIN] ✅ Twelve Data client closed")
             except Exception as e:
                 print(f"[MAIN] ⚠️ Error closing Twelve Data client: {type(e).__name__}: {e}")
+        
+        print("[MAIN] 👋 Bot stopped")
 
 
 async def ctrader_auth_test():

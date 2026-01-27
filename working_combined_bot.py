@@ -241,9 +241,10 @@ async def get_gold_price_from_yahoo() -> Optional[Dict[str, Any]]:
         print("[GOLD_YAHOO] yfinance not installed, install with: pip install yfinance")
         return None
     
+    # Try GC=F (futures) first, then XAUUSD=X (spot) as fallback - both Yahoo Finance only
     tickers_to_try = [
-        ("XAUUSD=X", "yahoo_spot"),
-        ("GC=F", "yahoo_futures")
+        ("GC=F", "yahoo_futures"),
+        ("XAUUSD=X", "yahoo_spot")  # Fallback if GC=F fails (may give 404, but try anyway)
     ]
     
     for ticker_symbol, source_type in tickers_to_try:
@@ -261,38 +262,52 @@ async def get_gold_price_from_yahoo() -> Optional[Dict[str, Any]]:
             
             if info is not None and not info.empty:
                 # Get last close price
-                last_price = float(info['Close'].iloc[-1])
-                if last_price > 0:
-                    return {
-                        "price": last_price,
-                        "source": source_type,
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "meta": {"ticker": ticker_symbol}
-                    }
+                try:
+                    last_price = float(info['Close'].iloc[-1])
+                    if last_price and last_price > 0:
+                        print(f"[YAHOO] symbol=XAUUSD, ticker={ticker_symbol}, price={last_price:.2f}, valid=True")
+                        return {
+                            "price": last_price,
+                            "source": source_type,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "meta": {"ticker": ticker_symbol, "valid": True}
+                        }
+                except (ValueError, IndexError, KeyError) as e:
+                    print(f"[GOLD_YAHOO] Error parsing price from {ticker_symbol} history: {type(e).__name__}: {e}")
+                    continue
             
             # Fallback: try info attribute
-            info_dict = await asyncio.wait_for(
-                loop.run_in_executor(None, lambda: ticker.info),
-                timeout=5.0
-            )
-            
-            if info_dict and 'regularMarketPrice' in info_dict:
-                price = float(info_dict['regularMarketPrice'])
-                if price > 0:
-                    return {
-                        "price": price,
-                        "source": source_type,
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "meta": {"ticker": ticker_symbol}
-                    }
+            try:
+                info_dict = await asyncio.wait_for(
+                    loop.run_in_executor(None, lambda: ticker.info),
+                    timeout=5.0
+                )
+                
+                if info_dict and isinstance(info_dict, dict) and 'regularMarketPrice' in info_dict:
+                    price = float(info_dict['regularMarketPrice'])
+                    if price and price > 0:
+                        print(f"[YAHOO] symbol=XAUUSD, ticker={ticker_symbol}, price={price:.2f}, valid=True")
+                        return {
+                            "price": price,
+                            "source": source_type,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "meta": {"ticker": ticker_symbol, "valid": True}
+                        }
+            except (ValueError, KeyError, TypeError) as e:
+                print(f"[GOLD_YAHOO] Error parsing price from {ticker_symbol} info: {type(e).__name__}: {e}")
+                continue
+            except asyncio.TimeoutError:
+                print(f"[GOLD_YAHOO] Timeout getting info from {ticker_symbol}")
+                continue
                     
         except asyncio.TimeoutError:
             print(f"[GOLD_YAHOO] Timeout getting price from {ticker_symbol}")
             continue
         except Exception as e:
-            print(f"[GOLD_YAHOO] Error getting price from {ticker_symbol}: {e}")
+            print(f"[GOLD_YAHOO] Error getting price from {ticker_symbol}: {type(e).__name__}: {e}")
             continue
     
+    print(f"[GOLD_YAHOO] All tickers failed, returning None")
     return None
 
 
@@ -311,13 +326,30 @@ def get_forex_price_ctrader(symbol: str) -> Tuple[Optional[float], Optional[str]
     
     global _ctrader_async_client
     
-    if not _ctrader_async_client:
+    # Try to get client from bot.py first (if running bot.py)
+    try:
+        from bot import _ctrader_client, CTRADER_READY
+        if CTRADER_READY and _ctrader_client:
+            client_to_use = _ctrader_client
+        else:
+            client_to_use = None
+    except ImportError:
+        # Fallback to working_combined_bot client
+        client_to_use = _ctrader_async_client
+    
+    if not client_to_use:
         latency_ms = int((time.time() - start_time) * 1000)
         print(f"[FOREX_PRICE] {symbol}: source=CTRADER, price=None, reason=client_not_initialized, latency={latency_ms}ms")
         return None, "client_not_initialized"
     
+    # Check if client is connected
+    if not hasattr(client_to_use, 'connected') or not client_to_use.connected:
+        latency_ms = int((time.time() - start_time) * 1000)
+        print(f"[FOREX_PRICE] {symbol}: source=CTRADER, price=None, reason=client_not_connected, latency={latency_ms}ms")
+        return None, "client_not_connected"
+    
     try:
-        price = _ctrader_async_client.get_last_price(symbol)
+        price = client_to_use.get_last_price(symbol)
         latency_ms = int((time.time() - start_time) * 1000)
         
         if price and price > 0:
@@ -345,14 +377,36 @@ async def get_gold_price_yahoo() -> Tuple[Optional[float], Optional[str]]:
     yahoo_data = await get_gold_price_from_yahoo()
     latency_ms = int((time.time() - start_time) * 1000)
     
-    if yahoo_data and yahoo_data["price"] > 0:
-        ticker_used = yahoo_data["meta"].get("ticker", "unknown")
-        source = yahoo_data["source"]
-        price = yahoo_data["price"]
+    # Normalize price (handles tuple/list/str/int/float)
+    raw_price = yahoo_data.get("price") if yahoo_data else None
+    if raw_price is not None:
+        # Import normalize_price from data_router
+        try:
+            from data_router import normalize_price
+            price = normalize_price(raw_price)
+        except ImportError:
+            # Fallback normalization if data_router not available
+            if isinstance(raw_price, (tuple, list)):
+                price = float(raw_price[0]) if len(raw_price) > 0 else None
+            elif isinstance(raw_price, (int, float)):
+                price = float(raw_price)
+            elif isinstance(raw_price, str):
+                try:
+                    price = float(raw_price)
+                except (ValueError, TypeError):
+                    price = None
+            else:
+                price = None
+    else:
+        price = None
+    
+    if yahoo_data and price is not None and price > 0:
+        ticker_used = yahoo_data.get("meta", {}).get("ticker", "unknown")
+        source = yahoo_data.get("source", "yahoo")
         print(f"[GOLD_PRICE] XAUUSD: source=YAHOO ({source}), price={price:.2f}, ticker={ticker_used}, latency={latency_ms}ms")
         return price, None
     else:
-        print(f"[GOLD_PRICE] XAUUSD: source=YAHOO, price=None, reason=unavailable, latency={latency_ms}ms")
+        print(f"[GOLD_PRICE] XAUUSD: source=YAHOO, price=None, reason=unavailable (raw_price={raw_price!r}), latency={latency_ms}ms")
         return None, "unavailable"
 
 

@@ -275,14 +275,43 @@ class TwelveDataClient:
                             return None
                     
                     elif self._is_rate_limit_error(response):
-                        # Rate limit - wait and retry with backoff
+                        # Rate limit (429) - wait until next minute
+                        # Calculate wait time: wait until next minute + 0.2s buffer
+                        wait_seconds = 60 - (time.time() % 60) + 0.2
+                        print(f"[TWELVE_DATA] ⚠️ Rate limit (429), waiting {wait_seconds:.2f}s until next minute")
+                        await asyncio.sleep(wait_seconds)
+                        
+                        # After waiting, try one more time (single retry after minute wait)
+                        # Only retry if we haven't exhausted all attempts
                         if attempt < max_retries - 1:
-                            backoff_time = self._calculate_backoff(attempt)
-                            print(f"[TWELVE_DATA] ⚠️ Rate limit (429), waiting {backoff_time:.2f}s before retry {attempt + 1}/{max_retries}")
-                            await asyncio.sleep(backoff_time)
-                            continue
+                            # Make one final attempt after minute wait
+                            try:
+                                await self._throttle()
+                                async with self._semaphore:
+                                    response = await client.get(url, params=params)
+                                    if response.status_code == 200:
+                                        try:
+                                            data = response.json()
+                                            if isinstance(data, dict) and data.get('status') == 'error':
+                                                error_code = data.get('code', 'UNKNOWN')
+                                                error_message = data.get('message', 'No error message')
+                                                if self._is_rate_limit_error(response):
+                                                    print(f"[TWELVE_DATA] ❌ Still rate limited after minute wait: code={error_code}, message={error_message}")
+                                                    print(f"[TWELVE_DATA] Skipping symbol (rate limit persists)")
+                                                    return None
+                                            return data
+                                        except json.JSONDecodeError:
+                                            return None
+                                    elif self._is_rate_limit_error(response):
+                                        # Still rate limited after minute wait - skip symbol
+                                        print(f"[TWELVE_DATA] ❌ Still rate limited (429) after minute wait - skipping symbol")
+                                        return None
+                            except Exception as e:
+                                print(f"[TWELVE_DATA] ❌ Error on retry after minute wait: {type(e).__name__}: {e}")
+                                return None
                         else:
-                            print(f"[TWELVE_DATA] ❌ Rate limit after {max_retries} attempts")
+                            # Already exhausted retries - skip symbol
+                            print(f"[TWELVE_DATA] ❌ Rate limit (429) - skipping symbol (max retries reached)")
                             return None
                     
                     elif 500 <= response.status_code < 600:
