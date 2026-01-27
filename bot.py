@@ -891,10 +891,35 @@ def can_send_signal(channel_id: str) -> Tuple[bool, Optional[str]]:
 
 
 def get_today_channel_signals_count(channel_id: str) -> int:
-    """Count signals sent to channel today"""
+    """Count ALL signals sent to channel today (including closed/completed signals)
+    
+    This ensures that if bot is restarted, it won't send more signals than daily limit.
+    
+    Args:
+        channel_id: Channel ID to count signals for
+    
+    Returns:
+        Total count of signals sent to this channel today (regardless of status)
+    """
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     active_signals = load_active_signals()
-    return len([s for s in active_signals if s.get("channel_id") == channel_id and s.get("date") == today])
+    
+    # Count ALL signals for this channel today (including closed/completed)
+    # This is important: if bot restarts, it should know how many signals were already sent
+    count = len([s for s in active_signals 
+                 if s.get("channel_id") == channel_id and s.get("date") == today])
+    
+    # Log for debugging
+    if count > 0:
+        # Count by status for detailed logging
+        active_count = len([s for s in active_signals 
+                           if s.get("channel_id") == channel_id 
+                           and s.get("date") == today 
+                           and s.get("status") == "active"])
+        closed_count = count - active_count
+        logger.info(f"[SIGNAL_COUNT] Channel {channel_id}: {count} total signals today ({active_count} active, {closed_count} closed)")
+    
+    return count
 
 
 def get_today_signals_count() -> int:
@@ -1655,14 +1680,20 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str]) -> None
         # Log channel configuration for debugging
         logger.info(f"[GENERATE_SIGNALS] Processing channel: {channel_name} (ID: {channel_id}, Type: {asset_type}, Symbols: {len(symbols)} pairs)")
         
-        # Check channel limit
+        # Check channel limit - CRITICAL: count ALL signals sent today (including closed)
+        # This prevents bot from sending more than daily limit if restarted
         today_count = get_today_channel_signals_count(channel_id)
+        
+        logger.info(f"[GENERATE_SIGNALS] {channel_name}: Checking daily limit - current: {today_count}/{max_signals} signals today")
+        
         if today_count >= max_signals:
-            print(f"✅ {channel_name}: Already have {today_count}/{max_signals} signals today")
+            print(f"✅ {channel_name}: Daily limit reached - Already have {today_count}/{max_signals} signals today")
+            logger.info(f"[GENERATE_SIGNALS] {channel_name}: Skipping - daily limit reached ({today_count}/{max_signals})")
             continue
         
         signals_needed = max_signals - today_count
-        print(f"🎯 {channel_name}: Need {signals_needed} more signals (current: {today_count}/{max_signals})")
+        print(f"🎯 {channel_name}: Need {signals_needed} more signals (current: {today_count}/{max_signals} today)")
+        logger.info(f"[GENERATE_SIGNALS] {channel_name}: Will generate up to {signals_needed} more signals to reach daily limit of {max_signals}")
         
         # Get available pairs for this channel (check only this channel's active signals)
         available_pairs = get_available_pairs(symbols, channel_id=channel_id)
@@ -1845,15 +1876,29 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str]) -> None
                 
                 # Only save signal if send was successful (or bot is None for local generation)
                 if send_success:
+                    # Save signal BEFORE updating counters to ensure it's counted
                     add_signal(sym, signal_type, entry, sl, tp1, tp2, channel_id=channel_id)
+                    
+                    # Verify signal was saved and counted
+                    new_count = get_today_channel_signals_count(channel_id)
+                    logger.info(f"[GENERATE_SIGNALS] {channel_name}: Signal saved - total today: {new_count}/{max_signals}")
                     
                     # Update time constraints only after successful send
                     save_last_signal_time()
                     save_channel_last_signal_time(channel_id)
                     save_channel_pair_direction_last_signal_time(channel_id, clean_sym, signal_type)
-                
-                signals_generated += 1
-                print(f"✅ {channel_name}: Generated signal {signals_generated}/{signals_needed}: {sym} {signal_type}")
+                    
+                    signals_generated += 1
+                    print(f"✅ {channel_name}: Generated signal {signals_generated}/{signals_needed}: {sym} {signal_type} (total today: {new_count}/{max_signals})")
+                    
+                    # Double-check: if we've reached the limit, stop generating for this channel
+                    if new_count >= max_signals:
+                        print(f"✅ {channel_name}: Daily limit reached after this signal ({new_count}/{max_signals})")
+                        logger.info(f"[GENERATE_SIGNALS] {channel_name}: Daily limit reached, stopping generation for this channel")
+                        break
+                else:
+                    # Signal send failed - don't count it
+                    logger.warning(f"[GENERATE_SIGNALS] {channel_name}: Signal send failed for {sym}, not counting towards daily limit")
                 
                 # Remove pair from available
                 if sym in available_pairs:
