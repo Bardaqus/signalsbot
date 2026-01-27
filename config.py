@@ -8,10 +8,11 @@ from typing import Optional, Dict
 from types import SimpleNamespace
 
 # ============================================================================
-# HARDCODED CTRADER CONFIGURATION (Source of Truth)
+# CTRADER CONFIGURATION PRIORITY
 # ============================================================================
-# Set to True to use hardcoded values instead of .env
-CTRADER_HARDCODED_ENABLED = True
+# Priority: 1) .env file, 2) Hardcoded fallback (if enabled)
+# Set to True to enable hardcoded fallback when .env keys are missing
+CTRADER_HARDCODED_ENABLED = True  # Fallback only, not primary source
 
 # Hardcoded cTrader configuration values
 HARDCODED_CTRADER_CONFIG = {
@@ -280,9 +281,9 @@ def _self_heal_env_loading():
 # Run self-heal
 _self_heal_env_loading()
 
-# Diagnostic: Log ENV keys status on startup
+# Diagnostic: Log ENV keys status on startup (INFO only, not blocking)
 def _log_env_diagnostics():
-    """Log ENV keys diagnostic on startup"""
+    """Log ENV keys diagnostic on startup (informational, not blocking)"""
     critical_keys = [
         'CTRADER_IS_DEMO',
         'CTRADER_ACCOUNT_ID',
@@ -292,49 +293,25 @@ def _log_env_diagnostics():
         'CTRADER_REFRESH_TOKEN',
         'CTRADER_DEMO_WS_URL',
         'CTRADER_LIVE_WS_URL',
-        'GOLD_CTRADER_ONLY'
     ]
     
-    print("=" * 80)
-    print("[ENV_DIAGNOSTIC] cTrader Configuration Keys Status")
-    print("=" * 80)
-    print(f"dotenv_path: {_dotenv_path} (exists={_dotenv_path.exists()})")
-    print(f"project_root: {_project_root}")
-    print(f"cwd: {os.getcwd()}")
-    print()
+    print("[CONFIG] Configuration source: HARDCODED (primary) + ENV (override)")
+    print(f"[CONFIG] dotenv_path: {_dotenv_path} (exists={_dotenv_path.exists()})")
     
-    key_status = {}
+    # Show which keys are set in ENV (for override info)
+    env_overrides = []
     for key in critical_keys:
         value = os.getenv(key)
-        is_set = value is not None and value.strip() != ''
-        key_status[key] = is_set
-        # Show preview for sensitive keys (first 8 chars)
-        def safe_preview(val: str, length: int = 8) -> str:
-            """Create safe preview of sensitive value"""
-            if not val:
-                return "(not set)"
-            if len(val) <= length:
-                return val[:length] + "..."
-            return val[:length] + "..."
-        
-        if key in ['CTRADER_CLIENT_ID', 'CTRADER_CLIENT_SECRET', 'CTRADER_ACCESS_TOKEN', 'CTRADER_REFRESH_TOKEN']:
-            preview = safe_preview(value, 8) if value else "(not set)"
-            print(f"  {key}: {'[OK]' if is_set else '[MISSING]'} (preview: {preview})")
-        else:
-            preview_val = safe_preview(value, 20) if value else '(not set)'
-            print(f"  {key}: {'[OK]' if is_set else '[MISSING]'} (value: {preview_val})")
+        if value is not None and value.strip() != '':
+            env_overrides.append(key)
     
-    print()
-    missing_keys = [k for k, v in key_status.items() if not v and k != 'CTRADER_GOLD_SYMBOL_ID']  # GOLD_SYMBOL_ID is optional
-    if missing_keys:
-        print(f"[WARNING] Missing keys: {', '.join(missing_keys)}")
-        print(f"  -> These keys will use defaults or cause initialization to fail")
+    if env_overrides:
+        print(f"[CONFIG] ENV overrides: {', '.join(env_overrides)}")
     else:
-        print("[OK] All critical keys are set")
-    print("=" * 80)
+        print(f"[CONFIG] No ENV overrides - using HARDCODED values")
     print()
 
-# Run diagnostics on module load
+# Run diagnostics on module load (non-blocking)
 _log_env_diagnostics()
 
 # Log environment loading status
@@ -620,26 +597,108 @@ class Config:
     
     @classmethod
     def get_ctrader_config(cls):
-        """Get unified cTrader configuration object (hardcoded or from ENV)
+        """Get unified cTrader configuration object (HARDCODED PRIMARY, ENV override)
         
         Returns:
             CTraderConfig-like object with all cTrader settings and source_map
         """
-        # Priority 1: Hardcoded config (if enabled)
-        if CTRADER_HARDCODED_ENABLED:
-            return cls._get_hardcoded_ctrader_config()
+        # Priority 1: Hardcoded config (PRIMARY SOURCE - always available)
+        hardcoded_config = cls._get_hardcoded_ctrader_config()
         
-        # Priority 2: Legacy hardcoded config file (if USE_HARDCODED_CTRADER_CONFIG flag is set)
-        if cls.USE_HARDCODED_CTRADER_CONFIG:
+        # Priority 2: Environment variables can OVERRIDE hardcoded values (optional)
+        env_config = cls._get_env_ctrader_config()
+        
+        # Merge: use ENV if set, otherwise hardcoded (hardcoded is PRIMARY)
+        merged_config = SimpleNamespace()
+        merged_config.source_map = {}
+        
+        # is_demo: ENV override if set, otherwise hardcoded
+        if env_config.source_map.get('is_demo') == 'ENV':
+            merged_config.is_demo = env_config.is_demo
+            merged_config.source_map['is_demo'] = 'ENV'
+        else:
+            merged_config.is_demo = hardcoded_config.is_demo
+            merged_config.source_map['is_demo'] = 'HARDCODED'
+        
+        # account_id: ENV override if valid, otherwise hardcoded
+        if env_config.account_id and env_config.account_id > 0:
+            merged_config.account_id = env_config.account_id
+            merged_config.source_map['account_id'] = 'ENV'
+        else:
+            merged_config.account_id = hardcoded_config.account_id
+            merged_config.source_map['account_id'] = 'HARDCODED'
+        
+        # Credentials: ENV override if set, otherwise hardcoded
+        merged_config.client_id = env_config.client_id or hardcoded_config.client_id
+        merged_config.source_map['client_id'] = 'ENV' if env_config.client_id else 'HARDCODED'
+        
+        merged_config.client_secret = env_config.client_secret or hardcoded_config.client_secret
+        merged_config.source_map['client_secret'] = 'ENV' if env_config.client_secret else 'HARDCODED'
+        
+        merged_config.access_token = env_config.access_token or hardcoded_config.access_token
+        merged_config.source_map['access_token'] = 'ENV' if env_config.access_token else 'HARDCODED'
+        
+        merged_config.refresh_token = env_config.refresh_token or hardcoded_config.refresh_token
+        merged_config.source_map['refresh_token'] = 'ENV' if env_config.refresh_token else 'HARDCODED'
+        
+        # WS URLs: ENV override if set, otherwise hardcoded
+        merged_config.ws_url_demo = env_config.ws_url_demo or hardcoded_config.ws_url_demo
+        merged_config.source_map['ws_url_demo'] = 'ENV' if env_config.ws_url_demo else 'HARDCODED'
+        
+        merged_config.ws_url_live = env_config.ws_url_live or hardcoded_config.ws_url_live
+        merged_config.source_map['ws_url_live'] = 'ENV' if env_config.ws_url_live else 'HARDCODED'
+        
+        # Other settings from hardcoded
+        merged_config.gold_ctrader_only = hardcoded_config.gold_ctrader_only
+        merged_config.gold_symbol_name_override = hardcoded_config.gold_symbol_name_override
+        merged_config.gold_symbol_id = hardcoded_config.gold_symbol_id
+        merged_config.base_url = hardcoded_config.base_url
+        merged_config.api_url = hardcoded_config.api_url
+        merged_config.auth_url = hardcoded_config.auth_url
+        
+        # OAuth token URL: ENV override if set, otherwise hardcoded
+        oauth_token_url_env = _get_str_env('CTRADER_OAUTH_TOKEN_URL', default='', required=False)
+        merged_config.token_url = oauth_token_url_env or hardcoded_config.token_url
+        merged_config.source_map['token_url'] = 'ENV' if oauth_token_url_env else 'HARDCODED'
+        
+        oauth_timeout_env = get_env_int('CTRADER_OAUTH_TIMEOUT', default=0, required=False)
+        merged_config.oauth_timeout = oauth_timeout_env if oauth_timeout_env > 0 else getattr(hardcoded_config, 'oauth_timeout', 10)
+        merged_config.source_map['oauth_timeout'] = 'ENV' if oauth_timeout_env > 0 else 'HARDCODED'
+        
+        merged_config.redirect_uri = hardcoded_config.redirect_uri
+        
+        # Add get_ws_url method
+        def get_ws_url():
+            if merged_config.is_demo:
+                ws_url = merged_config.ws_url_demo
+                source = merged_config.source_map.get('ws_url_demo', 'HARDCODED')
+            else:
+                ws_url = merged_config.ws_url_live
+                source = merged_config.source_map.get('ws_url_live', 'HARDCODED')
+            merged_config.source_map['ws_url'] = source
+            print(f"[CTRADER_CONFIG] Using WS URL: {ws_url} (source={source})")
+            return ws_url, source
+        
+        merged_config.get_ws_url = get_ws_url
+        
+        # Add log_preview method
+        def log_preview():
+            print("[CTRADER_CONFIG] cTrader config: HARDCODED (primary) + ENV (override)")
             try:
-                from config_hardcoded import _hardcoded_config
-                return _hardcoded_config
-            except ImportError:
-                print("[CONFIG] WARNING: USE_HARDCODED_CTRADER_CONFIG=true but config_hardcoded.py not found, falling back to ENV")
-                return cls._get_env_ctrader_config()
+                ws_url, source = merged_config.get_ws_url()
+                print(f"   Endpoint: {ws_url} (source={source})")
+            except ValueError as e:
+                print(f"   Endpoint: ERROR - {str(e)}")
+            print(f"   Is Demo: {merged_config.is_demo} (source={merged_config.source_map.get('is_demo')})")
+            print(f"   Account ID: {merged_config.account_id} (source={merged_config.source_map.get('account_id')})")
+            print(f"   Client ID: {_safe_preview(merged_config.client_id)} (source={merged_config.source_map.get('client_id')})")
+            print(f"   Access Token: {_safe_preview(merged_config.access_token, 4)} (source={merged_config.source_map.get('access_token')})")
+            print(f"   Refresh Token: {_safe_preview(merged_config.refresh_token, 4)} (source={merged_config.source_map.get('refresh_token')})")
+            print(f"   OAuth Token URL: {merged_config.token_url} (source={merged_config.source_map.get('token_url')})")
         
-        # Priority 3: Environment variables
-        return cls._get_env_ctrader_config()
+        merged_config.log_preview = log_preview
+        
+        return merged_config
     
     @classmethod
     def _get_hardcoded_ctrader_config(cls):
@@ -667,8 +726,15 @@ class Config:
         config.base_url = cls.CTRADER_API_URL
         config.api_url = cls.CTRADER_API_URL
         config.auth_url = cls.CTRADER_AUTH_URL
-        config.token_url = f"{cls.CTRADER_API_URL}/oauth/token"
+        # OAuth token URL - use ENV if set, otherwise default to Spotware Connect endpoint
+        oauth_token_url_env = _get_str_env('CTRADER_OAUTH_TOKEN_URL', default='', required=False)
+        config.token_url = oauth_token_url_env or "https://connect.spotware.com/oauth/token"
+        config.oauth_timeout = 10  # Default timeout
         config.redirect_uri = cls.CTRADER_REDIRECT_URI
+        
+        # OAuth timeout
+        oauth_timeout_env = get_env_int('CTRADER_OAUTH_TIMEOUT', default=10, required=False)
+        config.oauth_timeout = oauth_timeout_env
         
         # Source map (all from HARDCODED)
         config.source_map = {
@@ -740,17 +806,33 @@ class Config:
                     self.is_demo = True
                     self.source_map['is_demo'] = 'ERROR_DEFAULT'
                 
-                # Validate account_id - use _parse_int_env with required=False (we'll check later)
+                # Validate account_id - use _parse_int_env with required=False
+                # If CTRADER_ALLOW_FALLBACK=false and account_id missing, return None (not 0)
+                allow_fallback = get_env_bool('CTRADER_ALLOW_FALLBACK', default=False)
                 try:
-                    self.account_id = _parse_int_env('CTRADER_ACCOUNT_ID', default=0, required=False)
-                    if self.account_id <= 0:
-                        self.source_map['account_id'] = 'ERROR'
+                    account_id_raw = os.getenv('CTRADER_ACCOUNT_ID', '').strip()
+                    if not account_id_raw:
+                        # Missing - return None if fallback disabled, 0 if fallback enabled
+                        if not allow_fallback:
+                            self.account_id = None
+                            self.source_map['account_id'] = 'MISSING'
+                        else:
+                            self.account_id = 0
+                            self.source_map['account_id'] = 'MISSING'
                     else:
-                        self.source_map['account_id'] = 'ENV'
+                        # Try to parse
+                        self.account_id = _parse_int_env('CTRADER_ACCOUNT_ID', default=0, required=False)
+                        if self.account_id <= 0:
+                            self.source_map['account_id'] = 'ERROR'
+                        else:
+                            self.source_map['account_id'] = 'ENV'
                 except ValueError as e:
                     # Log error but don't raise - let caller handle
-                    print(f"[CONFIG] ERROR: {e}")
-                    self.account_id = 0
+                    print(f"[CONFIG] ERROR parsing CTRADER_ACCOUNT_ID: {e}")
+                    if not allow_fallback:
+                        self.account_id = None
+                    else:
+                        self.account_id = 0
                     self.source_map['account_id'] = 'ERROR'
                 
                 # Read WS URLs using _get_str_env
@@ -779,8 +861,14 @@ class Config:
                 self.base_url = cls.CTRADER_API_URL
                 self.api_url = cls.CTRADER_API_URL
                 self.auth_url = cls.CTRADER_AUTH_URL
-                self.token_url = f"{cls.CTRADER_API_URL}/oauth/token"
+                # OAuth token URL - use ENV if set, otherwise default to Spotware Connect endpoint
+                oauth_token_url_env = _get_str_env('CTRADER_OAUTH_TOKEN_URL', default='', required=False)
+                self.token_url = oauth_token_url_env or "https://connect.spotware.com/oauth/token"
                 self.redirect_uri = cls.CTRADER_REDIRECT_URI
+                
+                # OAuth timeout
+                oauth_timeout_env = get_env_int('CTRADER_OAUTH_TIMEOUT', default=10, required=False)
+                self.oauth_timeout = oauth_timeout_env
                 
                 # Gold symbol name override from env
                 gold_symbol_name_raw = _get_str_env('GOLD_SYMBOL_NAME', default='', required=False)

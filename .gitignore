@@ -48,3 +48,6 @@ secrets.json
 config_live.env
 *.env
 !config_example.env
+
+# Hardcoded config (TEMP ONLY — contains sensitive credentials)
+config_hardcoded.py

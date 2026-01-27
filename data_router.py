@@ -36,6 +36,49 @@ YAHOO_TICKER_MAP = {
 }
 
 
+def normalize_price(value: Any) -> Optional[float]:
+    """
+    Normalize price value to float or None.
+    
+    Handles various input types:
+    - None -> None
+    - tuple/list -> take first element, then convert to float
+    - int/float -> convert to float
+    - str -> try to parse as float
+    - other -> return None
+    
+    Args:
+        value: Price value (can be any type)
+    
+    Returns:
+        float: Normalized price as float, or None if cannot normalize
+    """
+    if value is None:
+        return None
+    
+    # Handle tuple/list - take first element
+    if isinstance(value, (tuple, list)):
+        if len(value) == 0:
+            return None
+        value = value[0]
+    
+    # Handle int/float
+    if isinstance(value, (int, float)):
+        result = float(value)
+        return result if result > 0 else None
+    
+    # Handle string
+    if isinstance(value, str):
+        try:
+            result = float(value)
+            return result if result > 0 else None
+        except (ValueError, TypeError):
+            return None
+    
+    # Unknown type
+    return None
+
+
 def _detect_asset_class(symbol: str) -> AssetClass:
     """Detect asset class from symbol name"""
     symbol_upper = symbol.upper()
@@ -193,15 +236,18 @@ class DataRouter:
                     
                     Args:
                         symbol: Symbol name
-                        price: Price value (can be None)
+                        price: Price value (can be None, tuple, list, int, float, str)
                         asset_class: Asset class
                     
                     Returns:
                         Tuple of (is_valid: bool, reason: str or None)
                     """
+                    # CRITICAL: Normalize price first (handles tuple/list/str/etc)
+                    price = normalize_price(price)
+                    
                     # CRITICAL: Handle None price first - never compare None with numbers
                     if price is None:
-                        return False, "yahoo_no_price: price is None"
+                        return False, "yahoo_no_price: price is None or cannot normalize"
                     
                     # Basic sanity: price must be > 0
                     if price <= 0:
@@ -234,7 +280,14 @@ class DataRouter:
                     latency_ms = int((time.time() - start_time) * 1000)
                     if yahoo_data and isinstance(yahoo_data, dict) and yahoo_data.get("price"):
                         try:
-                            price = float(yahoo_data["price"])
+                            # Normalize price first (handles tuple/list/str/etc)
+                            raw_price = yahoo_data["price"]
+                            price = normalize_price(raw_price)
+                            
+                            if price is None:
+                                print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO, price=None, reason=yahoo_price_normalize_failed (raw={raw_price!r}), latency={latency_ms}ms")
+                                return None, "yahoo_price_normalize_failed", "YAHOO"
+                            
                             source_type = yahoo_data.get("source", "yahoo")
                             ticker = yahoo_data.get("meta", {}).get("ticker", "unknown")
                             
@@ -255,9 +308,13 @@ class DataRouter:
                 else:
                     # Index: use Yahoo Finance with validation
                     from working_combined_bot import get_index_price_yahoo
-                    price = _run_async(get_index_price_yahoo(symbol))
+                    raw_price = _run_async(get_index_price_yahoo(symbol))
                     
                     latency_ms = int((time.time() - start_time) * 1000)
+                    
+                    # Normalize price first (handles tuple/list/str/etc)
+                    price = normalize_price(raw_price)
+                    
                     if price is not None:
                         # Validate price (handles None internally, but double-check here)
                         is_valid, validation_reason = _validate_price(symbol, price, asset_class)
