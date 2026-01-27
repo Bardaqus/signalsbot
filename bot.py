@@ -1895,18 +1895,26 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str]) -> None
                 else:
                     # Forex pairs: fixed pip distances with 3 TPs
                     # TP1: 20 pips, SL: 50 pips, TP2: 60 pips, TP3: 100 pips
-                    sl_pips = 50
-                    tp1_pips = 20
-                    tp2_pips = 60
-                    tp3_pips = 100
-                    
+                    # For JPY pairs: multiply by 10 (TP1: 200 pips, SL: 500 pips, TP2: 600 pips, TP3: 1000 pips)
                     if clean_sym.endswith("JPY"):
-                        sl_distance = sl_pips / 1000  # JPY pairs use 3 decimals
+                        # JPY pairs: 10x larger pip values
+                        sl_pips = 500  # 50 * 10
+                        tp1_pips = 200  # 20 * 10
+                        tp2_pips = 600  # 60 * 10
+                        tp3_pips = 1000  # 100 * 10
+                        # JPY pairs use 3 decimals, so divide by 1000
+                        sl_distance = sl_pips / 1000
                         tp1_distance = tp1_pips / 1000
                         tp2_distance = tp2_pips / 1000
                         tp3_distance = tp3_pips / 1000
                     else:
-                        sl_distance = sl_pips / 10000  # Other pairs use 5 decimals
+                        # Other pairs: standard pip values
+                        sl_pips = 50
+                        tp1_pips = 20
+                        tp2_pips = 60
+                        tp3_pips = 100
+                        # Other pairs use 5 decimals, so divide by 10000
+                        sl_distance = sl_pips / 10000
                         tp1_distance = tp1_pips / 10000
                         tp2_distance = tp2_pips / 10000
                         tp3_distance = tp3_pips / 10000
