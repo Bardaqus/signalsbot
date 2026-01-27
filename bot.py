@@ -284,6 +284,26 @@ DEFAULT_PAIRS = [
     "GBPNZD",
 ]
 
+# Crypto pairs (for crypto channels)
+CRYPTO_PAIRS = [
+    "BTCUSDT",
+    "ETHUSDT",
+    "BNBUSDT",
+    "ADAUSDT",
+    "SOLUSDT",
+    "XRPUSDT",
+    "DOTUSDT",
+    "DOGEUSDT",
+    "AVAXUSDT",
+    "MATICUSDT",
+]
+
+# Index pairs (for index channels)
+INDEX_PAIRS = [
+    "BRENT",
+    "USOIL",
+]
+
 SIGNALS_FILE = "active_signals.json"
 PERFORMANCE_FILE = "performance.json"
 MAX_SIGNALS_PER_DAY = 5
@@ -1067,10 +1087,14 @@ async def check_signal_hits() -> List[Dict]:
                     profit_pips = (entry - current_price) * multiplier
                 
                 # Build original signal message for reply
+                # Determine if it's crypto based on symbol (ends with USDT or doesn't end with .FOREX)
+                signal_symbol = signal["symbol"]
+                is_crypto_signal = signal_symbol.endswith("USDT") or (not signal_symbol.endswith(".FOREX") and not signal_symbol in ["XAUUSD", "BRENT", "USOIL"])
+                
                 if "tp1" in signal and "tp2" in signal:
-                    original_signal_msg = build_signal_message(signal["symbol"], signal_type, entry, sl, signal["tp1"], signal["tp2"])
+                    original_signal_msg = build_signal_message(signal["symbol"], signal_type, entry, sl, signal["tp1"], signal["tp2"], is_crypto=is_crypto_signal)
                 else:
-                    original_signal_msg = build_signal_message(signal["symbol"], signal_type, entry, sl, signal["tp"])
+                    original_signal_msg = build_signal_message(signal["symbol"], signal_type, entry, sl, signal["tp"], is_crypto=is_crypto_signal)
                 
                 # Calculate R/R ratio
                 if signal_type == "BUY":
@@ -1125,8 +1149,18 @@ async def check_signal_hits() -> List[Dict]:
     return profit_messages
 
 
-def build_signal_message(symbol: str, signal_type: str, entry: float, sl: float, tp1: float, tp2: float = None) -> str:
-    """Build signal message in the requested format"""
+def build_signal_message(symbol: str, signal_type: str, entry: float, sl: float, tp1: float, tp2: float = None, is_crypto: bool = False) -> str:
+    """Build signal message in the requested format
+    
+    Args:
+        symbol: Symbol name (e.g., "EURUSD", "BTCUSDT", "XAUUSD")
+        signal_type: Signal direction ("BUY" or "SELL")
+        entry: Entry price
+        sl: Stop loss price
+        tp1: Take profit 1 price
+        tp2: Take profit 2 price (optional)
+        is_crypto: Whether this is a crypto signal (adds "USE x5 margin" footer)
+    """
     # Remove .FOREX suffix for display
     display_symbol = symbol.replace(".FOREX", "")
     
@@ -1137,20 +1171,30 @@ def build_signal_message(symbol: str, signal_type: str, entry: float, sl: float,
             return f"{price:.3f}".rstrip('0').rstrip('.')
         elif display_symbol == "XAUUSD":
             return f"{price:.2f}".rstrip('0').rstrip('.')
+        elif is_crypto or display_symbol.endswith("USDT"):
+            # Crypto pairs: more precision (6 decimals)
+            return f"{price:.6f}".rstrip('0').rstrip('.')
         else:
             return f"{price:.5f}".rstrip('0').rstrip('.')
     
+    # Build main message
     if tp2 is not None:
-        # Forex signals with 2 TPs
-        return f"""{display_symbol} {signal_type} {format_simple(entry)}
+        # Signals with 2 TPs (Forex, Crypto, Index)
+        msg = f"""{display_symbol} {signal_type} {format_simple(entry)}
 SL {format_simple(sl)}
 TP1 {format_simple(tp1)}
 TP2 {format_simple(tp2)}"""
     else:
-        # XAUUSD signals with 1 TP (but still use TP1 format as requested)
-        return f"""{display_symbol} {signal_type} {format_simple(entry)}
+        # XAUUSD signals with 1 TP
+        msg = f"""{display_symbol} {signal_type} {format_simple(entry)}
 SL {format_simple(sl)}
 TP1 {format_simple(tp1)}"""
+    
+    # Add "USE x5 margin" footer for crypto signals
+    if is_crypto:
+        msg += "\n\nUSE x5 margin"
+    
+    return msg
 
 
 def get_performance_report(days: int = 1) -> str:
@@ -1484,48 +1528,55 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str]) -> None
     logger.info(f"  DEGRAM_INDEX: {CHANNEL_DEGRAM_INDEX}")
     
     # Define channel configurations
+    # STRICT: Each channel type gets ONLY its designated asset class
     channel_configs = [
         {
             "name": "GOLD",
             "channel_id": CHANNEL_GOLD_PRIVATE,
-            "symbols": ["XAUUSD"],
+            "symbols": ["XAUUSD"],  # ONLY Gold
             "max_signals": MAX_GOLD_SIGNALS,
-            "has_tp2": False
+            "has_tp2": False,
+            "asset_type": "GOLD"
         },
         {
             "name": "FOREX_DEGRAM",
             "channel_id": CHANNEL_DEGRAM,
-            "symbols": pairs,  # Forex pairs
+            "symbols": pairs,  # ONLY Forex pairs
             "max_signals": MAX_FOREX_SIGNALS_PER_CHANNEL,
-            "has_tp2": True
+            "has_tp2": True,
+            "asset_type": "FOREX"
         },
         {
             "name": "FOREX_LINGRID",
             "channel_id": CHANNEL_LINGRID_FOREX,
-            "symbols": pairs,  # Forex pairs
+            "symbols": pairs,  # ONLY Forex pairs
             "max_signals": MAX_FOREX_SIGNALS_PER_CHANNEL,
-            "has_tp2": True
+            "has_tp2": True,
+            "asset_type": "FOREX"
         },
         {
             "name": "GAINMUSE_CRYPTO",
             "channel_id": CHANNEL_GAINMUSE_CRYPTO,
-            "symbols": pairs,  # Forex pairs (TODO: add crypto symbols when crypto generation is implemented)
+            "symbols": CRYPTO_PAIRS,  # ONLY Crypto pairs
             "max_signals": MAX_GAINMUSE_CRYPTO_SIGNALS,
-            "has_tp2": True
+            "has_tp2": True,
+            "asset_type": "CRYPTO"
         },
         {
             "name": "INDEXES_LINGRID",
             "channel_id": CHANNEL_LINGRID_INDEXES,
-            "symbols": ["BRENT", "USOIL", "XAUUSD"],  # Index pairs
+            "symbols": INDEX_PAIRS,  # ONLY Index pairs (BRENT, USOIL) - NO XAUUSD
             "max_signals": MAX_INDEX_SIGNALS,
-            "has_tp2": True
+            "has_tp2": True,
+            "asset_type": "INDEX"
         },
         {
             "name": "INDEXES_DEGRAM",
             "channel_id": CHANNEL_DEGRAM_INDEX,
-            "symbols": ["BRENT", "USOIL", "XAUUSD"],  # Index pairs
+            "symbols": INDEX_PAIRS,  # ONLY Index pairs (BRENT, USOIL) - NO XAUUSD
             "max_signals": MAX_DEGRAM_INDEX_SIGNALS,
-            "has_tp2": True
+            "has_tp2": True,
+            "asset_type": "INDEX"
         }
     ]
     
@@ -1535,6 +1586,10 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str]) -> None
         symbols = config["symbols"]
         max_signals = config["max_signals"]
         has_tp2 = config["has_tp2"]
+        asset_type = config.get("asset_type", "FOREX")
+        
+        # Log channel configuration for debugging
+        logger.info(f"[GENERATE_SIGNALS] Processing channel: {channel_name} (ID: {channel_id}, Type: {asset_type}, Symbols: {len(symbols)} pairs)")
         
         # Check channel limit
         today_count = get_today_channel_signals_count(channel_id)
@@ -1571,12 +1626,29 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str]) -> None
             print(f"📊 {channel_name}: Analyzing {sym} (attempt {attempts})...")
             try:
                 # Get real-time price using data router
+                # For crypto, use Binance; for others, use data router
+                asset_type = config.get("asset_type", "FOREX")
+                is_crypto_channel = asset_type == "CRYPTO"
+                
                 try:
-                    data_router = get_data_router()
-                    if data_router:
-                        rt_price, reason, source = await data_router.get_price_async(sym)
+                    if is_crypto_channel:
+                        # Crypto: use Binance directly
+                        from working_combined_bot import get_real_crypto_price
+                        rt_price = get_real_crypto_price(sym)
+                        if rt_price:
+                            source = "BINANCE"
+                            reason = None
+                        else:
+                            rt_price = None
+                            reason = "binance_unavailable"
+                            source = "BINANCE"
                     else:
-                        rt_price, reason, source = get_price(sym)
+                        # Forex/Index/Gold: use data router
+                        data_router = get_data_router()
+                        if data_router:
+                            rt_price, reason, source = await data_router.get_price_async(sym)
+                        else:
+                            rt_price, reason, source = get_price(sym)
                     
                     if rt_price is None:
                         print(f"  ⏸️ Price unavailable for {sym}: {reason}")
@@ -1610,11 +1682,13 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str]) -> None
                     print(f"  ⏸️ {channel_name}: Cannot send {clean_sym} (both BUY and SELL blocked by 24h rule)")
                     continue
                 
-                # Calculate TP/SL
+                # Calculate TP/SL based on asset type
+                asset_type = config.get("asset_type", "FOREX")  # Get asset type from config
                 
-                # Check if it's an index (BRENT, USOIL) or gold
+                # Check if it's an index (BRENT, USOIL), gold, or crypto
                 is_index = clean_sym in ["BRENT", "USOIL"]
                 is_gold = clean_sym == "XAUUSD"
+                is_crypto = asset_type == "CRYPTO" or clean_sym.endswith("USDT")
                 
                 if is_gold and not has_tp2:
                     # XAUUSD single TP: 3-5% profit target
@@ -1629,6 +1703,21 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str]) -> None
                         sl = entry * (1 + sl_pct)
                         tp1 = entry * (1 - profit_pct)
                         tp2 = None
+                elif is_crypto:
+                    # Crypto pairs: percentage-based with 2 TPs
+                    # SL: 2%, TP1: 2%, TP2: 4%
+                    sl_pct = 0.02  # 2% stop loss
+                    profit_pct1 = 0.02  # 2% for TP1
+                    profit_pct2 = 0.04  # 4% for TP2
+                    
+                    if signal_type == "BUY":
+                        sl = round(entry * (1 - sl_pct), 6)
+                        tp1 = round(entry * (1 + profit_pct1), 6)
+                        tp2 = round(entry * (1 + profit_pct2), 6)
+                    else:  # SELL
+                        sl = round(entry * (1 + sl_pct), 6)
+                        tp1 = round(entry * (1 - profit_pct1), 6)
+                        tp2 = round(entry * (1 - profit_pct2), 6)
                 elif is_index:
                     # Index pairs (BRENT, USOIL): percentage-based with 2 TPs
                     profit_pct1 = 0.02  # 2% for TP1
@@ -1667,8 +1756,8 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str]) -> None
                         tp1 = entry - tp1_distance
                         tp2 = entry - tp2_distance
                 
-                # Build message
-                msg = build_signal_message(sym, signal_type, entry, sl, tp1, tp2)
+                # Build message (pass is_crypto flag for crypto signals)
+                msg = build_signal_message(sym, signal_type, entry, sl, tp1, tp2, is_crypto=is_crypto)
                 
                 # Try to send to Telegram (if bot available)
                 send_success = False
