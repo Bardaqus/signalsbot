@@ -326,8 +326,8 @@ MAX_DEGRAM_INDEX_SIGNALS = 5
 
 # Time constraints (in seconds)
 MIN_TIME_BETWEEN_SIGNALS = 5 * 60  # 5 minutes between any signals
-MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MIN = 70 * 60  # 70 minutes minimum between signals in same channel
-MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MAX = 100 * 60  # 100 minutes maximum between signals in same channel
+MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MIN = 150 * 60  # 2.5 hours (150 minutes) minimum between signals in same channel
+MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MAX = 180 * 60  # 3 hours (180 minutes) maximum between signals in same channel
 MIN_TIME_BETWEEN_PAIR_DIRECTION_SIGNALS = 24 * 60 * 60  # 24 hours between same pair+direction in same channel
 
 # Files for tracking signal times
@@ -1694,6 +1694,7 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str]) -> None
             "symbols": pairs,  # ONLY Forex pairs
             "max_signals": MAX_FOREX_SIGNALS_PER_CHANNEL,
             "has_tp2": True,
+            "has_tp3": False,  # Special: only 2 TPs for Lingrid forex
             "asset_type": "FOREX"
         },
         {
@@ -1832,13 +1833,54 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str]) -> None
                 
                 # Calculate TP/SL based on asset type
                 asset_type = config.get("asset_type", "FOREX")  # Get asset type from config
+                has_tp3 = config.get("has_tp3", True)  # Default to 3 TPs, unless specified False
+                
+                # Special handling for Lingrid Forex channel: only 2 TPs with random values
+                is_lingrid_forex = channel_id == CHANNEL_LINGRID_FOREX
                 
                 # Check if it's an index (BRENT, USOIL), gold, or crypto
                 is_index = clean_sym in ["BRENT", "USOIL"]
                 is_gold = clean_sym == "XAUUSD"
                 is_crypto = asset_type == "CRYPTO" or clean_sym.endswith("USDT")
                 
-                if is_gold:
+                if is_lingrid_forex:
+                    # Special logic for Lingrid Forex: 2 TPs with random values
+                    # TP1: 25-30 pips, TP2: 45-50 pips, SL: 50 pips
+                    # For JPY pairs: multiply by 10
+                    import random
+                    
+                    if clean_sym.endswith("JPY"):
+                        # JPY pairs: 10x larger pip values
+                        tp1_pips = random.randint(250, 300)  # 25-30 * 10
+                        tp2_pips = random.randint(450, 500)  # 45-50 * 10
+                        sl_pips = 500  # 50 * 10
+                        # JPY pairs use 3 decimals, so divide by 1000
+                        tp1_distance = tp1_pips / 1000
+                        tp2_distance = tp2_pips / 1000
+                        sl_distance = sl_pips / 1000
+                    else:
+                        # Other pairs: standard pip values
+                        tp1_pips = random.randint(25, 30)  # Random between 25-30 pips
+                        tp2_pips = random.randint(45, 50)  # Random between 45-50 pips
+                        sl_pips = 50  # Fixed 50 pips
+                        # Other pairs use 5 decimals, so divide by 10000
+                        tp1_distance = tp1_pips / 10000
+                        tp2_distance = tp2_pips / 10000
+                        sl_distance = sl_pips / 10000
+                    
+                    if signal_type == "BUY":
+                        sl = entry - sl_distance
+                        tp1 = entry + tp1_distance
+                        tp2 = entry + tp2_distance
+                        tp3 = None  # Only 2 TPs for Lingrid forex
+                    else:  # SELL
+                        sl = entry + sl_distance
+                        tp1 = entry - tp1_distance
+                        tp2 = entry - tp2_distance
+                        tp3 = None  # Only 2 TPs for Lingrid forex
+                    
+                    logger.info(f"[LINGRID_FOREX] {clean_sym} {signal_type}: TP1={tp1_pips} pips, TP2={tp2_pips} pips, SL={sl_pips} pips")
+                elif is_gold:
                     # Gold (XAUUSD): percentage-based with 3 TPs
                     # SL: 3%, TP1: 1%, TP2: 3%, TP3: 5% (similar to crypto/index)
                     sl_pct = 0.03  # 3% stop loss
@@ -1931,7 +1973,7 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str]) -> None
                         tp3 = entry - tp3_distance
                 
                 # Build message (pass is_crypto flag for crypto signals)
-                # All signals now have 3 TPs (forex, crypto, index, gold)
+                # Lingrid Forex has only 2 TPs, others have 3 TPs
                 msg = build_signal_message(sym, signal_type, entry, sl, tp1, tp2, tp3=tp3, is_crypto=is_crypto)
                 
                 # Try to send to Telegram (if bot available)
