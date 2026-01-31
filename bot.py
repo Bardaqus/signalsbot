@@ -1660,6 +1660,14 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str]) -> None
     if bot is None:
         logger.warning("[GENERATE_SIGNALS] Bot is None - signals will be generated and logged locally, but NOT sent to Telegram")
     
+    # Check if it's weekend (Saturday or Sunday)
+    now = datetime.now(timezone.utc)
+    weekday = now.weekday()  # 0=Monday, 5=Saturday, 6=Sunday
+    is_weekend = weekday >= 5  # Saturday (5) or Sunday (6)
+    
+    if is_weekend:
+        logger.info(f"[GENERATE_SIGNALS] Weekend detected (weekday={weekday}) - Forex and Index markets are closed")
+    
     # Define channel configurations
     logger.info("[GENERATE_SIGNALS] Channel configuration:")
     logger.info(f"  GOLD_PRIVATE: {CHANNEL_GOLD_PRIVATE}")
@@ -1733,6 +1741,12 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str]) -> None
         
         # Log channel configuration for debugging
         logger.info(f"[GENERATE_SIGNALS] Processing channel: {channel_name} (ID: {channel_id}, Type: {asset_type}, Symbols: {len(symbols)} pairs)")
+        
+        # Skip Forex and Index channels on weekends (Saturday and Sunday)
+        if is_weekend and asset_type in ["FOREX", "INDEX"]:
+            print(f"🏖️ {channel_name}: Skipping signal generation - weekend (Forex/Index markets closed)")
+            logger.info(f"[GENERATE_SIGNALS] {channel_name}: Skipping - weekend (asset_type={asset_type})")
+            continue
         
         # Check channel limit - CRITICAL: count ALL signals sent today (including closed)
         # This prevents bot from sending more than daily limit if restarted
