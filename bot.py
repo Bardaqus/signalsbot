@@ -1037,9 +1037,12 @@ def save_performance_data(data: Dict) -> None:
         pass
 
 
+# REMOVED: add_completed_signal() - Performance tracking disabled (depends on TP/SL monitoring)
+# Bot now only generates signals without tracking completion status
 def add_completed_signal(symbol: str, signal_type: str, entry: float, exit_price: float, status: str) -> None:
-    """Add completed signal to performance tracking with proper units"""
-    performance_data = load_performance_data()
+    """DISABLED: Performance tracking removed to reduce API usage"""
+    # No-op: performance tracking disabled
+    pass
     
     # Determine if it's crypto or forex based on symbol
     is_crypto = not symbol.endswith(".FOREX")
@@ -1100,187 +1103,8 @@ def add_completed_signal(symbol: str, signal_type: str, entry: float, exit_price
     save_performance_data(performance_data)
 
 
-async def check_signal_hits() -> List[Dict]:
-    """Check for SL/TP hits and return profit messages"""
-    active_signals = load_active_signals()
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    profit_messages = []
-    updated_signals = []
-    
-    for signal in active_signals:
-        if signal.get("status") != "active":
-            updated_signals.append(signal)
-            continue
-            
-        try:
-            # Get price using DataRouter (async version)
-            clean_symbol = signal["symbol"].replace(".FOREX", "")
-            
-            data_router = get_data_router()
-            if data_router:
-                price, reason, source = await data_router.get_price_async(clean_symbol)
-            else:
-                # Fallback to sync version (creates new loop, but works)
-                price, reason, source = get_price(clean_symbol)
-            
-            # Build price_data dict for compatibility
-            price_data = {
-                "close": price if price else None,
-                "timestamp": int(time.time()),
-                "source": source,
-                "reason": reason if price is None else None
-            }
-            current_price = price
-            
-            # CRITICAL: Skip if price is None (source unavailable)
-            if current_price is None:
-                reason_str = price_data.get("reason", "unknown")
-                source_str = price_data.get("source", "unknown")
-                print(f"⏸️ Skipping TP/SL check for {signal['symbol']}: price unavailable (source={source_str}, reason={reason_str})")
-                # Keep signal active - will check again next time
-                updated_signals.append(signal)
-                continue
-            
-            signal_type = signal["type"]
-            entry = signal["entry"]
-            sl = signal["sl"]
-            
-            hit_sl = False
-            hit_tp = None
-            
-            # Check for 3 TPs (forex, crypto, index, gold signals)
-            if "tp1" in signal and "tp2" in signal and "tp3" in signal:
-                tp1 = signal["tp1"]
-                tp2 = signal["tp2"]
-                tp3 = signal["tp3"]
-                
-                if signal_type == "BUY":
-                    hit_sl = current_price <= sl
-                    if current_price >= tp3:
-                        hit_tp = "TP3"
-                    elif current_price >= tp2:
-                        hit_tp = "TP2"
-                    elif current_price >= tp1:
-                        hit_tp = "TP1"
-                else:  # SELL
-                    hit_sl = current_price >= sl
-                    if current_price <= tp3:
-                        hit_tp = "TP3"
-                    elif current_price <= tp2:
-                        hit_tp = "TP2"
-                    elif current_price <= tp1:
-                        hit_tp = "TP1"
-            elif "tp1" in signal and "tp2" in signal:
-                # 2 TPs (backward compatibility)
-                tp1 = signal["tp1"]
-                tp2 = signal["tp2"]
-                
-                if signal_type == "BUY":
-                    hit_sl = current_price <= sl
-                    if current_price >= tp2:
-                        hit_tp = "TP2"
-                    elif current_price >= tp1:
-                        hit_tp = "TP1"
-                else:  # SELL
-                    hit_sl = current_price >= sl
-                    if current_price <= tp2:
-                        hit_tp = "TP2"
-                    elif current_price <= tp1:
-                        hit_tp = "TP1"
-            else:
-                # Single TP (backward compatibility)
-                tp = signal["tp"]
-                
-                if signal_type == "BUY":
-                    hit_sl = current_price <= sl
-                    hit_tp = "TP" if current_price >= tp else None
-                else:  # SELL
-                    hit_sl = current_price >= sl
-                    hit_tp = "TP" if current_price <= tp else None
-            
-            if hit_tp:
-                # Calculate profit - adjust multiplier for JPY pairs
-                if signal["symbol"].endswith("JPY.FOREX"):
-                    # JPY pairs use 3 decimal places, so multiply by 1000
-                    multiplier = 1000
-                else:
-                    # Other pairs use 5 decimal places, so multiply by 10000
-                    multiplier = 10000
-                
-                if signal_type == "BUY":
-                    profit_pips = (current_price - entry) * multiplier
-                else:  # SELL
-                    profit_pips = (entry - current_price) * multiplier
-                
-                # Build original signal message for reply
-                # Determine if it's crypto based on symbol (ends with USDT or doesn't end with .FOREX)
-                signal_symbol = signal["symbol"]
-                is_crypto_signal = signal_symbol.endswith("USDT") or (not signal_symbol.endswith(".FOREX") and not signal_symbol in ["XAUUSD", "BRENT", "USOIL"])
-                
-                if "tp1" in signal and "tp2" in signal and "tp3" in signal:
-                    original_signal_msg = build_signal_message(signal["symbol"], signal_type, entry, sl, signal["tp1"], signal["tp2"], tp3=signal["tp3"], is_crypto=is_crypto_signal)
-                elif "tp1" in signal and "tp2" in signal:
-                    original_signal_msg = build_signal_message(signal["symbol"], signal_type, entry, sl, signal["tp1"], signal["tp2"], is_crypto=is_crypto_signal)
-                else:
-                    original_signal_msg = build_signal_message(signal["symbol"], signal_type, entry, sl, signal.get("tp", signal["tp1"]), is_crypto=is_crypto_signal)
-                
-                # Calculate R/R ratio
-                if signal_type == "BUY":
-                    risk_pips = (entry - sl) * multiplier
-                    if hit_tp == "TP1":
-                        reward_pips = (signal["tp1"] - entry) * multiplier
-                    elif hit_tp == "TP2":
-                        reward_pips = (signal["tp2"] - entry) * multiplier
-                    elif hit_tp == "TP3":
-                        reward_pips = (signal["tp3"] - entry) * multiplier
-                    else:  # Single TP (backward compatibility)
-                        reward_pips = (signal.get("tp", signal["tp1"]) - entry) * multiplier
-                else:  # SELL
-                    risk_pips = (sl - entry) * multiplier
-                    if hit_tp == "TP1":
-                        reward_pips = (entry - signal["tp1"]) * multiplier
-                    elif hit_tp == "TP2":
-                        reward_pips = (entry - signal["tp2"]) * multiplier
-                    elif hit_tp == "TP3":
-                        reward_pips = (entry - signal["tp3"]) * multiplier
-                    else:  # Single TP (backward compatibility)
-                        reward_pips = (entry - signal.get("tp", signal["tp1"])) * multiplier
-                
-                rr_ratio = reward_pips / risk_pips if risk_pips > 0 else 0
-                
-                # Create TP hit message
-                if hit_tp == "TP3":
-                    profit_msg = f"#{signal['symbol'].replace('.FOREX', '')}: All targets 🔥🔥🔥 hit +{profit_pips:.1f} pips total gain!"
-                elif hit_tp == "TP2":
-                    profit_msg = f"#{signal['symbol'].replace('.FOREX', '')}: TP2 reached 🎯💰 +{profit_pips:.1f} pips (R/R 1:{rr_ratio:.1f})"
-                else:
-                    profit_msg = f"#{signal['symbol'].replace('.FOREX', '')}: TP1 reached 🎯💰 +{profit_pips:.1f} pips (R/R 1:{rr_ratio:.1f})"
-                
-                profit_messages.append(profit_msg)
-                
-                # Add to performance tracking
-                add_completed_signal(signal["symbol"], signal_type, entry, current_price, f"hit_{hit_tp.lower()}")
-                
-                signal["status"] = f"hit_{hit_tp.lower()}"
-                signal["exit_price"] = current_price
-                signal["profit_pips"] = profit_pips
-                
-            elif hit_sl:
-                # Add to performance tracking (no message for SL hits)
-                add_completed_signal(signal["symbol"], signal_type, entry, current_price, "hit_sl")
-                
-                signal["status"] = "hit_sl"
-                signal["exit_price"] = current_price
-            
-            updated_signals.append(signal)
-            
-        except Exception as e:
-            print(f"❌ Error checking signal {signal['symbol']}: {e}")
-            # Keep signal active if we can't check price
-            updated_signals.append(signal)
-    
-    save_active_signals(updated_signals)
-    return profit_messages
+# REMOVED: check_signal_hits() function - TP/SL monitoring disabled to reduce TwelveData API usage
+# Bot now only generates and publishes signals, without monitoring TP/SL hits
 
 
 def build_signal_message(symbol: str, signal_type: str, entry: float, sl: float, tp1: float, tp2: float = None, tp3: float = None, is_crypto: bool = False) -> str:
@@ -1339,8 +1163,10 @@ TP1 {format_simple(tp1)}"""
     return msg
 
 
+# REMOVED: Performance reports disabled (depend on TP/SL data)
 def get_performance_report(days: int = 1) -> str:
-    """Generate comprehensive performance report for specified number of days"""
+    """DISABLED: Performance reports removed (depend on TP/SL monitoring)"""
+    return "📊 Performance reports disabled - TP/SL monitoring removed"
     performance_data = load_performance_data()
     now = datetime.now(timezone.utc)
     cutoff_date = (now - timedelta(days=days)).strftime("%Y-%m-%d")
@@ -1453,112 +1279,19 @@ def get_performance_report(days: int = 1) -> str:
     return "\n".join(report_lines)
 
 
+# REMOVED: send_performance_report() - Performance reports disabled
 async def send_performance_report(bot: Optional[Bot], days: int = 1) -> None:
-    """Send comprehensive performance report to user and channels"""
-    if bot is None:
-        logger.debug("[PERFORMANCE_REPORT] Bot is None, skipping report")
-        return
-    
-    try:
-        report = get_performance_report(days)
-        period = "24h" if days == 1 else f"{days} days"
-        
-        # Send to user
-        send_success = await safe_send_message(
-            bot, 
-            chat_id=str(PERFORMANCE_USER_ID), 
-            text=report, 
-            disable_web_page_preview=True,
-            parse_mode='Markdown'
-        )
-        if send_success:
-            print(f"📊 Sent {period} performance report to user {PERFORMANCE_USER_ID}")
-        else:
-            logger.warning(f"[PERFORMANCE_REPORT] Failed to send {period} report to user {PERFORMANCE_USER_ID}")
-        
-        # Send to forex channel as well
-        send_success = await safe_send_message(
-            bot, 
-            chat_id=TELEGRAM_CHANNEL_ID, 
-            text=report, 
-            disable_web_page_preview=True,
-            parse_mode='Markdown'
-        )
-        if send_success:
-            print(f"📊 Sent {period} performance report to forex channel")
-        else:
-            logger.warning(f"[PERFORMANCE_REPORT] Failed to send {period} report to forex channel")
-        
-    except Exception as e:
-        print(f"❌ Failed to send performance report: {e}")
+    """DISABLED: Performance reports removed (depend on TP/SL monitoring)"""
+    # No-op: performance reports disabled
+    pass
 
 
-async def check_and_send_reports(bot: Optional[Bot]) -> None:
-    """Check if it's time to send performance reports"""
-    now = datetime.now(timezone.utc)
-    
-    # Check if it's 14:00 GMT
-    if now.hour == 14 and now.minute == 0:
-        # Daily report (every day)
-        await send_performance_report(bot, days=1)
-        
-        # Weekly report (Fridays only)
-        if now.weekday() == 4:  # Friday
-            await send_performance_report(bot, days=7)
+# REMOVED: check_and_send_reports() - Performance reports disabled (depend on TP/SL data)
+# Bot now only generates signals without tracking TP/SL hits
 
 
-async def post_signals_once(pairs: List[str]) -> None:
-    print("🤖 Starting bot...")
-    bot = await create_telegram_bot_with_check()
-    if not bot:
-        logger.error("[MAIN] ❌ Failed to create Telegram bot - continuing without Telegram send")
-        logger.error("[MAIN] Bot will generate signals but not send them to Telegram")
-    
-    # Check if it's weekend (forex market is closed)
-    now = datetime.now(timezone.utc)
-    weekday = now.weekday()  # 0=Monday, 6=Sunday
-    if weekday >= 5:  # Saturday (5) or Sunday (6)
-        print("🏖️ Weekend detected - Forex market is closed. Skipping forex signal generation.")
-        # Still check for TP hits and reports even on weekends
-        await check_and_send_reports(bot)
-        print("🔍 Checking for TP hits...")
-        profit_messages = await check_signal_hits()
-        print(f"Found {len(profit_messages)} TP hits")
-        for msg in profit_messages:
-            print(f"Sending TP message: {msg}")
-            await safe_send_message(bot, chat_id=TELEGRAM_CHANNEL_ID, text=msg, disable_web_page_preview=True)
-            await asyncio.sleep(0.4)
-        return
-    
-    # Check if we're in trading hours (4 GMT - 23 GMT)
-    current_hour = now.hour
-    if current_hour < 4 or current_hour >= 23:
-        print(f"🌙 Outside trading hours ({current_hour}:00 GMT). Market closed. Skipping forex signal generation.")
-        # Still check for TP hits and reports even outside trading hours
-        await check_and_send_reports(bot)
-        print("🔍 Checking for TP hits...")
-        profit_messages = await check_signal_hits()
-        print(f"Found {len(profit_messages)} TP hits")
-        for msg in profit_messages:
-            print(f"Sending TP message: {msg}")
-            await safe_send_message(bot, chat_id=TELEGRAM_CHANNEL_ID, text=msg, disable_web_page_preview=True)
-            await asyncio.sleep(0.4)
-        return
-    
-    # Check for performance reports first
-    await check_and_send_reports(bot)
-    
-    # Then check for TP hits
-    print("🔍 Checking for TP hits...")
-    profit_messages = await check_signal_hits()
-    print(f"Found {len(profit_messages)} TP hits")
-    for msg in profit_messages:
-        print(f"Sending TP message: {msg}")
-        await safe_send_message(bot, chat_id=TELEGRAM_CHANNEL_ID, text=msg, disable_web_page_preview=True)
-        await asyncio.sleep(0.4)
-    
-    # Generate signals for different channels
-    await generate_channel_signals(bot, pairs)
+# REMOVED: post_signals_once() function - replaced by main_async() infinite loop
+# TP/SL checking and performance reports removed to reduce API usage
 
 
 async def startup_init():
@@ -1652,7 +1385,7 @@ async def startup_init():
         return False
 
 
-async def generate_channel_signals(bot: Optional[Bot], pairs: List[str]) -> None:
+async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request_counter_ref: Optional[Dict] = None) -> None:
     """Generate signals for different channels with proper limits and time constraints.
     
     If bot is None, signals are still generated and logged locally, but not sent to Telegram.
@@ -1789,37 +1522,61 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str]) -> None
             print(f"📊 {channel_name}: Analyzing {sym} (attempt {attempts})...")
             try:
                 # Get real-time price using data router
+                # CRITICAL: Only 1 request to TwelveData per signal (no retries in generation)
                 # For crypto, use Binance; for others, use data router
                 asset_type = config.get("asset_type", "FOREX")
                 is_crypto_channel = asset_type == "CRYPTO"
                 
+                # Track requests for this signal (must be exactly 1 for non-crypto)
+                signal_request_count = 0
+                
                 try:
                     if is_crypto_channel:
-                        # Crypto: use Binance directly
+                        # Crypto: use Binance directly (no TwelveData)
                         from working_combined_bot import get_real_crypto_price
                         rt_price = get_real_crypto_price(sym)
                         if rt_price:
                             source = "BINANCE"
                             reason = None
+                            signal_request_count = 0  # Binance doesn't count
                         else:
                             rt_price = None
                             reason = "binance_unavailable"
                             source = "BINANCE"
+                            signal_request_count = 0
                     else:
-                        # Forex/Index/Gold: use data router
+                        # Forex/Index/Gold: use data router (TwelveData/Yahoo)
+                        # CRITICAL: Only 1 request, no retries
                         data_router = get_data_router()
                         if data_router:
+                            # Single request - no retries for signal generation
+                            signal_request_count = 1
                             rt_price, reason, source = await data_router.get_price_async(sym)
+                            
+                            # Update global request counter
+                            if request_counter_ref is not None:
+                                request_counter_ref["count"] = request_counter_ref.get("count", 0) + 1
+                                logger.debug(f"[GENERATE_SIGNALS] Request counter updated: {request_counter_ref['count']}")
                         else:
                             rt_price, reason, source = get_price(sym)
+                            signal_request_count = 1  # Sync call also counts
+                    
+                    # Verify exactly 1 request was made (for non-crypto)
+                    if not is_crypto_channel and signal_request_count != 1:
+                        logger.error(f"[GENERATE_SIGNALS] {channel_name}: Invalid request count for {sym}: {signal_request_count} (expected 1)")
+                        print(f"  ❌ Invalid request count: {signal_request_count} (expected 1) - skipping signal")
+                        continue
                     
                     if rt_price is None:
                         print(f"  ⏸️ Price unavailable for {sym}: {reason}")
+                        logger.warning(f"[GENERATE_SIGNALS] {channel_name}: Price unavailable for {sym}, reason={reason}")
                         continue
                     
                     entry = rt_price
-                    print(f"  Real-time entry price: {entry} (source: {source})")
+                    logger.info(f"[GENERATE_SIGNALS] {channel_name}: {sym} price={entry:.5f} (source={source}, requests={signal_request_count})")
+                    print(f"  Real-time entry price: {entry} (source: {source}, requests: {signal_request_count})")
                 except Exception as e:
+                    logger.exception(f"[GENERATE_SIGNALS] {channel_name}: Failed to get price for {sym}: {type(e).__name__}: {e}")
                     print(f"  Failed to get price for {sym}: {e}")
                     continue
                 
@@ -2136,18 +1893,17 @@ async def main_async():
     
     pairs = DEFAULT_PAIRS
     
-    # Track last execution times for periodic tasks
-    last_tp_check_time = 0.0
+    # Track last execution time for signal generation
     last_signal_generation_time = 0.0
-    
-    # TP hits check interval: 20 seconds
-    TP_CHECK_INTERVAL = 20.0
     
     # Signal generation interval: 60 seconds
     SIGNAL_GENERATION_INTERVAL = 60.0
     
+    # Global counter for TwelveData requests per cycle
+    twelve_data_requests_count = 0
+    
     print("[MAIN] 🤖 Bot started - running forever (Ctrl+C to stop)")
-    print(f"[MAIN] TP check interval: {TP_CHECK_INTERVAL}s")
+    print("[MAIN] ⚠️ TP/SL monitoring DISABLED - only signal generation enabled")
     print(f"[MAIN] Signal generation interval: {SIGNAL_GENERATION_INTERVAL}s")
     
     try:
@@ -2155,34 +1911,19 @@ async def main_async():
             try:
                 current_time = time.time()
                 
-                # Check for TP hits every 20 seconds
-                if current_time - last_tp_check_time >= TP_CHECK_INTERVAL:
-                    try:
-                        print("[MAIN] 🔍 Checking for TP hits...")
-                        profit_messages = await check_signal_hits()
-                        if profit_messages:
-                            print(f"[MAIN] Found {len(profit_messages)} TP hits")
-                            for msg in profit_messages:
-                                print(f"[MAIN] Sending TP message: {msg}")
-                                await safe_send_message(bot, chat_id=TELEGRAM_CHANNEL_ID, text=msg, disable_web_page_preview=True)
-                                await asyncio.sleep(0.4)
-                        last_tp_check_time = current_time
-                    except Exception as e:
-                        logger.exception(f"[MAIN] Error in TP check: {type(e).__name__}: {e}")
-                        # Continue loop even if TP check fails
-                
-                # Check for performance reports
-                try:
-                    await check_and_send_reports(bot)
-                except Exception as e:
-                    logger.exception(f"[MAIN] Error in report check: {type(e).__name__}: {e}")
-                    # Continue loop even if report check fails
-                
                 # Generate signals every 60 seconds
                 if current_time - last_signal_generation_time >= SIGNAL_GENERATION_INTERVAL:
                     try:
                         print("[MAIN] 📊 Generating signals for all channels...")
-                        await generate_channel_signals(bot, pairs)
+                        # Pass mutable dict for request counter
+                        request_counter = {"count": 0}
+                        await generate_channel_signals(bot, pairs, request_counter_ref=request_counter)
+                        
+                        # Log request count after generation
+                        actual_count = request_counter.get("count", 0)
+                        logger.info(f"[MAIN] ✅ Cycle completed: TwelveData requests used: {actual_count}")
+                        print(f"[MAIN] ✅ Cycle completed: TwelveData requests: {actual_count}")
+                        
                         last_signal_generation_time = current_time
                     except Exception as e:
                         logger.exception(f"[MAIN] Error in signal generation: {type(e).__name__}: {e}")

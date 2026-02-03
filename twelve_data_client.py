@@ -15,6 +15,7 @@ TWELVE_MIN_INTERVAL_MS = 400  # Minimum interval between requests (milliseconds)
 TWELVE_MAX_RETRIES = 3  # Maximum retry attempts
 TWELVE_BACKOFF_BASE_MS = 500  # Base backoff time (milliseconds)
 TWELVE_BACKOFF_MAX_MS = 5000  # Maximum backoff time (milliseconds)
+TWELVE_MAX_REQUESTS_PER_MINUTE = 6  # Maximum requests per minute (to stay under 8/min limit)
 
 
 class TwelveDataClient:
@@ -62,6 +63,10 @@ class TwelveDataClient:
         # Rate limiting: simple semaphore (max 8 concurrent requests)
         # Created lazily in _ensure_started() to avoid event loop issues
         self._semaphore: Optional[asyncio.Semaphore] = None
+        
+        # Per-minute request tracking for throttling
+        self._requests_per_minute: List[float] = []  # List of request timestamps
+        self._rate_limit_cooldown_until = 0.0  # Timestamp when cooldown ends (0 = no cooldown)
         
         # HTTP client (reused for connection pooling)
         # Created lazily in _ensure_started() to avoid event loop issues
@@ -123,15 +128,44 @@ class TwelveDataClient:
     
     async def _throttle(self):
         """
-        Throttle requests to respect minimum interval between requests
+        Throttle requests to respect minimum interval and per-minute limits
         Uses monotonic time and asyncio.Lock for thread-safe throttling
+        
+        Also checks for cooldown after 429 errors (60-90 seconds)
         """
         await self._ensure_started()
         
         async with self._throttle_lock:
             now = time.monotonic()
+            now_wallclock = time.time()
             
-            # Calculate how long to wait
+            # Check if we're in cooldown (after 429 error)
+            if self._rate_limit_cooldown_until > now_wallclock:
+                cooldown_remaining = self._rate_limit_cooldown_until - now_wallclock
+                print(f"[TWELVE_DATA] [THROTTLE] In cooldown after 429 error, waiting {cooldown_remaining:.1f}s...")
+                await asyncio.sleep(cooldown_remaining)
+                # Reset cooldown after waiting
+                self._rate_limit_cooldown_until = 0.0
+            
+            # Clean old requests (older than 1 minute)
+            one_minute_ago = now_wallclock - 60
+            self._requests_per_minute = [ts for ts in self._requests_per_minute if ts > one_minute_ago]
+            
+            # Check per-minute limit
+            if len(self._requests_per_minute) >= TWELVE_MAX_REQUESTS_PER_MINUTE:
+                # Calculate wait time until oldest request expires
+                oldest_request = min(self._requests_per_minute)
+                wait_until = oldest_request + 60
+                wait_time = wait_until - now_wallclock
+                if wait_time > 0:
+                    print(f"[TWELVE_DATA] [THROTTLE] Per-minute limit reached ({len(self._requests_per_minute)}/{TWELVE_MAX_REQUESTS_PER_MINUTE}), waiting {wait_time:.1f}s...")
+                    await asyncio.sleep(wait_time)
+                    # Re-clean after wait
+                    now_wallclock = time.time()
+                    one_minute_ago = now_wallclock - 60
+                    self._requests_per_minute = [ts for ts in self._requests_per_minute if ts > one_minute_ago]
+            
+            # Calculate how long to wait for minimum interval
             wait_time = self._next_allowed_time - now
             
             if wait_time > 0:
@@ -141,6 +175,9 @@ class TwelveDataClient:
             
             # Update next allowed time
             self._next_allowed_time = time.monotonic() + self.min_interval
+            
+            # Record this request timestamp
+            self._requests_per_minute.append(time.time())
     
     def _calculate_backoff(self, attempt: int) -> float:
         """
@@ -206,7 +243,7 @@ class TwelveDataClient:
         
         return False
     
-    async def _make_request(self, endpoint: str, params: Dict[str, Any], max_retries: Optional[int] = None) -> Optional[Dict]:
+    async def _make_request(self, endpoint: str, params: Dict[str, Any], max_retries: Optional[int] = None, single_shot: bool = False) -> Optional[Dict]:
         """
         Make HTTP request with throttling, retry logic, and backoff
         
@@ -220,6 +257,10 @@ class TwelveDataClient:
         """
         if max_retries is None:
             max_retries = self.max_retries
+        
+        # For single-shot mode (signal generation): disable retries
+        if single_shot or max_retries == 0:
+            max_retries = 0
         
         # Ensure client is initialized (must be in running loop)
         await self._ensure_started()
@@ -275,44 +316,13 @@ class TwelveDataClient:
                             return None
                     
                     elif self._is_rate_limit_error(response):
-                        # Rate limit (429) - wait until next minute
-                        # Calculate wait time: wait until next minute + 0.2s buffer
-                        wait_seconds = 60 - (time.time() % 60) + 0.2
-                        print(f"[TWELVE_DATA] ⚠️ Rate limit (429), waiting {wait_seconds:.2f}s until next minute")
-                        await asyncio.sleep(wait_seconds)
-                        
-                        # After waiting, try one more time (single retry after minute wait)
-                        # Only retry if we haven't exhausted all attempts
-                        if attempt < max_retries - 1:
-                            # Make one final attempt after minute wait
-                            try:
-                                await self._throttle()
-                                async with self._semaphore:
-                                    response = await client.get(url, params=params)
-                                    if response.status_code == 200:
-                                        try:
-                                            data = response.json()
-                                            if isinstance(data, dict) and data.get('status') == 'error':
-                                                error_code = data.get('code', 'UNKNOWN')
-                                                error_message = data.get('message', 'No error message')
-                                                if self._is_rate_limit_error(response):
-                                                    print(f"[TWELVE_DATA] ❌ Still rate limited after minute wait: code={error_code}, message={error_message}")
-                                                    print(f"[TWELVE_DATA] Skipping symbol (rate limit persists)")
-                                                    return None
-                                            return data
-                                        except json.JSONDecodeError:
-                                            return None
-                                    elif self._is_rate_limit_error(response):
-                                        # Still rate limited after minute wait - skip symbol
-                                        print(f"[TWELVE_DATA] ❌ Still rate limited (429) after minute wait - skipping symbol")
-                                        return None
-                            except Exception as e:
-                                print(f"[TWELVE_DATA] ❌ Error on retry after minute wait: {type(e).__name__}: {e}")
-                                return None
-                        else:
-                            # Already exhausted retries - skip symbol
-                            print(f"[TWELVE_DATA] ❌ Rate limit (429) - skipping symbol (max retries reached)")
-                            return None
+                        # Rate limit (429) - activate cooldown (60-90 seconds) and skip
+                        import random
+                        cooldown_seconds = random.uniform(60, 90)  # 60-90 seconds cooldown
+                        self._rate_limit_cooldown_until = time.time() + cooldown_seconds
+                        print(f"[TWELVE_DATA] ⚠️ Rate limit (429) detected - activating cooldown for {cooldown_seconds:.1f}s")
+                        print(f"[TWELVE_DATA] Skipping symbol (will resume after cooldown)")
+                        return None
                     
                     elif 500 <= response.status_code < 600:
                         # Server error - retry with backoff
@@ -386,12 +396,13 @@ class TwelveDataClient:
             # Return as-is if already normalized or unknown format
             return symbol_upper
     
-    async def get_price(self, symbol: str) -> Optional[float]:
+    async def get_price(self, symbol: str, max_retries_override: Optional[int] = None) -> Optional[float]:
         """
         Get current price for symbol
         
         Args:
             symbol: Symbol name (e.g., "EURUSD" or "EUR/USD")
+            max_retries_override: Override max_retries (use 0 for signal generation - no retries)
         
         Returns:
             Price as float or None on error
@@ -404,7 +415,11 @@ class TwelveDataClient:
             'symbol': normalized_symbol,
         }
         
-        data = await self._make_request('/price', params)
+        # For signal generation: use max_retries=0 (no retries, single-shot)
+        # For other uses: use default max_retries
+        retries = max_retries_override if max_retries_override is not None else self.max_retries
+        
+        data = await self._make_request('/price', params, max_retries=retries)
         
         if not data:
             print(f"[TWELVE_DATA] [GET_PRICE] ❌ Failed to get price for {symbol}")

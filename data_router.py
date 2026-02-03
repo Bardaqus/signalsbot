@@ -372,6 +372,7 @@ class DataRouter:
         
         if asset_class == AssetClass.FOREX:
             # FOREX: Twelve Data only
+            # CRITICAL: For signal generation, use max_retries=0 (single-shot, no retries)
             if not self.twelve_data_client:
                 latency_ms = int((time.time() - start_time) * 1000)
                 print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, price=None, reason=twelve_data_client_not_initialized, latency={latency_ms}ms")
@@ -379,11 +380,12 @@ class DataRouter:
             
             try:
                 # Direct async call - no loop creation needed
-                price = await self.twelve_data_client.get_price(symbol)
+                # Use max_retries=0 for signal generation (single-shot, no retries)
+                price = await self.twelve_data_client.get_price(symbol, max_retries_override=0)
                 latency_ms = int((time.time() - start_time) * 1000)
                 
                 if price is not None:
-                    print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, price={price:.5f}, latency={latency_ms}ms")
+                    print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, price={price:.5f}, latency={latency_ms}ms, requests=1")
                     return price, None, "TWELVE_DATA"
                 else:
                     print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, price=None, reason=twelve_data_unavailable, latency={latency_ms}ms")
