@@ -4,7 +4,7 @@ Asynchronous client for fetching FOREX prices and time series data
 """
 import asyncio
 import httpx
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 import time
 import json
 import random
@@ -96,12 +96,13 @@ class TwelveDataClient:
         if self._semaphore is None:
             self._semaphore = asyncio.Semaphore(8)
         
-        # Create HTTP client if not exists
+        # Create HTTP client if not exists (without async with - we manage lifecycle manually)
         if self._client is None:
             self._client = httpx.AsyncClient(
                 timeout=httpx.Timeout(self.timeout),
                 limits=httpx.Limits(max_keepalive_connections=5, max_connections=10)
             )
+            print(f"[TWELVE_DATA] HTTP client created (will be closed only on shutdown)")
     
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client (ensures initialization)"""
@@ -109,17 +110,25 @@ class TwelveDataClient:
         return self._client
     
     async def close(self):
-        """Close HTTP client (idempotent)"""
+        """Close HTTP client (idempotent) - should only be called on shutdown"""
         if self._closed:
             return
         
         self._closed = True
+        print(f"[TWELVE_DATA] Closing HTTP client (shutdown)...")
         
         if self._client:
             try:
-                await self._client.aclose()
+                if not self._client.is_closed:
+                    await self._client.aclose()
+                    print(f"[TWELVE_DATA] ✅ HTTP client closed successfully")
+                else:
+                    print(f"[TWELVE_DATA] ⚠️ HTTP client was already closed")
             except Exception as e:
                 print(f"[TWELVE_DATA] ⚠️ Error closing client: {type(e).__name__}: {e}")
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.exception(f"[TWELVE_DATA] Exception closing client: {type(e).__name__}: {e}")
             finally:
                 self._client = None
         
@@ -140,8 +149,30 @@ class TwelveDataClient:
             return False
         return time.time() < self._circuit_breaker_open_until
     
-    def _record_error(self):
-        """Record an error and potentially open circuit breaker"""
+    def before_request(self) -> bool:
+        """
+        Check if request is allowed (circuit breaker API)
+        
+        Returns:
+            True if request is allowed, False if circuit breaker is open
+        """
+        return not self._is_circuit_breaker_open()
+    
+    def on_success(self):
+        """Record a successful request and reset circuit breaker"""
+        if self._circuit_breaker_errors > 0:
+            print(f"[TWELVE_DATA] [CIRCUIT_BREAKER] ✅ CLOSED - success after {self._circuit_breaker_errors} errors")
+        self._circuit_breaker_errors = 0
+        self._circuit_breaker_open_until = 0.0
+    
+    def on_failure(self, reason: Optional[str] = None, exception: Optional[Exception] = None):
+        """
+        Record a failure and potentially open circuit breaker
+        
+        Args:
+            reason: Optional reason string (e.g., "rate_limit", "timeout", "network_error")
+            exception: Optional exception object
+        """
         self._circuit_breaker_errors += 1
         
         if self._circuit_breaker_errors >= self._circuit_breaker_threshold:
@@ -150,15 +181,17 @@ class TwelveDataClient:
             cooldown = min(self._circuit_breaker_cooldown_base * cooldown_multiplier, self._circuit_breaker_cooldown_max)
             
             self._circuit_breaker_open_until = time.time() + cooldown
-            print(f"[TWELVE_DATA] [CIRCUIT_BREAKER] 🔴 OPENED after {self._circuit_breaker_errors} consecutive errors")
+            reason_str = f" ({reason})" if reason else ""
+            print(f"[TWELVE_DATA] [CIRCUIT_BREAKER] 🔴 OPENED after {self._circuit_breaker_errors} consecutive errors{reason_str}")
             print(f"[TWELVE_DATA] [CIRCUIT_BREAKER] Cooldown: {cooldown:.1f}s (until {time.strftime('%H:%M:%S', time.localtime(self._circuit_breaker_open_until))})")
     
+    def _record_error(self):
+        """Legacy method - use on_failure() instead"""
+        self.on_failure()
+    
     def _record_success(self):
-        """Record a successful request and reset circuit breaker"""
-        if self._circuit_breaker_errors > 0:
-            print(f"[TWELVE_DATA] [CIRCUIT_BREAKER] ✅ CLOSED - success after {self._circuit_breaker_errors} errors")
-        self._circuit_breaker_errors = 0
-        self._circuit_breaker_open_until = 0.0
+        """Legacy method - use on_success() instead"""
+        self.on_success()
     
     def _log_circuit_breaker_status(self, force: bool = False):
         """Log circuit breaker status (throttled to avoid spam)"""
@@ -299,7 +332,7 @@ class TwelveDataClient:
         
         return False
     
-    async def _make_request(self, endpoint: str, params: Dict[str, Any], max_retries: Optional[int] = None, single_shot: bool = False) -> Optional[Dict]:
+    async def _make_request(self, endpoint: str, params: Dict[str, Any], max_retries: Optional[int] = None, single_shot: bool = False) -> Tuple[Optional[Dict], Optional[str]]:
         """
         Make HTTP request with throttling, retry logic, backoff, and circuit breaker
         
@@ -310,12 +343,13 @@ class TwelveDataClient:
             single_shot: If True, disable retries (for signal generation)
         
         Returns:
-            JSON response dict or None on failure
+            Tuple of (JSON response dict or None, reason: str or None)
+            reason can be: "cooldown", "http_error_429", "timeout", "network_error", "parse_error", "unknown_exception", etc.
         """
         # Check circuit breaker first (before any network calls)
         if self._is_circuit_breaker_open():
             self._log_circuit_breaker_status()
-            return None
+            return None, "cooldown"
         
         if max_retries is None:
             max_retries = self.max_retries
@@ -323,6 +357,11 @@ class TwelveDataClient:
         # For single-shot mode (signal generation): disable retries
         if single_shot or max_retries == 0:
             max_retries = 0
+        
+        # Treat max_retries as "number of retries" and compute total attempts
+        # max_retries=0 means 1 attempt (initial) + 0 retries = 1 total attempt
+        # max_retries=3 means 1 attempt (initial) + 3 retries = 4 total attempts
+        attempts = max_retries + 1
         
         # Ensure client is initialized (must be in running loop)
         await self._ensure_started()
@@ -332,16 +371,26 @@ class TwelveDataClient:
         
         client = await self._get_client()
         
+        # Check if client is closed (should not happen, but defensive check)
+        if client.is_closed:
+            error_msg = "HTTP client is closed"
+            print(f"[TWELVE_DATA] ❌ {error_msg}")
+            self.on_failure(reason="client_closed")
+            return None, f"exception:RuntimeError:{error_msg}"
+        
         # Track if we got a successful response
         success = False
         
-        for attempt in range(max_retries):
+        # Loop: attempts = max_retries + 1, so max_retries=0 -> attempts=1 (one HTTP request)
+        for attempt in range(attempts):
             try:
                 # Throttle: ensure minimum interval between requests
                 await self._throttle()
                 
                 # Make request with semaphore (concurrency limit)
                 async with self._semaphore:
+                    # Actual HTTP request happens here - log it
+                    print(f"[TWELVE_DATA] [HTTP_REQUEST] GET {url}?symbol={params.get('symbol', 'N/A')}")
                     response = await client.get(url, params=params)
                     
                     # Check status code
@@ -357,114 +406,154 @@ class TwelveDataClient:
                                 # Check if it's a rate limit error in JSON
                                 if self._is_rate_limit_error(response):
                                     # Record error for circuit breaker
-                                    self._record_error()
-                                    if attempt < max_retries - 1:
+                                    self.on_failure(reason="rate_limit_json")
+                                    # Check if we can retry (attempt is 0-based, so attempt < max_retries means we can retry)
+                                    if attempt < max_retries:
                                         backoff_time = self._calculate_backoff(attempt)
-                                        print(f"[TWELVE_DATA] ⚠️ Rate limit detected (JSON error), waiting {backoff_time:.2f}s before retry {attempt + 1}/{max_retries}")
+                                        print(f"[TWELVE_DATA] ⚠️ Rate limit detected (JSON error), waiting {backoff_time:.2f}s before retry {attempt + 1}/{attempts}")
                                         await asyncio.sleep(backoff_time)
                                         continue
                                     else:
-                                        print(f"[TWELVE_DATA] ❌ Rate limit after {max_retries} attempts: code={error_code}, message={error_message}")
-                                        return None
+                                        # Log response details for diagnostics
+                                        response_preview = response.text[:200] if hasattr(response, 'text') else str(response)[:200]
+                                        print(f"[TWELVE_DATA] ❌ Rate limit after {attempts} attempt(s): code={error_code}, message={error_message}")
+                                        print(f"[TWELVE_DATA] Response preview: {response_preview}")
+                                        return None, "rate_limit_429"
                                 
                                 # Check if it's a permanent error
                                 if self._is_permanent_error(response):
                                     # Don't record permanent errors (like invalid API key) - they won't recover
+                                    response_preview = response.text[:200] if hasattr(response, 'text') else str(response)[:200]
                                     print(f"[TWELVE_DATA] ❌ Permanent error (no retry): code={error_code}, message={error_message}")
-                                    return None
+                                    print(f"[TWELVE_DATA] Response preview: {response_preview}")
+                                    return None, "invalid_api_key" if "api key" in error_message.lower() else f"permanent_error_{error_code}"
                                 
                                 # Other errors: record for circuit breaker
-                                self._record_error()
+                                self.on_failure(reason=f"api_error_{error_code}")
+                                response_preview = response.text[:200] if hasattr(response, 'text') else str(response)[:200]
                                 print(f"[TWELVE_DATA] ❌ API error: code={error_code}, message={error_message}")
-                                return None
+                                print(f"[TWELVE_DATA] Response preview: {response_preview}")
+                                return None, f"api_error_{error_code}"
                             
-                            # Success - reset circuit breaker
-                            self._record_success()
+                            # Success - reset circuit breaker (will be called in get_price)
                             success = True
-                            return data
+                            # Log successful HTTP response
+                            print(f"[TWELVE_DATA] [HTTP_RESPONSE] GET {url} -> {response.status_code} OK")
+                            return data, None
                         except json.JSONDecodeError as e:
                             print(f"[TWELVE_DATA] ❌ Invalid JSON response: {e}")
                             print(f"[TWELVE_DATA] Response preview: {response.text[:200]}")
-                            return None
+                            self.on_failure(reason="parse_error", exception=e)
+                            return None, "parse_error"
                     
                     elif self._is_rate_limit_error(response):
                         # Rate limit (429) - record error and activate cooldown
-                        self._record_error()
+                        self.on_failure(reason="rate_limit_429")
                         import random
                         cooldown_seconds = random.uniform(60, 90)  # 60-90 seconds cooldown
                         self._rate_limit_cooldown_until = time.time() + cooldown_seconds
                         print(f"[TWELVE_DATA] ⚠️ Rate limit (429) detected - activating cooldown for {cooldown_seconds:.1f}s")
                         print(f"[TWELVE_DATA] Skipping symbol (will resume after cooldown)")
-                        return None
+                        return None, "http_error_429"
                     
                     elif 500 <= response.status_code < 600:
                         # Server error - record error and retry with backoff
-                        self._record_error()
-                        if attempt < max_retries - 1:
+                        self.on_failure(reason=f"server_error_{response.status_code}")
+                        response_preview = response.text[:200] if hasattr(response, 'text') else str(response)[:200]
+                        # Check if we can retry (attempt < max_retries means we can retry)
+                        if attempt < max_retries:
                             backoff_time = self._calculate_backoff(attempt)
-                            print(f"[TWELVE_DATA] ⚠️ Server error {response.status_code}, waiting {backoff_time:.2f}s before retry {attempt + 1}/{max_retries}")
+                            print(f"[TWELVE_DATA] ⚠️ Server error {response.status_code}, waiting {backoff_time:.2f}s before retry {attempt + 1}/{attempts}")
+                            print(f"[TWELVE_DATA] Response preview: {response_preview}")
                             await asyncio.sleep(backoff_time)
                             continue
                         else:
-                            print(f"[TWELVE_DATA] ❌ Server error {response.status_code} after {max_retries} attempts")
-                            return None
+                            print(f"[TWELVE_DATA] ❌ Server error {response.status_code} after {attempts} attempt(s)")
+                            print(f"[TWELVE_DATA] Response preview: {response_preview}")
+                            return None, f"server_error_{response.status_code}"
                     
                     elif self._is_permanent_error(response):
                         # Permanent error - don't retry, don't record (won't recover)
-                        print(f"[TWELVE_DATA] ❌ Permanent error {response.status_code}: {response.text[:200]}")
-                        return None
+                        response_preview = response.text[:200] if hasattr(response, 'text') else str(response)[:200]
+                        print(f"[TWELVE_DATA] ❌ Permanent error {response.status_code}: {response_preview}")
+                        return None, "invalid_api_key" if response.status_code == 401 else f"permanent_error_{response.status_code}"
                     
                     else:
-                        # Other client error (4xx) - record error
-                        self._record_error()
-                        print(f"[TWELVE_DATA] ❌ HTTP {response.status_code}: {response.text[:200]}")
-                        return None
+                        # Other client error (4xx) - record error and log response details
+                        self.on_failure(reason=f"client_error_{response.status_code}")
+                        response_preview = response.text[:200] if hasattr(response, 'text') else str(response)[:200]
+                        print(f"[TWELVE_DATA] ❌ HTTP {response.status_code}: {response_preview}")
+                        # Try to parse JSON error if available
+                        try:
+                            error_json = response.json()
+                            if isinstance(error_json, dict):
+                                error_code = error_json.get('code', 'UNKNOWN')
+                                error_message = error_json.get('message', 'No message')
+                                print(f"[TWELVE_DATA] JSON error details: code={error_code}, message={error_message}")
+                        except:
+                            pass
+                        return None, f"client_error_{response.status_code}"
                         
-            except httpx.TimeoutException:
+            except httpx.TimeoutException as e:
                 # Timeout - record error
-                self._record_error()
-                if attempt < max_retries - 1:
+                self.on_failure(reason="timeout", exception=e)
+                # Check if we can retry (attempt < max_retries means we can retry)
+                if attempt < max_retries:
                     backoff_time = self._calculate_backoff(attempt)
-                    print(f"[TWELVE_DATA] ⚠️ Timeout, waiting {backoff_time:.2f}s before retry {attempt + 1}/{max_retries}")
+                    print(f"[TWELVE_DATA] ⚠️ Timeout, waiting {backoff_time:.2f}s before retry {attempt + 1}/{attempts}")
                     await asyncio.sleep(backoff_time)
                     continue
                 else:
-                    print(f"[TWELVE_DATA] ❌ Timeout after {max_retries} attempts")
-                    return None
+                    print(f"[TWELVE_DATA] ❌ Timeout after {attempts} attempt(s): {type(e).__name__}: {e}")
+                    return None, "timeout"
                     
             except (httpx.RequestError, httpx.TransportError) as e:
                 # Network error - record error
-                self._record_error()
-                if attempt < max_retries - 1:
+                self.on_failure(reason="network_error", exception=e)
+                # Check if we can retry (attempt < max_retries means we can retry)
+                if attempt < max_retries:
                     backoff_time = self._calculate_backoff(attempt)
-                    print(f"[TWELVE_DATA] ⚠️ Network error {type(e).__name__}: {e}, waiting {backoff_time:.2f}s before retry {attempt + 1}/{max_retries}")
+                    print(f"[TWELVE_DATA] ⚠️ Network error {type(e).__name__}: {e}, waiting {backoff_time:.2f}s before retry {attempt + 1}/{attempts}")
                     await asyncio.sleep(backoff_time)
                     continue
                 else:
-                    print(f"[TWELVE_DATA] ❌ Network error after {max_retries} attempts: {type(e).__name__}: {e}")
-                    return None
+                    print(f"[TWELVE_DATA] ❌ Network error after {attempts} attempt(s): {type(e).__name__}: {e}")
+                    return None, "network_error"
                     
             except RuntimeError as e:
-                # Circuit breaker error - don't record (already recorded)
+                # Circuit breaker error - don't record (already recorded in _throttle)
                 if "Circuit breaker" in str(e):
-                    return None
+                    return None, "cooldown"
                 # Other runtime errors - record
-                self._record_error()
+                self.on_failure(reason="runtime_error", exception=e)
                 print(f"[TWELVE_DATA] ❌ Runtime error: {type(e).__name__}: {e}")
-                return None
+                import traceback
+                print(f"[TWELVE_DATA] Traceback: {traceback.format_exc()}")
+                return None, f"runtime_error: {str(e)}"
                     
             except Exception as e:
-                # Unexpected error - record
-                self._record_error()
-                print(f"[TWELVE_DATA] ❌ Unexpected error: {type(e).__name__}: {e}")
-                return None
+                # Unexpected error - record with full details
+                error_type = type(e).__name__
+                error_msg = str(e)
+                self.on_failure(reason=f"exception_{error_type}", exception=e)
+                print(f"[TWELVE_DATA] ❌ Unexpected error: {error_type}: {error_msg}")
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.exception(f"[TWELVE_DATA] Unexpected exception in _make_request: {error_type}: {error_msg}")
+                import traceback
+                print(f"[TWELVE_DATA] Traceback: {traceback.format_exc()}")
+                return None, f"exception:{error_type}:{error_msg}"
         
         # If we get here, all attempts failed and success was never True
+        # This should not happen - all error paths should return above
+        # But if it does, log it as an exception
         if not success:
-            # Error already recorded in the exception handlers above
-            pass
-        
-        return None
+            error_msg = f"All {attempts} attempt(s) exhausted without returning (max_retries={max_retries})"
+            print(f"[TWELVE_DATA] ❌ {error_msg}")
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"[TWELVE_DATA] {error_msg} - this should not happen, all error paths should return")
+            return None, f"exception:RuntimeError:{error_msg}"
     
     @staticmethod
     def normalize_forex_symbol(symbol: str) -> str:
@@ -491,7 +580,7 @@ class TwelveDataClient:
             # Return as-is if already normalized or unknown format
             return symbol_upper
     
-    async def get_price(self, symbol: str, max_retries_override: Optional[int] = None) -> Optional[float]:
+    async def get_price(self, symbol: str, max_retries_override: Optional[int] = None) -> Tuple[Optional[float], Optional[str]]:
         """
         Get current price for symbol with circuit breaker protection
         
@@ -500,39 +589,87 @@ class TwelveDataClient:
             max_retries_override: Override max_retries (use 0 for signal generation - no retries)
         
         Returns:
-            Price as float or None on error (circuit breaker open, rate limit, etc.)
+            Tuple of (price: float or None, reason: str or None)
+            reason will be "twelve_data_cooldown" if circuit breaker is open
         """
-        # Check circuit breaker first (before any network calls)
-        if self._is_circuit_breaker_open():
+        # Check circuit breaker FIRST (before any logging or network calls)
+        if not self.before_request():
             self._log_circuit_breaker_status()
-            return None
+            return None, "cooldown"
         
         normalized_symbol = self.normalize_forex_symbol(symbol)
         
-        print(f"[TWELVE_DATA] [GET_PRICE] Requesting price for {symbol} (normalized: {normalized_symbol})")
+        # Log ONLY if we're actually going to make HTTP request
+        # Note: single-shot mode (retries=0) will make exactly 1 HTTP request (attempts = 0 + 1 = 1)
+        retries = max_retries_override if max_retries_override is not None else self.max_retries
+        attempts_expected = retries + 1
+        print(f"[TWELVE_DATA] [GET_PRICE] Requesting price for {symbol} (normalized: {normalized_symbol}, attempts={attempts_expected}, retries={retries})")
         
         params = {
             'symbol': normalized_symbol,
         }
         
-        # For signal generation: use max_retries=0 (no retries, single-shot)
+        # For signal generation: use max_retries=0 (no retries, single-shot = 1 HTTP request)
         # For other uses: use default max_retries
-        retries = max_retries_override if max_retries_override is not None else self.max_retries
-        
         try:
-            data = await self._make_request('/price', params, max_retries=retries, single_shot=(retries == 0))
+            data, request_reason = await self._make_request('/price', params, max_retries=retries, single_shot=(retries == 0))
         except RuntimeError as e:
-            # Circuit breaker error
-            if "Circuit breaker" in str(e):
-                return None
-            raise
+            # Circuit breaker error from _throttle
+            error_type = type(e).__name__
+            error_msg = str(e)
+            if "Circuit breaker" in error_msg or "closed" in error_msg.lower():
+                print(f"[TWELVE_DATA] [GET_PRICE] ❌ Circuit breaker/client closed error: {error_type}: {error_msg}")
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.exception(f"[TWELVE_DATA] RuntimeError in get_price: {error_type}: {error_msg}")
+                return None, "cooldown"
+            print(f"[TWELVE_DATA] [GET_PRICE] ❌ RuntimeError: {error_type}: {error_msg}")
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.exception(f"[TWELVE_DATA] RuntimeError in get_price: {error_type}: {error_msg}")
+            import traceback
+            print(f"[TWELVE_DATA] [GET_PRICE] Traceback: {traceback.format_exc()}")
+            return None, f"exception:{error_type}:{error_msg}"
+        except Exception as e:
+            # Catch any other exceptions
+            error_type = type(e).__name__
+            error_msg = str(e)
+            print(f"[TWELVE_DATA] [GET_PRICE] ❌ Exception: {error_type}: {error_msg}")
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.exception(f"[TWELVE_DATA] Exception in get_price: {error_type}: {error_msg}")
+            import traceback
+            print(f"[TWELVE_DATA] [GET_PRICE] Traceback: {traceback.format_exc()}")
+            return None, f"exception:{error_type}:{error_msg}"
         
         if not data:
             # Check if circuit breaker opened during request
             if self._is_circuit_breaker_open():
-                return None
-            print(f"[TWELVE_DATA] [GET_PRICE] ❌ Failed to get price for {symbol}")
-            return None
+                return None, "cooldown"
+            
+            # Use detailed reason from _make_request
+            detailed_reason = request_reason or "exception:UnknownError:No reason provided"
+            print(f"[TWELVE_DATA] [GET_PRICE] ❌ Failed to get price for {symbol}, reason={detailed_reason}")
+            
+            # Map internal reasons to external reason codes
+            if detailed_reason == "cooldown":
+                return None, "cooldown"
+            elif detailed_reason == "http_error_429":
+                return None, "rate_limit_429"
+            elif detailed_reason == "timeout":
+                return None, "timeout"
+            elif detailed_reason == "network_error":
+                return None, "network_error"
+            elif detailed_reason == "parse_error":
+                return None, "parse_error"
+            elif detailed_reason.startswith("no_key") or detailed_reason.startswith("permanent_error_401"):
+                return None, "invalid_api_key"
+            elif detailed_reason.startswith("exception:"):
+                # Already formatted as exception:Type:message
+                return None, detailed_reason
+            else:
+                # Wrap unknown reasons
+                return None, f"exception:UnknownError:{detailed_reason}"
         
         # Parse price from response
         # Twelve Data /price endpoint returns: {"price": "1.12345", "symbol": "EUR/USD"}
@@ -541,14 +678,20 @@ class TwelveDataClient:
             if price_str:
                 price = float(price_str)
                 print(f"[TWELVE_DATA] [GET_PRICE] ✅ {symbol}: {price}")
-                return price
+                # Record success for circuit breaker
+                self.on_success()
+                return price, None
             else:
                 print(f"[TWELVE_DATA] [GET_PRICE] ❌ No 'price' field in response for {symbol}")
-                return None
+                self.on_failure(reason="no_price_field")
+                return None, "parse_error"
         except (ValueError, TypeError, KeyError) as e:
             print(f"[TWELVE_DATA] [GET_PRICE] ❌ Parse error for {symbol}: {type(e).__name__}: {e}")
             print(f"[TWELVE_DATA] [GET_PRICE] Response: {data}")
-            return None
+            self.on_failure(reason="parse_error", exception=e)
+            import traceback
+            print(f"[TWELVE_DATA] [GET_PRICE] Traceback: {traceback.format_exc()}")
+            return None, "parse_error"
     
     async def get_time_series(self, symbol: str, interval: str = "1h", outputsize: int = 200) -> List[Dict]:
         """

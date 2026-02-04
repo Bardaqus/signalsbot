@@ -173,13 +173,13 @@ class DataRouter:
                     # No running loop - we're in sync context
                     # Create a new loop ONLY if no loop exists
                     # This is the problematic case, but necessary for backward compatibility
-                    price = asyncio.run(self.twelve_data_client.get_price(symbol))
+                    price, reason = asyncio.run(self.twelve_data_client.get_price(symbol))
                 except Exception as e:
                     # If get_running_loop() raised different error, re-raise
                     if "no running event loop" not in str(e).lower():
                         raise
                     # No running loop - create new one
-                    price = asyncio.run(self.twelve_data_client.get_price(symbol))
+                    price, reason = asyncio.run(self.twelve_data_client.get_price(symbol))
                 
                 latency_ms = int((time.time() - start_time) * 1000)
                 
@@ -187,8 +187,10 @@ class DataRouter:
                     print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, price={price:.5f}, latency={latency_ms}ms")
                     return price, None, "TWELVE_DATA"
                 else:
-                    print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, price=None, reason=twelve_data_unavailable, latency={latency_ms}ms")
-                    return None, "twelve_data_unavailable", "TWELVE_DATA"
+                    # Use reason from get_price (can be "twelve_data_cooldown" or "twelve_data_unavailable")
+                    final_reason = reason or "twelve_data_unavailable"
+                    print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, price=None, reason={final_reason}, latency={latency_ms}ms")
+                    return None, final_reason, "TWELVE_DATA"
             except Exception as e:
                 latency_ms = int((time.time() - start_time) * 1000)
                 print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, ERROR: {type(e).__name__}: {e}, latency={latency_ms}ms")
@@ -379,41 +381,71 @@ class DataRouter:
                 return None, "twelve_data_client_not_initialized", "TWELVE_DATA"
             
             try:
-                # Check circuit breaker before making request
-                if hasattr(self.twelve_data_client, '_is_circuit_breaker_open') and self.twelve_data_client._is_circuit_breaker_open():
-                    latency_ms = int((time.time() - start_time) * 1000)
-                    reason = "twelve_data_circuit_breaker_open"
-                    print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, price=None, reason={reason}, latency={latency_ms}ms")
-                    return None, reason, "TWELVE_DATA"
-                
                 # Direct async call - no loop creation needed
                 # Use max_retries=0 for signal generation (single-shot, no retries)
-                price = await self.twelve_data_client.get_price(symbol, max_retries_override=0)
+                # get_price now returns (price, reason) tuple
+                price, reason = await self.twelve_data_client.get_price(symbol, max_retries_override=0)
                 latency_ms = int((time.time() - start_time) * 1000)
                 
                 if price is not None:
                     print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, price={price:.5f}, latency={latency_ms}ms, requests=1")
                     return price, None, "TWELVE_DATA"
                 else:
-                    # Check circuit breaker status to provide better reason
-                    if hasattr(self.twelve_data_client, '_is_circuit_breaker_open') and self.twelve_data_client._is_circuit_breaker_open():
-                        reason = "twelve_data_circuit_breaker_open"
+                    # Use detailed reason from get_price
+                    final_reason = reason or "exception:UnknownError:No reason provided"
+                    # Normalize reason codes for backward compatibility
+                    if final_reason == "cooldown":
+                        final_reason = "twelve_data_cooldown"
+                    elif final_reason == "rate_limit_429":
+                        final_reason = "rate_limit_429"
+                    elif final_reason in ["timeout", "network_error", "parse_error", "invalid_api_key"]:
+                        # Keep detailed reasons as-is
+                        pass
+                    elif final_reason.startswith("exception:"):
+                        # Already formatted as exception:Type:message - keep as-is
+                        pass
+                    elif final_reason.startswith("twelve_data_unavailable"):
+                        # Already has prefix, keep as-is
+                        pass
                     else:
-                        reason = "twelve_data_unavailable"
-                    print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, price=None, reason={reason}, latency={latency_ms}ms")
-                    return None, reason, "TWELVE_DATA"
+                        # Unknown reason - wrap it as exception
+                        final_reason = f"exception:UnknownError:{final_reason}"
+                    
+                    print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, price=None, reason={final_reason}, latency={latency_ms}ms")
+                    return None, final_reason, "TWELVE_DATA"
             except RuntimeError as e:
-                # Circuit breaker error
-                if "Circuit breaker" in str(e):
-                    latency_ms = int((time.time() - start_time) * 1000)
-                    reason = "twelve_data_circuit_breaker_open"
-                    print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, price=None, reason={reason}, latency={latency_ms}ms")
-                    return None, reason, "TWELVE_DATA"
-                raise
-            except Exception as e:
+                # Circuit breaker error from _throttle or client closed
+                error_type = type(e).__name__
+                error_msg = str(e)
                 latency_ms = int((time.time() - start_time) * 1000)
-                print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, ERROR: {type(e).__name__}: {e}, latency={latency_ms}ms")
-                return None, f"twelve_data_error: {type(e).__name__}", "TWELVE_DATA"
+                if "Circuit breaker" in error_msg or "closed" in error_msg.lower():
+                    reason = "twelve_data_cooldown"
+                    print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, price=None, reason={reason}, latency={latency_ms}ms, exception={error_type}: {error_msg}")
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.exception(f"[DATA_ROUTER] RuntimeError: {error_type}: {error_msg}")
+                    return None, reason, "TWELVE_DATA"
+                # Other RuntimeError
+                reason = f"exception:{error_type}:{error_msg}"
+                print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, price=None, reason={reason}, latency={latency_ms}ms")
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.exception(f"[DATA_ROUTER] RuntimeError: {error_type}: {error_msg}")
+                import traceback
+                print(f"[DATA_ROUTER] Traceback: {traceback.format_exc()}")
+                return None, reason, "TWELVE_DATA"
+            except Exception as e:
+                error_type = type(e).__name__
+                error_msg = str(e)
+                latency_ms = int((time.time() - start_time) * 1000)
+                reason = f"exception:{error_type}:{error_msg}"
+                print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, price=None, reason={reason}, latency={latency_ms}ms")
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.exception(f"[DATA_ROUTER] Exception: {error_type}: {error_msg}")
+                import traceback
+                print(f"[DATA_ROUTER] Traceback: {traceback.format_exc()}")
+                return None, reason, "TWELVE_DATA"
         
         # For non-FOREX, delegate to sync version (they don't use async)
         # This is a bit of a hack, but keeps the code simpler

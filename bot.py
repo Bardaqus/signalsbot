@@ -1342,13 +1342,13 @@ async def startup_init():
         
         _twelve_data_client = TwelveDataClient(**filtered_kwargs)
         
-        # Test connection with a simple price request
-        print("[STARTUP] Testing Twelve Data connection...")
-        test_price = await _twelve_data_client.get_price("EURUSD")
+        # Test connection with a simple price request (single-shot: max_retries=0 -> 1 HTTP request)
+        print("[STARTUP] Testing Twelve Data connection (single-shot mode: 1 HTTP request expected)...")
+        test_price, test_reason = await _twelve_data_client.get_price("EURUSD", max_retries_override=0)
         if test_price:
-            print(f"[STARTUP] ✅ Twelve Data connection test successful (EURUSD={test_price:.5f})")
+            print(f"[STARTUP] ✅ Twelve Data connection test successful (EURUSD={test_price:.5f}, single-shot: 1 HTTP request made)")
         else:
-            print("[STARTUP] ⚠️ Twelve Data connection test failed, but client initialized (will retry on demand)")
+            print(f"[STARTUP] ⚠️ Twelve Data connection test failed (reason={test_reason}), but client initialized (will retry on demand)")
         
         # Create DataRouter with injected Twelve Data client
         from data_router import DataRouter, set_data_router
@@ -1357,11 +1357,12 @@ async def startup_init():
         print("[STARTUP] ✅ DataRouter initialized with Twelve Data client")
         
         # Self-check: verify router can get price (use async version since we're in async context)
-        print("[STARTUP] Self-check: testing DataRouter.get_price_async('EURUSD')...")
+        # This uses max_retries=0 (single-shot) -> should make exactly 1 HTTP request
+        print("[STARTUP] Self-check: testing DataRouter.get_price_async('EURUSD') with single-shot mode (1 HTTP request expected)...")
         try:
             check_price, check_reason, check_source = await data_router.get_price_async("EURUSD")
             if check_price:
-                print(f"[STARTUP] ✅ Self-check passed: EURUSD={check_price:.5f} (source={check_source})")
+                print(f"[STARTUP] ✅ Self-check passed: EURUSD={check_price:.5f} (source={check_source}, single-shot: 1 HTTP request made)")
             else:
                 print(f"[STARTUP] ⚠️ Self-check warning: EURUSD=None (reason={check_reason}, source={check_source})")
         except Exception as e:
@@ -1464,6 +1465,9 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
         }
     ]
     
+    # Track if FOREX source is unavailable (circuit breaker open)
+    forex_unavailable = False
+    
     for config in channel_configs:
         channel_id = config["channel_id"]
         channel_name = config["name"]
@@ -1479,6 +1483,12 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
         if is_weekend and asset_type in ["FOREX", "INDEX"]:
             print(f"🏖️ {channel_name}: Skipping signal generation - weekend (Forex/Index markets closed)")
             logger.info(f"[GENERATE_SIGNALS] {channel_name}: Skipping - weekend (asset_type={asset_type})")
+            continue
+        
+        # Skip FOREX channels if FOREX source is unavailable (circuit breaker)
+        if asset_type == "FOREX" and forex_unavailable:
+            print(f"⏸️ {channel_name}: Skipping - TwelveData cooldown active (FOREX source unavailable)")
+            logger.info(f"[GENERATE_SIGNALS] {channel_name}: Skipping - TwelveData cooldown active")
             continue
         
         # Check channel limit - CRITICAL: count ALL signals sent today (including closed)
@@ -1504,6 +1514,7 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
         
         signals_generated = 0
         attempts = 0
+        pairs_tried = set()  # Track which pairs we've actually tried (not just skipped)
         # Limit attempts: max 1 pass through all symbols, or signals_needed * 2 (whichever is smaller)
         max_attempts = min(len(available_pairs), signals_needed * 2) if signals_needed > 0 else len(available_pairs)
         
@@ -1513,20 +1524,16 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
             # Check time constraints BEFORE requesting price
             can_send, reason = can_send_signal(channel_id)
             if not can_send:
-                logger.debug(f"[GENERATE_SIGNALS] {channel_name}: Skipping - constraint: {reason}")
-                print(f"  ⏸️ {channel_name}: {reason}")
-                # Don't increment attempts for constraint checks - try next pair instead
-                # But break if we've tried all pairs
-                if attempts >= len(available_pairs):
-                    logger.info(f"[GENERATE_SIGNALS] {channel_name}: All pairs checked, stopping due to constraints")
-                    break
-                await asyncio.sleep(2)  # Short wait before retry
-                attempts += 1
-                continue
+                # Log explicit reason for skipping ONCE and exit channel generation
+                logger.info(f"[GENERATE_SIGNALS] {channel_name}: Channel constraint active - {reason}, skipping channel generation")
+                print(f"  ⏸️ {channel_name}: Skipping channel - constraint: {reason}")
+                # Exit immediately - don't continue attempts or sleep in loop
+                break
             
             # Cycle through available pairs (round-robin)
             sym = available_pairs[attempts % len(available_pairs)]
             attempts += 1
+            pairs_tried.add(sym)
             
             print(f"📊 {channel_name}: Analyzing {sym} (attempt {attempts}/{max_attempts})...")
             try:
@@ -1559,13 +1566,20 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
                         data_router = get_data_router()
                         if data_router:
                             # Single request - no retries for signal generation
-                            signal_request_count = 1
+                            # DO NOT increment counter here - wait for actual HTTP request
+                            signal_request_count = 0  # Will be set to 1 only after successful HTTP request
                             rt_price, reason, source = await data_router.get_price_async(sym)
                             
-                            # Update global request counter
-                            if request_counter_ref is not None:
-                                request_counter_ref["count"] = request_counter_ref.get("count", 0) + 1
-                                logger.debug(f"[GENERATE_SIGNALS] Request counter updated: {request_counter_ref['count']}")
+                            # Update global request counter ONLY if we got a price (HTTP request succeeded)
+                            # For TwelveData, increment only if price is not None (successful HTTP request)
+                            if rt_price is not None and source == "TWELVE_DATA":
+                                signal_request_count = 1
+                                if request_counter_ref is not None:
+                                    request_counter_ref["count"] = request_counter_ref.get("count", 0) + 1
+                                    logger.debug(f"[GENERATE_SIGNALS] Request counter updated: {request_counter_ref['count']} (after successful HTTP request)")
+                            else:
+                                # No HTTP request was made or request failed - don't count
+                                signal_request_count = 0
                         else:
                             rt_price, reason, source = get_price(sym)
                             signal_request_count = 1  # Sync call also counts
@@ -1577,18 +1591,45 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
                         continue
                     
                     if rt_price is None:
-                        # Log detailed reason for skipping
-                        reason_msg = f"Price unavailable: {reason}"
-                        if reason == "twelve_data_circuit_breaker_open":
+                        # Log detailed reason for skipping with explicit reason code
+                        reason_code = reason or "unknown"
+                        if reason == "twelve_data_cooldown" or reason == "twelve_data_circuit_breaker_open":
                             reason_msg = f"Circuit breaker OPEN - TwelveData temporarily disabled"
+                            reason_code = "circuit_breaker_open"
+                            # For FOREX channels: mark as unavailable and break from channel loop
+                            if asset_type == "FOREX":
+                                forex_unavailable = True
+                                print(f"  ⏸️ {channel_name}: TwelveData cooldown active, skipping channel (will skip remaining FOREX channels)")
+                                logger.warning(f"[GENERATE_SIGNALS] {channel_name}: TwelveData cooldown active, stopping channel generation")
+                                break  # Break from while loop for this channel
                         elif reason == "twelve_data_unavailable":
                             reason_msg = f"TwelveData unavailable (rate limit/error)"
+                            reason_code = "no_price"
+                            # For FOREX channels: mark as unavailable and break from channel loop
+                            if asset_type == "FOREX":
+                                forex_unavailable = True
+                                print(f"  ⏸️ {channel_name}: TwelveData unavailable, skipping channel (will skip remaining FOREX channels)")
+                                logger.warning(f"[GENERATE_SIGNALS] {channel_name}: TwelveData unavailable, stopping channel generation")
+                                break  # Break from while loop for this channel
                         elif reason == "binance_unavailable":
                             reason_msg = f"Binance unavailable"
+                            reason_code = "no_price"
+                        elif reason == "yahoo_unavailable":
+                            reason_msg = f"Yahoo Finance unavailable"
+                            reason_code = "no_price"
+                        else:
+                            reason_msg = f"Price unavailable: {reason}"
+                            reason_code = "no_price"
                         
-                        print(f"  ⏸️ {channel_name}: Skipping {sym} - {reason_msg}")
-                        logger.warning(f"[GENERATE_SIGNALS] {channel_name}: Skipping {sym} - {reason_msg}")
+                        # Only log if we're not breaking (for non-FOREX or non-cooldown cases)
+                        if not (asset_type == "FOREX" and reason_code == "circuit_breaker_open"):
+                            print(f"  ⏸️ {channel_name}: Skipping {sym} - reason={reason_code}, {reason_msg}")
+                            logger.warning(f"[GENERATE_SIGNALS] {channel_name}: Skipping {sym} - reason={reason_code}, {reason_msg}")
+                        
                         # Continue to next pair (don't break - circuit breaker might recover)
+                        # EXCEPT for FOREX cooldown cases (handled above)
+                        if asset_type == "FOREX" and reason_code == "circuit_breaker_open":
+                            break  # Already handled above
                         continue
                     
                     entry = rt_price
@@ -1619,8 +1660,8 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
                 # If both directions are blocked, skip this pair
                 if signal_type is None:
                     reason_msg = f"Cannot send {clean_sym} - both BUY and SELL blocked by 24h rule"
-                    print(f"  ⏸️ {channel_name}: {reason_msg}")
-                    logger.debug(f"[GENERATE_SIGNALS] {channel_name}: {reason_msg}")
+                    print(f"  ⏸️ {channel_name}: Skipping {clean_sym} - reason=active_signal, {reason_msg}")
+                    logger.info(f"[GENERATE_SIGNALS] {channel_name}: Skipping {clean_sym} - reason=active_signal, {reason_msg}")
                     continue
                 
                 # Calculate TP/SL based on asset type
@@ -1829,7 +1870,9 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
                 # Continue to next pair (don't break the loop)
                 await asyncio.sleep(1)
         
-        print(f"🏁 {channel_name}: Finished. Generated {signals_generated}/{signals_needed} signals.")
+        # Log summary for this channel
+        logger.info(f"[GENERATE_SIGNALS] {channel_name}: Finished - generated {signals_generated}/{signals_needed} signals, attempts={attempts}, pairs_tried={len(pairs_tried)}")
+        print(f"🏁 {channel_name}: Finished. Generated {signals_generated}/{signals_needed} signals (attempts: {attempts}, pairs tried: {len(pairs_tried)})")
 
 
 def migrate_state_files() -> None:
@@ -1896,7 +1939,22 @@ def migrate_state_files() -> None:
 
 
 async def main_async():
-    """Main async entrypoint - runs forever until interrupted (Ctrl+C)"""
+    """
+    Main async entrypoint - runs forever until interrupted (Ctrl+C)
+    
+    Bot operates as a service:
+    - Infinite loop (while True) - never exits unless Ctrl+C
+    - Generates signals every 60 seconds
+    - All exceptions are caught and logged, bot continues running
+    - TP/SL monitoring is DISABLED (only signal generation)
+    - TwelveData circuit breaker prevents excessive requests when API is down
+    - Client cleanup only happens in finally block (on process termination)
+    
+    Error handling:
+    - Signal generation errors: logged, wait 10s, continue
+    - Unexpected errors: logged, wait 10s, continue
+    - KeyboardInterrupt (Ctrl+C): graceful shutdown
+    """
     # Migrate state files first (fix old format if needed)
     migrate_state_files()
     
@@ -1947,6 +2005,7 @@ async def main_async():
                         actual_count = request_counter.get("count", 0)
                         logger.info(f"[MAIN] ✅ Cycle completed: TwelveData requests used: {actual_count}")
                         print(f"[MAIN] ✅ Cycle completed: TwelveData requests: {actual_count}")
+                        print(f"[MAIN] Bot is alive and running (next cycle in {SIGNAL_GENERATION_INTERVAL}s)")
                         
                         last_signal_generation_time = current_time
                     except Exception as e:
@@ -1954,6 +2013,10 @@ async def main_async():
                         print(f"[MAIN] ⚠️ Error in signal generation, waiting 10 seconds before next cycle...")
                         await asyncio.sleep(10)  # Wait before retrying next cycle
                         # Continue loop even if signal generation fails
+                    finally:
+                        # Ensure we wait full interval before next cycle
+                        # This prevents rapid retries if generation completes quickly
+                        pass
                 
                 # Sleep 1 second between iterations to prevent high CPU usage
                 await asyncio.sleep(1)
@@ -1965,8 +2028,9 @@ async def main_async():
             except Exception as e:
                 # Catch any unexpected exceptions and log them, but continue running
                 logger.exception(f"[MAIN] Unexpected error in main loop: {type(e).__name__}: {e}")
-                print(f"[MAIN] ⚠️ Error occurred, waiting 10 seconds before continuing...")
-                await asyncio.sleep(10)  # Increased from 5 to 10 seconds
+                print(f"[MAIN] ⚠️ Error occurred: {type(e).__name__}: {e}")
+                print(f"[MAIN] Waiting 10 seconds before continuing...")
+                await asyncio.sleep(10)  # Wait 10 seconds before retrying
                 
     finally:
         # Cleanup: close Twelve Data client only at the very end (in same event loop)
