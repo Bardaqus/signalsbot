@@ -1504,22 +1504,31 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
         
         signals_generated = 0
         attempts = 0
-        max_attempts = len(available_pairs) * 3
+        # Limit attempts: max 1 pass through all symbols, or signals_needed * 2 (whichever is smaller)
+        max_attempts = min(len(available_pairs), signals_needed * 2) if signals_needed > 0 else len(available_pairs)
+        
+        logger.info(f"[GENERATE_SIGNALS] {channel_name}: Starting generation - need {signals_needed} signals, max {max_attempts} attempts (from {len(available_pairs)} available pairs)")
         
         while signals_generated < signals_needed and attempts < max_attempts:
-            # Check time constraints
+            # Check time constraints BEFORE requesting price
             can_send, reason = can_send_signal(channel_id)
             if not can_send:
+                logger.debug(f"[GENERATE_SIGNALS] {channel_name}: Skipping - constraint: {reason}")
                 print(f"  ⏸️ {channel_name}: {reason}")
-                await asyncio.sleep(10)  # Wait a bit before retry
+                # Don't increment attempts for constraint checks - try next pair instead
+                # But break if we've tried all pairs
+                if attempts >= len(available_pairs):
+                    logger.info(f"[GENERATE_SIGNALS] {channel_name}: All pairs checked, stopping due to constraints")
+                    break
+                await asyncio.sleep(2)  # Short wait before retry
                 attempts += 1
                 continue
             
-            # Cycle through available pairs
+            # Cycle through available pairs (round-robin)
             sym = available_pairs[attempts % len(available_pairs)]
             attempts += 1
             
-            print(f"📊 {channel_name}: Analyzing {sym} (attempt {attempts})...")
+            print(f"📊 {channel_name}: Analyzing {sym} (attempt {attempts}/{max_attempts})...")
             try:
                 # Get real-time price using data router
                 # CRITICAL: Only 1 request to TwelveData per signal (no retries in generation)
@@ -1568,8 +1577,18 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
                         continue
                     
                     if rt_price is None:
-                        print(f"  ⏸️ Price unavailable for {sym}: {reason}")
-                        logger.warning(f"[GENERATE_SIGNALS] {channel_name}: Price unavailable for {sym}, reason={reason}")
+                        # Log detailed reason for skipping
+                        reason_msg = f"Price unavailable: {reason}"
+                        if reason == "twelve_data_circuit_breaker_open":
+                            reason_msg = f"Circuit breaker OPEN - TwelveData temporarily disabled"
+                        elif reason == "twelve_data_unavailable":
+                            reason_msg = f"TwelveData unavailable (rate limit/error)"
+                        elif reason == "binance_unavailable":
+                            reason_msg = f"Binance unavailable"
+                        
+                        print(f"  ⏸️ {channel_name}: Skipping {sym} - {reason_msg}")
+                        logger.warning(f"[GENERATE_SIGNALS] {channel_name}: Skipping {sym} - {reason_msg}")
+                        # Continue to next pair (don't break - circuit breaker might recover)
                         continue
                     
                     entry = rt_price
@@ -1599,7 +1618,9 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
                 
                 # If both directions are blocked, skip this pair
                 if signal_type is None:
-                    print(f"  ⏸️ {channel_name}: Cannot send {clean_sym} (both BUY and SELL blocked by 24h rule)")
+                    reason_msg = f"Cannot send {clean_sym} - both BUY and SELL blocked by 24h rule"
+                    print(f"  ⏸️ {channel_name}: {reason_msg}")
+                    logger.debug(f"[GENERATE_SIGNALS] {channel_name}: {reason_msg}")
                     continue
                 
                 # Calculate TP/SL based on asset type
@@ -1802,9 +1823,10 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
                 await asyncio.sleep(5)
                 
             except Exception as e:
-                print(f"❌ {channel_name}: Error processing {sym}: {e}")
-                import traceback
-                print(traceback.format_exc())
+                error_msg = f"Error processing {sym}: {type(e).__name__}: {e}"
+                print(f"  ❌ {channel_name}: {error_msg}")
+                logger.exception(f"[GENERATE_SIGNALS] {channel_name}: {error_msg}")
+                # Continue to next pair (don't break the loop)
                 await asyncio.sleep(1)
         
         print(f"🏁 {channel_name}: Finished. Generated {signals_generated}/{signals_needed} signals.")
@@ -1915,6 +1937,8 @@ async def main_async():
                 if current_time - last_signal_generation_time >= SIGNAL_GENERATION_INTERVAL:
                     try:
                         print("[MAIN] 📊 Generating signals for all channels...")
+                        logger.info("[MAIN] Starting signal generation cycle")
+                        
                         # Pass mutable dict for request counter
                         request_counter = {"count": 0}
                         await generate_channel_signals(bot, pairs, request_counter_ref=request_counter)
@@ -1927,6 +1951,8 @@ async def main_async():
                         last_signal_generation_time = current_time
                     except Exception as e:
                         logger.exception(f"[MAIN] Error in signal generation: {type(e).__name__}: {e}")
+                        print(f"[MAIN] ⚠️ Error in signal generation, waiting 10 seconds before next cycle...")
+                        await asyncio.sleep(10)  # Wait before retrying next cycle
                         # Continue loop even if signal generation fails
                 
                 # Sleep 1 second between iterations to prevent high CPU usage
@@ -1939,8 +1965,8 @@ async def main_async():
             except Exception as e:
                 # Catch any unexpected exceptions and log them, but continue running
                 logger.exception(f"[MAIN] Unexpected error in main loop: {type(e).__name__}: {e}")
-                print(f"[MAIN] ⚠️ Error occurred, waiting 5 seconds before continuing...")
-                await asyncio.sleep(5)
+                print(f"[MAIN] ⚠️ Error occurred, waiting 10 seconds before continuing...")
+                await asyncio.sleep(10)  # Increased from 5 to 10 seconds
                 
     finally:
         # Cleanup: close Twelve Data client only at the very end (in same event loop)

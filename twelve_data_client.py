@@ -68,6 +68,14 @@ class TwelveDataClient:
         self._requests_per_minute: List[float] = []  # List of request timestamps
         self._rate_limit_cooldown_until = 0.0  # Timestamp when cooldown ends (0 = no cooldown)
         
+        # Circuit breaker state
+        self._circuit_breaker_errors = 0  # Consecutive error count
+        self._circuit_breaker_open_until = 0.0  # Timestamp when breaker closes (0 = closed)
+        self._circuit_breaker_cooldown_base = 120.0  # Base cooldown: 120 seconds (2 minutes)
+        self._circuit_breaker_cooldown_max = 900.0  # Max cooldown: 900 seconds (15 minutes)
+        self._circuit_breaker_threshold = 3  # Open after 3 consecutive errors
+        self._circuit_breaker_last_log_time = 0.0  # Last time we logged breaker status (to avoid spam)
+        
         # HTTP client (reused for connection pooling)
         # Created lazily in _ensure_started() to avoid event loop issues
         self._client: Optional[httpx.AsyncClient] = None
@@ -126,6 +134,48 @@ class TwelveDataClient:
             return value[:length] + "..."
         return value[:length] + "..."
     
+    def _is_circuit_breaker_open(self) -> bool:
+        """Check if circuit breaker is currently open"""
+        if self._circuit_breaker_open_until == 0.0:
+            return False
+        return time.time() < self._circuit_breaker_open_until
+    
+    def _record_error(self):
+        """Record an error and potentially open circuit breaker"""
+        self._circuit_breaker_errors += 1
+        
+        if self._circuit_breaker_errors >= self._circuit_breaker_threshold:
+            # Calculate exponential backoff cooldown
+            cooldown_multiplier = min(2 ** (self._circuit_breaker_errors - self._circuit_breaker_threshold), 8)  # Max 8x
+            cooldown = min(self._circuit_breaker_cooldown_base * cooldown_multiplier, self._circuit_breaker_cooldown_max)
+            
+            self._circuit_breaker_open_until = time.time() + cooldown
+            print(f"[TWELVE_DATA] [CIRCUIT_BREAKER] 🔴 OPENED after {self._circuit_breaker_errors} consecutive errors")
+            print(f"[TWELVE_DATA] [CIRCUIT_BREAKER] Cooldown: {cooldown:.1f}s (until {time.strftime('%H:%M:%S', time.localtime(self._circuit_breaker_open_until))})")
+    
+    def _record_success(self):
+        """Record a successful request and reset circuit breaker"""
+        if self._circuit_breaker_errors > 0:
+            print(f"[TWELVE_DATA] [CIRCUIT_BREAKER] ✅ CLOSED - success after {self._circuit_breaker_errors} errors")
+        self._circuit_breaker_errors = 0
+        self._circuit_breaker_open_until = 0.0
+    
+    def _log_circuit_breaker_status(self, force: bool = False):
+        """Log circuit breaker status (throttled to avoid spam)"""
+        now = time.time()
+        if not force and now - self._circuit_breaker_last_log_time < 30:
+            return  # Don't log more than once per 30 seconds
+        
+        self._circuit_breaker_last_log_time = now
+        
+        if self._is_circuit_breaker_open():
+            remaining = self._circuit_breaker_open_until - now
+            print(f"[TWELVE_DATA] [CIRCUIT_BREAKER] 🔴 OPEN - remaining: {remaining:.1f}s (errors: {self._circuit_breaker_errors})")
+        else:
+            if self._circuit_breaker_errors > 0:
+                print(f"[TWELVE_DATA] [CIRCUIT_BREAKER] 🟢 CLOSED (recent errors: {self._circuit_breaker_errors})")
+            # Don't log if closed and no errors
+    
     async def _throttle(self):
         """
         Throttle requests to respect minimum interval and per-minute limits
@@ -138,6 +188,12 @@ class TwelveDataClient:
         async with self._throttle_lock:
             now = time.monotonic()
             now_wallclock = time.time()
+            
+            # Check circuit breaker first
+            if self._is_circuit_breaker_open():
+                self._log_circuit_breaker_status()
+                remaining = self._circuit_breaker_open_until - now_wallclock
+                raise RuntimeError(f"Circuit breaker OPEN - remaining: {remaining:.1f}s")
             
             # Check if we're in cooldown (after 429 error)
             if self._rate_limit_cooldown_until > now_wallclock:
@@ -245,16 +301,22 @@ class TwelveDataClient:
     
     async def _make_request(self, endpoint: str, params: Dict[str, Any], max_retries: Optional[int] = None, single_shot: bool = False) -> Optional[Dict]:
         """
-        Make HTTP request with throttling, retry logic, and backoff
+        Make HTTP request with throttling, retry logic, backoff, and circuit breaker
         
         Args:
             endpoint: API endpoint (e.g., "/price")
             params: Query parameters
             max_retries: Maximum number of retries (default: self.max_retries)
+            single_shot: If True, disable retries (for signal generation)
         
         Returns:
             JSON response dict or None on failure
         """
+        # Check circuit breaker first (before any network calls)
+        if self._is_circuit_breaker_open():
+            self._log_circuit_breaker_status()
+            return None
+        
         if max_retries is None:
             max_retries = self.max_retries
         
@@ -269,6 +331,9 @@ class TwelveDataClient:
         params['apikey'] = self.api_key
         
         client = await self._get_client()
+        
+        # Track if we got a successful response
+        success = False
         
         for attempt in range(max_retries):
             try:
@@ -291,6 +356,8 @@ class TwelveDataClient:
                                 
                                 # Check if it's a rate limit error in JSON
                                 if self._is_rate_limit_error(response):
+                                    # Record error for circuit breaker
+                                    self._record_error()
                                     if attempt < max_retries - 1:
                                         backoff_time = self._calculate_backoff(attempt)
                                         print(f"[TWELVE_DATA] ⚠️ Rate limit detected (JSON error), waiting {backoff_time:.2f}s before retry {attempt + 1}/{max_retries}")
@@ -302,13 +369,18 @@ class TwelveDataClient:
                                 
                                 # Check if it's a permanent error
                                 if self._is_permanent_error(response):
+                                    # Don't record permanent errors (like invalid API key) - they won't recover
                                     print(f"[TWELVE_DATA] ❌ Permanent error (no retry): code={error_code}, message={error_message}")
                                     return None
                                 
-                                # Other errors: don't retry
+                                # Other errors: record for circuit breaker
+                                self._record_error()
                                 print(f"[TWELVE_DATA] ❌ API error: code={error_code}, message={error_message}")
                                 return None
                             
+                            # Success - reset circuit breaker
+                            self._record_success()
+                            success = True
                             return data
                         except json.JSONDecodeError as e:
                             print(f"[TWELVE_DATA] ❌ Invalid JSON response: {e}")
@@ -316,7 +388,8 @@ class TwelveDataClient:
                             return None
                     
                     elif self._is_rate_limit_error(response):
-                        # Rate limit (429) - activate cooldown (60-90 seconds) and skip
+                        # Rate limit (429) - record error and activate cooldown
+                        self._record_error()
                         import random
                         cooldown_seconds = random.uniform(60, 90)  # 60-90 seconds cooldown
                         self._rate_limit_cooldown_until = time.time() + cooldown_seconds
@@ -325,7 +398,8 @@ class TwelveDataClient:
                         return None
                     
                     elif 500 <= response.status_code < 600:
-                        # Server error - retry with backoff
+                        # Server error - record error and retry with backoff
+                        self._record_error()
                         if attempt < max_retries - 1:
                             backoff_time = self._calculate_backoff(attempt)
                             print(f"[TWELVE_DATA] ⚠️ Server error {response.status_code}, waiting {backoff_time:.2f}s before retry {attempt + 1}/{max_retries}")
@@ -336,16 +410,19 @@ class TwelveDataClient:
                             return None
                     
                     elif self._is_permanent_error(response):
-                        # Permanent error - don't retry
+                        # Permanent error - don't retry, don't record (won't recover)
                         print(f"[TWELVE_DATA] ❌ Permanent error {response.status_code}: {response.text[:200]}")
                         return None
                     
                     else:
-                        # Other client error (4xx) - don't retry
+                        # Other client error (4xx) - record error
+                        self._record_error()
                         print(f"[TWELVE_DATA] ❌ HTTP {response.status_code}: {response.text[:200]}")
                         return None
                         
             except httpx.TimeoutException:
+                # Timeout - record error
+                self._record_error()
                 if attempt < max_retries - 1:
                     backoff_time = self._calculate_backoff(attempt)
                     print(f"[TWELVE_DATA] ⚠️ Timeout, waiting {backoff_time:.2f}s before retry {attempt + 1}/{max_retries}")
@@ -356,6 +433,8 @@ class TwelveDataClient:
                     return None
                     
             except (httpx.RequestError, httpx.TransportError) as e:
+                # Network error - record error
+                self._record_error()
                 if attempt < max_retries - 1:
                     backoff_time = self._calculate_backoff(attempt)
                     print(f"[TWELVE_DATA] ⚠️ Network error {type(e).__name__}: {e}, waiting {backoff_time:.2f}s before retry {attempt + 1}/{max_retries}")
@@ -365,9 +444,25 @@ class TwelveDataClient:
                     print(f"[TWELVE_DATA] ❌ Network error after {max_retries} attempts: {type(e).__name__}: {e}")
                     return None
                     
+            except RuntimeError as e:
+                # Circuit breaker error - don't record (already recorded)
+                if "Circuit breaker" in str(e):
+                    return None
+                # Other runtime errors - record
+                self._record_error()
+                print(f"[TWELVE_DATA] ❌ Runtime error: {type(e).__name__}: {e}")
+                return None
+                    
             except Exception as e:
+                # Unexpected error - record
+                self._record_error()
                 print(f"[TWELVE_DATA] ❌ Unexpected error: {type(e).__name__}: {e}")
                 return None
+        
+        # If we get here, all attempts failed and success was never True
+        if not success:
+            # Error already recorded in the exception handlers above
+            pass
         
         return None
     
@@ -398,15 +493,20 @@ class TwelveDataClient:
     
     async def get_price(self, symbol: str, max_retries_override: Optional[int] = None) -> Optional[float]:
         """
-        Get current price for symbol
+        Get current price for symbol with circuit breaker protection
         
         Args:
             symbol: Symbol name (e.g., "EURUSD" or "EUR/USD")
             max_retries_override: Override max_retries (use 0 for signal generation - no retries)
         
         Returns:
-            Price as float or None on error
+            Price as float or None on error (circuit breaker open, rate limit, etc.)
         """
+        # Check circuit breaker first (before any network calls)
+        if self._is_circuit_breaker_open():
+            self._log_circuit_breaker_status()
+            return None
+        
         normalized_symbol = self.normalize_forex_symbol(symbol)
         
         print(f"[TWELVE_DATA] [GET_PRICE] Requesting price for {symbol} (normalized: {normalized_symbol})")
@@ -419,9 +519,18 @@ class TwelveDataClient:
         # For other uses: use default max_retries
         retries = max_retries_override if max_retries_override is not None else self.max_retries
         
-        data = await self._make_request('/price', params, max_retries=retries)
+        try:
+            data = await self._make_request('/price', params, max_retries=retries, single_shot=(retries == 0))
+        except RuntimeError as e:
+            # Circuit breaker error
+            if "Circuit breaker" in str(e):
+                return None
+            raise
         
         if not data:
+            # Check if circuit breaker opened during request
+            if self._is_circuit_breaker_open():
+                return None
             print(f"[TWELVE_DATA] [GET_PRICE] ❌ Failed to get price for {symbol}")
             return None
         

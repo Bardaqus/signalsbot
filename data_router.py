@@ -379,6 +379,13 @@ class DataRouter:
                 return None, "twelve_data_client_not_initialized", "TWELVE_DATA"
             
             try:
+                # Check circuit breaker before making request
+                if hasattr(self.twelve_data_client, '_is_circuit_breaker_open') and self.twelve_data_client._is_circuit_breaker_open():
+                    latency_ms = int((time.time() - start_time) * 1000)
+                    reason = "twelve_data_circuit_breaker_open"
+                    print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, price=None, reason={reason}, latency={latency_ms}ms")
+                    return None, reason, "TWELVE_DATA"
+                
                 # Direct async call - no loop creation needed
                 # Use max_retries=0 for signal generation (single-shot, no retries)
                 price = await self.twelve_data_client.get_price(symbol, max_retries_override=0)
@@ -388,8 +395,21 @@ class DataRouter:
                     print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, price={price:.5f}, latency={latency_ms}ms, requests=1")
                     return price, None, "TWELVE_DATA"
                 else:
-                    print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, price=None, reason=twelve_data_unavailable, latency={latency_ms}ms")
-                    return None, "twelve_data_unavailable", "TWELVE_DATA"
+                    # Check circuit breaker status to provide better reason
+                    if hasattr(self.twelve_data_client, '_is_circuit_breaker_open') and self.twelve_data_client._is_circuit_breaker_open():
+                        reason = "twelve_data_circuit_breaker_open"
+                    else:
+                        reason = "twelve_data_unavailable"
+                    print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, price=None, reason={reason}, latency={latency_ms}ms")
+                    return None, reason, "TWELVE_DATA"
+            except RuntimeError as e:
+                # Circuit breaker error
+                if "Circuit breaker" in str(e):
+                    latency_ms = int((time.time() - start_time) * 1000)
+                    reason = "twelve_data_circuit_breaker_open"
+                    print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, price=None, reason={reason}, latency={latency_ms}ms")
+                    return None, reason, "TWELVE_DATA"
+                raise
             except Exception as e:
                 latency_ms = int((time.time() - start_time) * 1000)
                 print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, ERROR: {type(e).__name__}: {e}, latency={latency_ms}ms")
