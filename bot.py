@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 from dotenv import load_dotenv
 from telegram import Bot
-from telegram.error import InvalidToken, TelegramError, BadRequest, Forbidden, ChatNotFound
+from telegram.error import InvalidToken, TelegramError, BadRequest, Forbidden
 from data_router import get_price, get_candles, AssetClass, ForbiddenDataSourceError, get_data_router
 from config import Config
 
@@ -29,6 +29,42 @@ _telegram_send_enabled = True
 # Price cache with TTL (15-30 seconds)
 _price_cache: Dict[str, Tuple[float, float]] = {}  # symbol -> (price, timestamp)
 _PRICE_CACHE_TTL = 20.0  # 20 seconds TTL
+
+
+def classify_telegram_error(e: Exception) -> str:
+    """
+    Classify Telegram error into categories for better error handling.
+    
+    Args:
+        e: Exception instance (TelegramError, BadRequest, Forbidden, etc.)
+    
+    Returns:
+        Category string: CHAT_NOT_FOUND, BOT_BLOCKED, FORBIDDEN, RATE_LIMIT, OTHER
+    """
+    error_str = str(e).lower()
+    error_type = type(e).__name__
+    
+    # Chat not found patterns
+    if "chat not found" in error_str or "chat_id is empty" in error_str:
+        return "CHAT_NOT_FOUND"
+    
+    # Bot blocked patterns
+    if "bot was blocked by the user" in error_str or "user is deactivated" in error_str:
+        return "BOT_BLOCKED"
+    
+    # Forbidden patterns
+    if isinstance(e, Forbidden) or "forbidden" in error_str or "not enough rights" in error_str:
+        return "FORBIDDEN"
+    
+    # Rate limit patterns
+    if "rate limit" in error_str or "too many requests" in error_str or "flood" in error_str:
+        return "RATE_LIMIT"
+    
+    # Group chat upgraded
+    if "group chat was upgraded" in error_str or "supergroup" in error_str:
+        return "CHAT_NOT_FOUND"  # Treat as chat not found
+    
+    return "OTHER"
 
 
 class PriceStatus(Enum):
@@ -251,16 +287,6 @@ async def safe_send_message(bot: Optional[Bot], chat_id: str, text: str, disable
         logger.error("[TELEGRAM_SEND] Disabling Telegram send for remainder of session")
         _telegram_send_enabled = False
         return False
-    except ChatNotFound as e:
-        # Chat not found - log once per interval
-        now = time.time()
-        last_log = _telegram_error_logged.get(chat_id, 0)
-        if now - last_log >= _TELEGRAM_ERROR_LOG_INTERVAL:
-            logger.error(f"[TELEGRAM_SEND] ❌ ChatNotFound: Chat ID {chat_id} not found or bot is not a member")
-            logger.error(f"[TELEGRAM_SEND] Error details: {type(e).__name__}: {e}")
-            logger.error(f"[TELEGRAM_SEND] Action: Ensure bot is added to channel as admin with 'post messages' permission")
-            _telegram_error_logged[chat_id] = now
-        return False
     except Forbidden as e:
         # Forbidden - log once per interval
         now = time.time()
@@ -272,26 +298,70 @@ async def safe_send_message(bot: Optional[Bot], chat_id: str, text: str, disable
             _telegram_error_logged[chat_id] = now
         return False
     except BadRequest as e:
-        # Bad request - log with details
+        # BadRequest - handle chat not found and other bad request cases
+        error_category = classify_telegram_error(e)
+        
         now = time.time()
         last_log = _telegram_error_logged.get(chat_id, 0)
-        if now - last_log >= _TELEGRAM_ERROR_LOG_INTERVAL:
-            logger.error(f"[TELEGRAM_SEND] ❌ BadRequest: Invalid request for chat_id={chat_id}")
-            logger.error(f"[TELEGRAM_SEND] Error details: {type(e).__name__}: {e}")
-            logger.error(f"[TELEGRAM_SEND] Message preview: {text[:100]}...")
-            _telegram_error_logged[chat_id] = now
+        should_log = (now - last_log >= _TELEGRAM_ERROR_LOG_INTERVAL)
+        
+        if error_category == "CHAT_NOT_FOUND":
+            # Chat not found - log once per interval
+            if should_log:
+                logger.error(f"[TELEGRAM_SEND] ❌ Chat not found: Chat ID {chat_id} not found or bot is not a member")
+                logger.error(f"[TELEGRAM_SEND] Error details: {type(e).__name__}: {e}")
+                logger.error(f"[TELEGRAM_SEND] Action: Ensure bot is added to channel as admin with 'post messages' permission")
+                _telegram_error_logged[chat_id] = now
+        elif error_category == "BOT_BLOCKED":
+            # Bot blocked - log once per interval
+            if should_log:
+                logger.error(f"[TELEGRAM_SEND] ❌ Bot blocked: Bot was blocked by user for chat_id={chat_id}")
+                logger.error(f"[TELEGRAM_SEND] Error details: {type(e).__name__}: {e}")
+                _telegram_error_logged[chat_id] = now
+        elif error_category == "RATE_LIMIT":
+            # Rate limit - log once per interval
+            if should_log:
+                logger.error(f"[TELEGRAM_SEND] ❌ Rate limit: Too many requests for chat_id={chat_id}")
+                logger.error(f"[TELEGRAM_SEND] Error details: {type(e).__name__}: {e}")
+                _telegram_error_logged[chat_id] = now
+        else:
+            # Other BadRequest errors - log with details
+            if should_log:
+                logger.error(f"[TELEGRAM_SEND] ❌ BadRequest: Invalid request for chat_id={chat_id}")
+                logger.error(f"[TELEGRAM_SEND] Error details: {type(e).__name__}: {e}")
+                logger.error(f"[TELEGRAM_SEND] Message preview: {text[:100]}...")
+                _telegram_error_logged[chat_id] = now
         return False
     except TelegramError as e:
-        # Other Telegram errors - log with details
+        # Other Telegram errors - handle with classification
+        error_category = classify_telegram_error(e)
+        
         now = time.time()
         last_log = _telegram_error_logged.get(chat_id, 0)
-        if now - last_log >= _TELEGRAM_ERROR_LOG_INTERVAL:
-            logger.error(f"[TELEGRAM_SEND] ❌ Telegram error: {type(e).__name__}: {e}")
-            logger.error(f"[TELEGRAM_SEND] Chat ID: {chat_id}")
-            logger.error(f"[TELEGRAM_SEND] Message preview: {text[:100]}...")
-            import traceback
-            logger.exception(f"[TELEGRAM_SEND] Full traceback:")
-            _telegram_error_logged[chat_id] = now
+        should_log = (now - last_log >= _TELEGRAM_ERROR_LOG_INTERVAL)
+        
+        if error_category == "CHAT_NOT_FOUND":
+            # Chat not found - log once per interval
+            if should_log:
+                logger.error(f"[TELEGRAM_SEND] ❌ Chat not found: Chat ID {chat_id} not found or bot is not a member")
+                logger.error(f"[TELEGRAM_SEND] Error details: {type(e).__name__}: {e}")
+                logger.error(f"[TELEGRAM_SEND] Action: Ensure bot is added to channel as admin with 'post messages' permission")
+                _telegram_error_logged[chat_id] = now
+        elif error_category == "RATE_LIMIT":
+            # Rate limit - log once per interval
+            if should_log:
+                logger.error(f"[TELEGRAM_SEND] ❌ Rate limit: Too many requests for chat_id={chat_id}")
+                logger.error(f"[TELEGRAM_SEND] Error details: {type(e).__name__}: {e}")
+                _telegram_error_logged[chat_id] = now
+        else:
+            # Other Telegram errors - log with details
+            if should_log:
+                logger.error(f"[TELEGRAM_SEND] ❌ Telegram error: {type(e).__name__}: {e}")
+                logger.error(f"[TELEGRAM_SEND] Chat ID: {chat_id}")
+                logger.error(f"[TELEGRAM_SEND] Message preview: {text[:100]}...")
+                import traceback
+                logger.exception(f"[TELEGRAM_SEND] Full traceback:")
+                _telegram_error_logged[chat_id] = now
         return False
     except Exception as e:
         # Unexpected errors - always log
