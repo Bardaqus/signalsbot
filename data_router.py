@@ -11,6 +11,10 @@ import time
 # Global DataRouter instance (set via Dependency Injection)
 _data_router_instance: Optional['DataRouter'] = None
 
+# Price cache with TTL (15-30 seconds)
+_price_cache: Dict[str, Tuple[float, float]] = {}  # symbol -> (price, timestamp)
+_PRICE_CACHE_TTL = 20.0  # 20 seconds TTL
+
 
 class AssetClass(Enum):
     """Asset class enumeration"""
@@ -111,6 +115,25 @@ class DataRouter:
             twelve_data_client: TwelveDataClient instance (required for FOREX)
         """
         self.twelve_data_client = twelve_data_client
+    
+    def _get_cached_price(self, symbol: str) -> Optional[float]:
+        """Get price from cache if still valid"""
+        global _price_cache
+        if symbol in _price_cache:
+            cached_price, cached_ts = _price_cache[symbol]
+            age = time.time() - cached_ts
+            if age < _PRICE_CACHE_TTL:
+                print(f"[DATA_ROUTER] {symbol}: Using cached price (age={age:.1f}s < TTL={_PRICE_CACHE_TTL}s)")
+                return cached_price
+            else:
+                # Cache expired
+                del _price_cache[symbol]
+        return None
+    
+    def _set_cached_price(self, symbol: str, price: float):
+        """Store price in cache"""
+        global _price_cache
+        _price_cache[symbol] = (price, time.time())
     
     def get_price(self, symbol: str, asset_class: Optional[AssetClass] = None) -> Tuple[Optional[float], Optional[str], str]:
         """
@@ -276,7 +299,14 @@ class DataRouter:
                 
                 if asset_class == AssetClass.GOLD:
                     # Gold: use Yahoo Finance with validation
-                    from working_combined_bot import get_gold_price_from_yahoo
+                    try:
+                        from working_combined_bot import get_gold_price_from_yahoo
+                    except ImportError as e:
+                        # yfinance not installed or import failed
+                        latency_ms = int((time.time() - start_time) * 1000)
+                        print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO, price=None, reason=yfinance_not_installed, latency={latency_ms}ms")
+                        return None, "yfinance_not_installed", "YAHOO"
+                    
                     yahoo_data = _run_async(get_gold_price_from_yahoo())
                     
                     latency_ms = int((time.time() - start_time) * 1000)
@@ -309,7 +339,14 @@ class DataRouter:
                         return None, "yahoo_unavailable", "YAHOO"
                 else:
                     # Index: use Yahoo Finance with validation
-                    from working_combined_bot import get_index_price_yahoo
+                    try:
+                        from working_combined_bot import get_index_price_yahoo
+                    except ImportError as e:
+                        # yfinance not installed or import failed
+                        latency_ms = int((time.time() - start_time) * 1000)
+                        print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO, price=None, reason=yfinance_not_installed, latency={latency_ms}ms")
+                        return None, "yfinance_not_installed", "YAHOO"
+                    
                     raw_price = _run_async(get_index_price_yahoo(symbol))
                     
                     latency_ms = int((time.time() - start_time) * 1000)
@@ -381,6 +418,13 @@ class DataRouter:
                 return None, "twelve_data_client_not_initialized", "TWELVE_DATA"
             
             try:
+                # Check cache first
+                cached_price = self._get_cached_price(symbol)
+                if cached_price is not None:
+                    latency_ms = int((time.time() - start_time) * 1000)
+                    print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA (cached), price={cached_price:.5f}, latency={latency_ms}ms, requests=0")
+                    return cached_price, None, "TWELVE_DATA"
+                
                 # Direct async call - no loop creation needed
                 # Use max_retries=0 for signal generation (single-shot, no retries)
                 # get_price now returns (price, reason) tuple
@@ -388,6 +432,8 @@ class DataRouter:
                 latency_ms = int((time.time() - start_time) * 1000)
                 
                 if price is not None:
+                    # Cache successful result
+                    self._set_cached_price(symbol, price)
                     print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, price={price:.5f}, latency={latency_ms}ms, requests=1")
                     return price, None, "TWELVE_DATA"
                 else:

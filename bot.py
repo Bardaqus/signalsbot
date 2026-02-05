@@ -7,10 +7,12 @@ import logging
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Tuple, Optional, Any
+from enum import Enum
+from dataclasses import dataclass
 
 from dotenv import load_dotenv
 from telegram import Bot
-from telegram.error import InvalidToken, TelegramError
+from telegram.error import InvalidToken, TelegramError, BadRequest, Forbidden, ChatNotFound
 from data_router import get_price, get_candles, AssetClass, ForbiddenDataSourceError, get_data_router
 from config import Config
 
@@ -23,6 +25,40 @@ logger = logging.getLogger(__name__)
 
 # Global flag for Telegram send capability
 _telegram_send_enabled = True
+
+# Price cache with TTL (15-30 seconds)
+_price_cache: Dict[str, Tuple[float, float]] = {}  # symbol -> (price, timestamp)
+_PRICE_CACHE_TTL = 20.0  # 20 seconds TTL
+
+
+class PriceStatus(Enum):
+    """Status of price retrieval result"""
+    OK = "OK"  # price != None
+    SKIPPED = "SKIPPED"  # price == None, but reason indicates intentional skip (cooldown/quota/circuit breaker)
+    FAILED = "FAILED"  # price == None, real error occurred
+
+
+@dataclass
+class PriceResult:
+    """Result of price retrieval with status and reason"""
+    price: Optional[float]
+    reason: Optional[str]
+    source: str
+    status: PriceStatus
+    
+    @classmethod
+    def create(cls, price: Optional[float], reason: Optional[str], source: str) -> 'PriceResult':
+        """Create PriceResult and determine status automatically"""
+        if price is not None:
+            status = PriceStatus.OK
+        elif reason and reason in {
+            "twelve_data_cooldown", "circuit_breaker_open", "quota_exceeded", 
+            "rate_limited", "twelve_data_circuit_breaker_open", "cooldown"
+        }:
+            status = PriceStatus.SKIPPED
+        else:
+            status = PriceStatus.FAILED
+        return cls(price=price, reason=reason, source=source, status=status)
 
 # Determine project root and .env path
 _project_root = Path(__file__).resolve().parent
@@ -159,6 +195,11 @@ except ImportError:
 _twelve_data_client = None
 
 
+# Track Telegram errors per chat_id to avoid spam
+_telegram_error_logged: Dict[str, float] = {}  # chat_id -> last_error_log_time
+_TELEGRAM_ERROR_LOG_INTERVAL = 300.0  # Log same error max once per 5 minutes
+
+
 async def safe_send_message(bot: Optional[Bot], chat_id: str, text: str, disable_web_page_preview: bool = True, parse_mode: Optional[str] = None) -> bool:
     """
     Safely send Telegram message with error handling.
@@ -176,8 +217,9 @@ async def safe_send_message(bot: Optional[Bot], chat_id: str, text: str, disable
     Side effects:
         - Sets _telegram_send_enabled=False on InvalidToken (one-time)
         - Logs errors but doesn't raise exceptions
+        - Throttles error logging to avoid spam (max once per 5 minutes per chat_id)
     """
-    global _telegram_send_enabled
+    global _telegram_send_enabled, _telegram_error_logged
     
     if bot is None:
         logger.debug("[TELEGRAM_SEND] Skipping send (bot is None)")
@@ -199,6 +241,9 @@ async def safe_send_message(bot: Optional[Bot], chat_id: str, text: str, disable
         logger.info(f"[TELEGRAM_SEND] Sending message to chat_id={chat_id}, text_length={len(text)}")
         result = await bot.send_message(**kwargs)
         logger.info(f"[TELEGRAM_SEND] ✅ Message sent successfully to chat_id={chat_id}, message_id={result.message_id}")
+        # Clear error flag on success
+        if chat_id in _telegram_error_logged:
+            del _telegram_error_logged[chat_id]
         return True
     except InvalidToken as e:
         logger.error(f"[TELEGRAM_SEND] ❌ InvalidToken error: {e}")
@@ -206,16 +251,54 @@ async def safe_send_message(bot: Optional[Bot], chat_id: str, text: str, disable
         logger.error("[TELEGRAM_SEND] Disabling Telegram send for remainder of session")
         _telegram_send_enabled = False
         return False
+    except ChatNotFound as e:
+        # Chat not found - log once per interval
+        now = time.time()
+        last_log = _telegram_error_logged.get(chat_id, 0)
+        if now - last_log >= _TELEGRAM_ERROR_LOG_INTERVAL:
+            logger.error(f"[TELEGRAM_SEND] ❌ ChatNotFound: Chat ID {chat_id} not found or bot is not a member")
+            logger.error(f"[TELEGRAM_SEND] Error details: {type(e).__name__}: {e}")
+            logger.error(f"[TELEGRAM_SEND] Action: Ensure bot is added to channel as admin with 'post messages' permission")
+            _telegram_error_logged[chat_id] = now
+        return False
+    except Forbidden as e:
+        # Forbidden - log once per interval
+        now = time.time()
+        last_log = _telegram_error_logged.get(chat_id, 0)
+        if now - last_log >= _TELEGRAM_ERROR_LOG_INTERVAL:
+            logger.error(f"[TELEGRAM_SEND] ❌ Forbidden: Bot does not have permission to send messages to chat_id={chat_id}")
+            logger.error(f"[TELEGRAM_SEND] Error details: {type(e).__name__}: {e}")
+            logger.error(f"[TELEGRAM_SEND] Action: Ensure bot is admin in channel with 'post messages' permission")
+            _telegram_error_logged[chat_id] = now
+        return False
+    except BadRequest as e:
+        # Bad request - log with details
+        now = time.time()
+        last_log = _telegram_error_logged.get(chat_id, 0)
+        if now - last_log >= _TELEGRAM_ERROR_LOG_INTERVAL:
+            logger.error(f"[TELEGRAM_SEND] ❌ BadRequest: Invalid request for chat_id={chat_id}")
+            logger.error(f"[TELEGRAM_SEND] Error details: {type(e).__name__}: {e}")
+            logger.error(f"[TELEGRAM_SEND] Message preview: {text[:100]}...")
+            _telegram_error_logged[chat_id] = now
+        return False
     except TelegramError as e:
-        logger.error(f"[TELEGRAM_SEND] ❌ Telegram error: {type(e).__name__}: {e}")
-        logger.error(f"[TELEGRAM_SEND] Chat ID: {chat_id}")
-        logger.error(f"[TELEGRAM_SEND] Message preview: {text[:100]}...")
+        # Other Telegram errors - log with details
+        now = time.time()
+        last_log = _telegram_error_logged.get(chat_id, 0)
+        if now - last_log >= _TELEGRAM_ERROR_LOG_INTERVAL:
+            logger.error(f"[TELEGRAM_SEND] ❌ Telegram error: {type(e).__name__}: {e}")
+            logger.error(f"[TELEGRAM_SEND] Chat ID: {chat_id}")
+            logger.error(f"[TELEGRAM_SEND] Message preview: {text[:100]}...")
+            import traceback
+            logger.exception(f"[TELEGRAM_SEND] Full traceback:")
+            _telegram_error_logged[chat_id] = now
         return False
     except Exception as e:
+        # Unexpected errors - always log
         logger.error(f"[TELEGRAM_SEND] ❌ Unexpected error: {type(e).__name__}: {e}")
         logger.error(f"[TELEGRAM_SEND] Chat ID: {chat_id}")
         import traceback
-        logger.error(f"[TELEGRAM_SEND] Traceback: {traceback.format_exc()}")
+        logger.exception(f"[TELEGRAM_SEND] Full traceback:")
         return False
 
 
@@ -759,20 +842,42 @@ def load_channel_pair_direction_last_signal_times() -> Dict:
     """Load last signal times per channel+pair+direction from file with normalization
     
     Structure: {channel_id: {pair: {direction: timestamp}}}
+    
+    Handles migration from legacy format where pair_data could be float instead of dict.
     """
     try:
         if os.path.exists(CHANNEL_PAIR_DIRECTION_LAST_SIGNAL_FILE):
             with open(CHANNEL_PAIR_DIRECTION_LAST_SIGNAL_FILE, 'r') as f:
                 data = json.load(f)
                 
-                # Normalize all timestamps
+                # Normalize all timestamps and migrate legacy formats
                 needs_migration = False
                 for channel_id, pairs_dict in data.items():
                     if not isinstance(pairs_dict, dict):
+                        # Legacy: pairs_dict might be something else - skip or convert
+                        print(f"[LOAD_STATE] ⚠️ Invalid structure for channel_id={channel_id}, expected dict, got {type(pairs_dict).__name__}")
                         continue
+                    
                     for pair, directions_dict in pairs_dict.items():
+                        # CRITICAL FIX: Handle legacy format where directions_dict might be float instead of dict
                         if not isinstance(directions_dict, dict):
+                            if isinstance(directions_dict, (int, float)):
+                                # Legacy format: pair -> float timestamp (apply to both BUY and SELL)
+                                legacy_timestamp = normalize_timestamp(directions_dict, f"channel_pair_direction[{channel_id}][{pair}][LEGACY]")
+                                print(f"[LOAD_STATE] Migrating legacy format: channel_id={channel_id}, pair={pair} (float -> dict)")
+                                pairs_dict[pair] = {
+                                    "BUY": legacy_timestamp,
+                                    "SELL": legacy_timestamp
+                                }
+                                needs_migration = True
+                            else:
+                                print(f"[LOAD_STATE] ⚠️ Invalid structure for pair={pair}, expected dict or float, got {type(directions_dict).__name__}")
+                                # Convert to empty dict to prevent AttributeError
+                                pairs_dict[pair] = {}
+                                needs_migration = True
                             continue
+                        
+                        # Normal format: directions_dict is dict {direction: timestamp}
                         for direction, raw_value in directions_dict.items():
                             if raw_value is not None:
                                 normalized = normalize_timestamp(raw_value, f"channel_pair_direction[{channel_id}][{pair}][{direction}]")
@@ -785,13 +890,15 @@ def load_channel_pair_direction_last_signal_times() -> Dict:
                     try:
                         with open(CHANNEL_PAIR_DIRECTION_LAST_SIGNAL_FILE, 'w') as wf:
                             json.dump(data, wf)
-                        print(f"[LOAD_STATE] ✅ Auto-migrated channel_pair_direction_last_signal_times to float format")
+                        print(f"[LOAD_STATE] ✅ Auto-migrated channel_pair_direction_last_signal_times (legacy format -> dict format)")
                     except Exception as e:
                         print(f"[LOAD_STATE] ⚠️ Failed to auto-migrate: {e}")
                 
                 return data
     except Exception as e:
         print(f"[LOAD_STATE] ⚠️ Error loading channel_pair_direction_last_signal_times: {e}")
+        import traceback
+        print(f"[LOAD_STATE] Traceback: {traceback.format_exc()}")
     return {}
 
 
@@ -831,7 +938,38 @@ def can_send_pair_direction_signal(channel_id: str, pair: str, direction: str) -
     data = load_channel_pair_direction_last_signal_times()
     
     channel_data = data.get(channel_id, {})
+    if not isinstance(channel_data, dict):
+        # Defensive: ensure channel_data is dict
+        print(f"[CAN_SEND_PAIR_DIRECTION] ⚠️ Invalid channel_data type for {channel_id}: {type(channel_data).__name__}, using empty dict")
+        channel_data = {}
+        data[channel_id] = channel_data
+    
     pair_data = channel_data.get(pair, {})
+    # CRITICAL FIX: Handle legacy format where pair_data might be float instead of dict
+    if not isinstance(pair_data, dict):
+        if isinstance(pair_data, (int, float)):
+            # Legacy format: convert float timestamp to dict with both directions
+            legacy_timestamp = normalize_timestamp(pair_data, f"channel_pair_direction[{channel_id}][{pair}][LEGACY]")
+            print(f"[CAN_SEND_PAIR_DIRECTION] Migrating legacy format: channel_id={channel_id}, pair={pair} (float -> dict)")
+            pair_data = {
+                "BUY": legacy_timestamp,
+                "SELL": legacy_timestamp
+            }
+            channel_data[pair] = pair_data
+            # Save migrated data back
+            try:
+                all_data = load_channel_pair_direction_last_signal_times()
+                all_data[channel_id] = channel_data
+                with open(CHANNEL_PAIR_DIRECTION_LAST_SIGNAL_FILE, 'w') as f:
+                    json.dump(all_data, f)
+            except Exception as e:
+                print(f"[CAN_SEND_PAIR_DIRECTION] ⚠️ Failed to save migrated data: {e}")
+        else:
+            # Invalid type - use empty dict
+            print(f"[CAN_SEND_PAIR_DIRECTION] ⚠️ Invalid pair_data type for {pair}: {type(pair_data).__name__}, using empty dict")
+            pair_data = {}
+            channel_data[pair] = pair_data
+    
     last_time_raw = pair_data.get(direction, 0)
     last_time = normalize_timestamp(last_time_raw, f"channel_pair_direction[{channel_id}][{pair}][{direction}]")
     
@@ -1544,7 +1682,8 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
                 is_crypto_channel = asset_type == "CRYPTO"
                 
                 # Track requests for this signal (must be exactly 1 for non-crypto)
-                signal_request_count = 0
+                # PriceResult will be created below
+                price_result = None
                 
                 try:
                     if is_crypto_channel:
@@ -1554,87 +1693,93 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
                         if rt_price:
                             source = "BINANCE"
                             reason = None
-                            signal_request_count = 0  # Binance doesn't count
                         else:
                             rt_price = None
                             reason = "binance_unavailable"
                             source = "BINANCE"
-                            signal_request_count = 0
+                        
+                        # Create PriceResult for crypto (always OK or FAILED, never SKIPPED)
+                        price_result = PriceResult.create(rt_price, reason, source)
                     else:
                         # Forex/Index/Gold: use data router (TwelveData/Yahoo)
                         # CRITICAL: Only 1 request, no retries
                         data_router = get_data_router()
                         if data_router:
                             # Single request - no retries for signal generation
-                            # DO NOT increment counter here - wait for actual HTTP request
-                            signal_request_count = 0  # Will be set to 1 only after successful HTTP request
                             rt_price, reason, source = await data_router.get_price_async(sym)
+                            
+                            # Create PriceResult to determine status
+                            price_result = PriceResult.create(rt_price, reason, source)
                             
                             # Update global request counter ONLY if we got a price (HTTP request succeeded)
                             # For TwelveData, increment only if price is not None (successful HTTP request)
-                            if rt_price is not None and source == "TWELVE_DATA":
-                                signal_request_count = 1
+                            if price_result.status == PriceStatus.OK and source == "TWELVE_DATA":
                                 if request_counter_ref is not None:
                                     request_counter_ref["count"] = request_counter_ref.get("count", 0) + 1
                                     logger.debug(f"[GENERATE_SIGNALS] Request counter updated: {request_counter_ref['count']} (after successful HTTP request)")
-                            else:
-                                # No HTTP request was made or request failed - don't count
-                                signal_request_count = 0
                         else:
                             rt_price, reason, source = get_price(sym)
-                            signal_request_count = 1  # Sync call also counts
+                            price_result = PriceResult.create(rt_price, reason, source)
                     
-                    # Verify exactly 1 request was made (for non-crypto)
-                    if not is_crypto_channel and signal_request_count != 1:
-                        logger.error(f"[GENERATE_SIGNALS] {channel_name}: Invalid request count for {sym}: {signal_request_count} (expected 1)")
-                        print(f"  ❌ Invalid request count: {signal_request_count} (expected 1) - skipping signal")
-                        continue
-                    
-                    if rt_price is None:
-                        # Log detailed reason for skipping with explicit reason code
-                        reason_code = reason or "unknown"
-                        if reason == "twelve_data_cooldown" or reason == "twelve_data_circuit_breaker_open":
-                            reason_msg = f"Circuit breaker OPEN - TwelveData temporarily disabled"
-                            reason_code = "circuit_breaker_open"
+                    # Handle price result based on status
+                    if price_result.status == PriceStatus.SKIPPED:
+                        # SKIPPED: cooldown/quota/circuit breaker - not an error, just skip this symbol
+                        reason_msg = f"Price skipped: {price_result.reason}"
+                        if price_result.reason in {"twelve_data_cooldown", "circuit_breaker_open", "twelve_data_circuit_breaker_open", "cooldown"}:
+                            reason_msg = f"Circuit breaker/cooldown active - TwelveData temporarily disabled"
                             # For FOREX channels: mark as unavailable and break from channel loop
                             if asset_type == "FOREX":
                                 forex_unavailable = True
                                 print(f"  ⏸️ {channel_name}: TwelveData cooldown active, skipping channel (will skip remaining FOREX channels)")
-                                logger.warning(f"[GENERATE_SIGNALS] {channel_name}: TwelveData cooldown active, stopping channel generation")
+                                logger.info(f"[GENERATE_SIGNALS] {channel_name}: TwelveData cooldown active, stopping channel generation")
                                 break  # Break from while loop for this channel
-                        elif reason == "twelve_data_unavailable":
-                            reason_msg = f"TwelveData unavailable (rate limit/error)"
-                            reason_code = "no_price"
+                        elif price_result.reason in {"rate_limit_429", "quota_exceeded", "rate_limited"}:
+                            reason_msg = f"Rate limit/quota exceeded - TwelveData temporarily unavailable"
+                            # For FOREX channels: mark as unavailable and break from channel loop
+                            if asset_type == "FOREX":
+                                forex_unavailable = True
+                                print(f"  ⏸️ {channel_name}: TwelveData rate limited, skipping channel (will skip remaining FOREX channels)")
+                                logger.info(f"[GENERATE_SIGNALS] {channel_name}: TwelveData rate limited, stopping channel generation")
+                                break  # Break from while loop for this channel
+                        
+                        # Log skip (not error) and continue to next symbol
+                        print(f"  ⏸️ {channel_name}: Skipping {sym} - {reason_msg}")
+                        logger.info(f"[GENERATE_SIGNALS] {channel_name}: Skipping {sym} - status=SKIPPED, reason={price_result.reason}")
+                        continue
+                    
+                    elif price_result.status == PriceStatus.FAILED:
+                        # FAILED: real error occurred - log and skip
+                        reason_msg = f"Price unavailable: {price_result.reason}"
+                        if price_result.reason == "twelve_data_unavailable":
+                            reason_msg = f"TwelveData unavailable (error)"
                             # For FOREX channels: mark as unavailable and break from channel loop
                             if asset_type == "FOREX":
                                 forex_unavailable = True
                                 print(f"  ⏸️ {channel_name}: TwelveData unavailable, skipping channel (will skip remaining FOREX channels)")
                                 logger.warning(f"[GENERATE_SIGNALS] {channel_name}: TwelveData unavailable, stopping channel generation")
                                 break  # Break from while loop for this channel
-                        elif reason == "binance_unavailable":
+                        elif price_result.reason == "binance_unavailable":
                             reason_msg = f"Binance unavailable"
-                            reason_code = "no_price"
-                        elif reason == "yahoo_unavailable":
+                        elif price_result.reason == "yahoo_unavailable":
                             reason_msg = f"Yahoo Finance unavailable"
-                            reason_code = "no_price"
-                        else:
-                            reason_msg = f"Price unavailable: {reason}"
-                            reason_code = "no_price"
                         
-                        # Only log if we're not breaking (for non-FOREX or non-cooldown cases)
-                        if not (asset_type == "FOREX" and reason_code == "circuit_breaker_open"):
-                            print(f"  ⏸️ {channel_name}: Skipping {sym} - reason={reason_code}, {reason_msg}")
-                            logger.warning(f"[GENERATE_SIGNALS] {channel_name}: Skipping {sym} - reason={reason_code}, {reason_msg}")
-                        
-                        # Continue to next pair (don't break - circuit breaker might recover)
-                        # EXCEPT for FOREX cooldown cases (handled above)
-                        if asset_type == "FOREX" and reason_code == "circuit_breaker_open":
-                            break  # Already handled above
+                        print(f"  ⏸️ {channel_name}: Skipping {sym} - {reason_msg}")
+                        logger.warning(f"[GENERATE_SIGNALS] {channel_name}: Skipping {sym} - status=FAILED, reason={price_result.reason}")
                         continue
                     
+                    # OK: price is available
+                    if price_result.price is None:
+                        # This should not happen if status == OK, but defensive check
+                        logger.error(f"[GENERATE_SIGNALS] {channel_name}: PriceResult.status=OK but price is None for {sym}")
+                        continue
+                    
+                    rt_price = price_result.price
+                    
                     entry = rt_price
-                    logger.info(f"[GENERATE_SIGNALS] {channel_name}: {sym} price={entry:.5f} (source={source}, requests={signal_request_count})")
-                    print(f"  Real-time entry price: {entry} (source: {source}, requests: {signal_request_count})")
+                    # Determine request count for logging (only for successful HTTP requests)
+                    request_count_for_log = 1 if (price_result.status == PriceStatus.OK and source == "TWELVE_DATA" and not is_crypto_channel) else 0
+                    logger.info(f"[GENERATE_SIGNALS] {channel_name}: {sym} price={entry:.5f} (source={source}, status={price_result.status.value}, requests={request_count_for_log})")
+                    print(f"  Real-time entry price: {entry} (source: {source}, status: {price_result.status.value})")
                 except Exception as e:
                     logger.exception(f"[GENERATE_SIGNALS] {channel_name}: Failed to get price for {sym}: {type(e).__name__}: {e}")
                     print(f"  Failed to get price for {sym}: {e}")
