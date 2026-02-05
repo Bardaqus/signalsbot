@@ -1,3 +1,8 @@
+"""
+Signals Bot - Telegram trading signals generator
+Dependencies: python-telegram-bot, python-dotenv, httpx, yfinance (optional)
+Install: py -m pip install python-telegram-bot python-dotenv httpx yfinance
+"""
 import os
 import re
 import time
@@ -10,11 +15,31 @@ from typing import Dict, List, Tuple, Optional, Any
 from enum import Enum
 from dataclasses import dataclass
 
-from dotenv import load_dotenv
-from telegram import Bot
-from telegram.error import InvalidToken, TelegramError, BadRequest, Forbidden
-from data_router import get_price, get_candles, AssetClass, ForbiddenDataSourceError, get_data_router
-from config import Config
+# Dependency check
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    print("❌ ERROR: python-dotenv not installed. Install with: py -m pip install python-dotenv")
+    raise
+
+try:
+    from telegram import Bot
+    from telegram.error import InvalidToken, TelegramError, BadRequest, Forbidden
+except ImportError:
+    print("❌ ERROR: python-telegram-bot not installed. Install with: py -m pip install python-telegram-bot")
+    raise
+
+try:
+    from data_router import get_price, get_candles, AssetClass, ForbiddenDataSourceError, get_data_router
+except ImportError:
+    print("❌ ERROR: data_router module not found. Ensure data_router.py is in the same directory.")
+    raise
+
+try:
+    from config import Config
+except ImportError:
+    print("⚠️ WARNING: config module not found. Some features may not work.")
+    Config = None
 
 # Configure logging
 logging.basicConfig(
@@ -206,6 +231,7 @@ def load_telegram_token(dotenv_path: Optional[Path] = None) -> str:
 
 # Load Telegram token at module level
 TELEGRAM_BOT_TOKEN = load_telegram_token()
+TELEGRAM_TOKEN_SOURCE = "ENV"  # Track where token came from
 
 # Fallback to hardcoded token if .env loading failed
 if not TELEGRAM_BOT_TOKEN:
@@ -213,11 +239,16 @@ if not TELEGRAM_BOT_TOKEN:
         from config_hardcoded import HARDCODED_TELEGRAM
         TELEGRAM_BOT_TOKEN = HARDCODED_TELEGRAM.get('bot_token', '')
         if TELEGRAM_BOT_TOKEN:
+            TELEGRAM_TOKEN_SOURCE = "HARDCODED"
             logger.warning("[TELEGRAM_TOKEN] ⚠️ Using hardcoded token from config_hardcoded.py (fallback)")
             logger.info(f"[TELEGRAM_TOKEN] Token preview: {TELEGRAM_BOT_TOKEN[:6]}...{TELEGRAM_BOT_TOKEN[-4:]}")
     except Exception as e:
         logger.error(f"[TELEGRAM_TOKEN] ❌ Failed to load token from .env and fallback: {e}")
         TELEGRAM_BOT_TOKEN = ""
+        TELEGRAM_TOKEN_SOURCE = "NONE"
+
+# DRY_RUN mode: if set to "1" or "true", bot will work without Telegram (for testing)
+DRY_RUN = os.getenv("DRY_RUN", "0").strip().lower() in ("1", "true", "yes", "on")
 
 # Load channel ID (with fallback)
 try:
@@ -380,22 +411,41 @@ async def create_telegram_bot_with_check(token: Optional[str] = None) -> Optiona
         token: Bot token (defaults to TELEGRAM_BOT_TOKEN)
     
     Returns:
-        Bot instance if valid, None otherwise
+        Bot instance if valid, None otherwise (only if token is empty and DRY_RUN=False)
     
     Side effects:
         - Sets _telegram_send_enabled=False if token invalid
         - Logs bot info on success (@username and id)
+        - Exits process if token provided but bot creation fails (unless DRY_RUN=True)
     """
     global _telegram_send_enabled
     
     if token is None:
         token = TELEGRAM_BOT_TOKEN
     
+    # Diagnostic: log token source and status
+    token_source = "ENV" if os.getenv("TELEGRAM_BOT_TOKEN") else ".env file"
+    token_length = len(token) if token else 0
+    token_preview = f"{token[:6]}...{token[-4:]}" if token and len(token) > 10 else "***"
+    
+    logger.info("[TELEGRAM_BOT] ===== Telegram Bot Initialization =====")
+    logger.info(f"[TELEGRAM_BOT] Token source: {token_source}")
+    logger.info(f"[TELEGRAM_BOT] Token length: {token_length}")
+    logger.info(f"[TELEGRAM_BOT] Token preview: {token_preview}")
+    logger.info(f"[TELEGRAM_BOT] DRY_RUN mode: {DRY_RUN}")
+    
     if not token:
-        logger.error("[TELEGRAM_BOT] ❌ No token provided")
-        logger.error("[TELEGRAM_BOT] Telegram disabled: invalid/missing token")
-        _telegram_send_enabled = False
-        return None
+        if DRY_RUN:
+            logger.warning("[TELEGRAM_BOT] ⚠️ No token provided - DRY_RUN mode enabled, continuing without Telegram")
+            _telegram_send_enabled = False
+            return None
+        else:
+            logger.error("[TELEGRAM_BOT] ❌ FATAL: No token provided and DRY_RUN=False")
+            logger.error("[TELEGRAM_BOT] Set TELEGRAM_BOT_TOKEN in .env file or set DRY_RUN=1 to continue")
+            logger.error("[TELEGRAM_BOT] Exiting with code 1")
+            print("\n❌ FATAL ERROR: Telegram bot token is required!")
+            print("   Set TELEGRAM_BOT_TOKEN in .env file or set DRY_RUN=1 to continue without Telegram")
+            sys.exit(1)
     
     try:
         bot = Bot(token=token)
@@ -404,24 +454,92 @@ async def create_telegram_bot_with_check(token: Optional[str] = None) -> Optiona
         try:
             me = await bot.get_me()
             logger.info(f"[TELEGRAM_BOT] ✅ Telegram OK: @{me.username} (id={me.id})")
+            logger.info("[TELEGRAM_BOT] Telegram enabled: True")
             _telegram_send_enabled = True
             return bot
         except InvalidToken as e:
-            logger.error(f"[TELEGRAM_BOT] ❌ Invalid TELEGRAM_BOT_TOKEN (getMe failed): {e!r}")
-            logger.error("[TELEGRAM_BOT] Telegram disabled: getMe failed")
-            _telegram_send_enabled = False
-            return None
+            error_msg = f"Invalid TELEGRAM_BOT_TOKEN (getMe failed): {e!r}"
+            logger.error(f"[TELEGRAM_BOT] ❌ {error_msg}")
+            if DRY_RUN:
+                logger.warning("[TELEGRAM_BOT] DRY_RUN mode: continuing without Telegram")
+                _telegram_send_enabled = False
+                return None
+            else:
+                logger.error("[TELEGRAM_BOT] Exiting with code 1")
+                print(f"\n❌ FATAL ERROR: {error_msg}")
+                print("   Check token in .env file or set DRY_RUN=1 to continue without Telegram")
+                sys.exit(1)
+        except (TelegramError, BadRequest, Forbidden) as e:
+            error_msg = f"Telegram getMe failed: {type(e).__name__}: {e!r}"
+            logger.error(f"[TELEGRAM_BOT] ❌ {error_msg}")
+            if DRY_RUN:
+                logger.warning("[TELEGRAM_BOT] DRY_RUN mode: continuing without Telegram")
+                _telegram_send_enabled = False
+                return None
+            else:
+                logger.error("[TELEGRAM_BOT] Exiting with code 1")
+                print(f"\n❌ FATAL ERROR: {error_msg}")
+                print("   Set DRY_RUN=1 to continue without Telegram")
+                sys.exit(1)
         except Exception as e:
-            logger.error(f"[TELEGRAM_BOT] ❌ Telegram getMe failed: {type(e).__name__}: {e!r}")
-            logger.error("[TELEGRAM_BOT] Telegram disabled: getMe failed")
-            _telegram_send_enabled = False
-            return None
+            error_msg = f"Telegram getMe failed (unexpected): {type(e).__name__}: {e!r}"
+            logger.error(f"[TELEGRAM_BOT] ❌ {error_msg}")
+            if DRY_RUN:
+                logger.warning("[TELEGRAM_BOT] DRY_RUN mode: continuing without Telegram")
+                _telegram_send_enabled = False
+                return None
+            else:
+                logger.error("[TELEGRAM_BOT] Exiting with code 1")
+                print(f"\n❌ FATAL ERROR: {error_msg}")
+                print("   Set DRY_RUN=1 to continue without Telegram")
+                sys.exit(1)
             
     except Exception as e:
-        logger.error(f"[TELEGRAM_BOT] ❌ Error creating Bot instance: {type(e).__name__}: {e!r}")
-        logger.error("[TELEGRAM_BOT] Telegram disabled: bot creation failed")
-        _telegram_send_enabled = False
-        return None
+        error_msg = f"Error creating Bot instance: {type(e).__name__}: {e!r}"
+        logger.error(f"[TELEGRAM_BOT] ❌ {error_msg}")
+        if DRY_RUN:
+            logger.warning("[TELEGRAM_BOT] DRY_RUN mode: continuing without Telegram")
+            _telegram_send_enabled = False
+            return None
+        else:
+            logger.error("[TELEGRAM_BOT] Exiting with code 1")
+            print(f"\n❌ FATAL ERROR: {error_msg}")
+            print("   Set DRY_RUN=1 to continue without Telegram")
+            sys.exit(1)
+
+
+def send_telegram_message(channel_id: str, text: str, bot: Optional[Bot] = None) -> Tuple[bool, Optional[str]]:
+    """
+    Send Telegram message with error handling (synchronous wrapper for async function).
+    
+    Args:
+        channel_id: Chat/channel ID
+        text: Message text
+        bot: Telegram Bot instance (if None, uses global bot)
+    
+    Returns:
+        Tuple of (success: bool, error_message: Optional[str])
+    """
+    if bot is None:
+        return False, "Bot is None"
+    
+    try:
+        # Run async function in event loop
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # If loop is already running, create a task
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(asyncio.run, safe_send_message(bot, channel_id, text))
+                success = future.result(timeout=10)
+                return success, None
+        else:
+            success = loop.run_until_complete(safe_send_message(bot, channel_id, text))
+            return success, None
+    except Exception as e:
+        error_msg = f"{type(e).__name__}: {e}"
+        logger.error(f"[SEND_TELEGRAM] ❌ Failed to send message: {error_msg}")
+        return False, error_msg
 
 
 # Forex pairs (without .FOREX suffix - will be handled by router)
@@ -477,11 +595,30 @@ MAX_GAINMUSE_CRYPTO_SIGNALS = 5
 MAX_INDEX_SIGNALS = 5
 MAX_DEGRAM_INDEX_SIGNALS = 5
 
-# Time constraints (in seconds)
-MIN_TIME_BETWEEN_SIGNALS = 5 * 60  # 5 minutes between any signals
-MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MIN = 150 * 60  # 2.5 hours (150 minutes) minimum between signals in same channel
-MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MAX = 180 * 60  # 3 hours (180 minutes) maximum between signals in same channel
+# Time constraints (in seconds) - CONFIGURABLE PER ASSET TYPE
+MIN_TIME_BETWEEN_SIGNALS = 5 * 60  # 5 minutes between any signals (global)
+
+# Channel constraints per asset type (in seconds) - CONFIGURABLE
+CHANNEL_CONSTRAINT_INTERVALS = {
+    "FOREX": 15 * 60,      # 15 minutes between signals in FOREX channels
+    "CRYPTO": 10 * 60,     # 10 minutes between signals in CRYPTO channels
+    "INDEX": 30 * 60,      # 30 minutes between signals in INDEX channels
+    "GOLD": 30 * 60,       # 30 minutes between signals in GOLD channels
+    "DEFAULT": 15 * 60     # Default: 15 minutes
+}
+
+# Legacy support (will be replaced by CHANNEL_CONSTRAINT_CONFIG)
+MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MIN = 150 * 60  # Legacy: 2.5 hours (deprecated, use CHANNEL_CONSTRAINT_CONFIG)
+MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MAX = 180 * 60  # Legacy: 3 hours (deprecated, use CHANNEL_CONSTRAINT_CONFIG)
 MIN_TIME_BETWEEN_PAIR_DIRECTION_SIGNALS = 24 * 60 * 60  # 24 hours between same pair+direction in same channel
+
+# Active signal TTL configuration
+ACTIVE_SIGNAL_TTL_MINUTES = int(os.getenv("ACTIVE_SIGNAL_TTL_MINUTES", "180"))  # 180 minutes (3 hours) default TTL
+ACTIVE_SIGNAL_TTL_HOURS = ACTIVE_SIGNAL_TTL_MINUTES / 60  # Convert to hours for backward compatibility
+
+# Allow multiple active signals per symbol (for channels with 1-2 symbols like GOLD/INDEXES)
+# Set ALLOW_MULTIPLE_ACTIVE_PER_SYMBOL=1 to enable
+ALLOW_MULTIPLE_ACTIVE_PER_SYMBOL = os.getenv("ALLOW_MULTIPLE_ACTIVE_PER_SYMBOL", "0").strip().lower() in ("1", "true", "yes", "on")
 
 # Files for tracking signal times
 LAST_SIGNAL_TIME_FILE = "last_signal_time.json"  # Global last signal time
@@ -698,11 +835,24 @@ def generate_signal_from_bars(bars: List[Dict], symbol: str = "") -> Tuple[str, 
 
 
 def load_active_signals() -> List[Dict]:
-    """Load active signals from file"""
+    """Load active signals from file and migrate old format signals"""
     try:
         if os.path.exists(SIGNALS_FILE):
             with open(SIGNALS_FILE, 'r') as f:
-                return json.load(f)
+                signals = json.load(f)
+            
+            # Migration: Add publish_status="published" to old signals without this field
+            needs_save = False
+            for signal in signals:
+                if "publish_status" not in signal:
+                    signal["publish_status"] = "published"  # Assume old signals were published
+                    needs_save = True
+            
+            if needs_save:
+                save_active_signals(signals)
+                logger.info(f"[MIGRATE_SIGNALS] Migrated {len([s for s in signals if 'publish_status' in s])} signals to include publish_status")
+            
+            return signals
     except Exception:
         pass
     return []
@@ -713,8 +863,98 @@ def save_active_signals(signals: List[Dict]) -> None:
     try:
         with open(SIGNALS_FILE, 'w') as f:
             json.dump(signals, f, indent=2)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error(f"[SAVE_ACTIVE_SIGNALS] Failed to save signals: {e}")
+
+
+def clear_today_signals() -> int:
+    """
+    Clear all signals for today (called on bot startup to reset daily counters).
+    
+    Returns:
+        Number of signals cleared
+    """
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    active_signals = load_active_signals()
+    
+    if not active_signals:
+        return 0
+    
+    # Filter out signals for today
+    signals_before = len(active_signals)
+    signals_after_today = [s for s in active_signals if s.get("date") != today]
+    cleared_count = signals_before - len(signals_after_today)
+    
+    if cleared_count > 0:
+        save_active_signals(signals_after_today)
+        logger.info(f"[CLEAR_TODAY] ✅ Cleared {cleared_count} signals for today ({today}) on bot startup")
+        print(f"[CLEAR_TODAY] ✅ Cleared {cleared_count} signals for today ({today}) - counters reset")
+    else:
+        logger.info(f"[CLEAR_TODAY] No signals found for today ({today})")
+    
+    return cleared_count
+
+
+def close_expired_signals() -> int:
+    """
+    Close expired signals (older than TTL) automatically.
+    
+    Returns:
+        Number of signals closed
+    """
+    active_signals = load_active_signals()
+    if not active_signals:
+        return 0
+    
+    current_time = time.time()
+    ttl_seconds = ACTIVE_SIGNAL_TTL_MINUTES * 60
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    
+    closed_count = 0
+    expired_signals = []
+    updated_signals = []
+    
+    for signal in active_signals:
+        if signal.get("status") == "active" and signal.get("date") == today:
+            signal_timestamp = signal.get("timestamp")
+            if signal_timestamp:
+                try:
+                    # Parse ISO timestamp or Unix timestamp
+                    if isinstance(signal_timestamp, (int, float)):
+                        signal_time = float(signal_timestamp)
+                    else:
+                        # Try parsing ISO format
+                        signal_dt = datetime.fromisoformat(signal_timestamp.replace('Z', '+00:00'))
+                        signal_time = signal_dt.timestamp()
+                    
+                    age_seconds = current_time - signal_time
+                    age_minutes = age_seconds / 60
+                    
+                    if age_seconds > ttl_seconds:
+                        # Close expired signal
+                        signal["status"] = "expired"
+                        signal["closed_at"] = datetime.now(timezone.utc).isoformat()
+                        signal["expired_reason"] = f"TTL exceeded (age: {age_minutes:.1f}min > {ACTIVE_SIGNAL_TTL_MINUTES}min)"
+                        expired_signals.append({
+                            "symbol": signal.get("symbol"),
+                            "channel_id": signal.get("channel_id"),
+                            "age_minutes": age_minutes
+                        })
+                        closed_count += 1
+                        logger.info(f"[CLOSE_EXPIRED] Closed expired signal: {signal.get('symbol')} (channel: {signal.get('channel_id')}, age: {age_minutes:.1f}min)")
+                except Exception as e:
+                    logger.warning(f"[CLOSE_EXPIRED] Failed to parse timestamp for signal {signal.get('symbol')}: {e}")
+        
+        updated_signals.append(signal)
+    
+    if closed_count > 0:
+        save_active_signals(updated_signals)
+        logger.info(f"[CLOSE_EXPIRED] ✅ Closed {closed_count} expired signals (TTL: {ACTIVE_SIGNAL_TTL_MINUTES} minutes)")
+        print(f"[CLOSE_EXPIRED] ✅ Closed {closed_count} expired signals:")
+        for sig in expired_signals:
+            print(f"   - {sig['symbol']} (channel: {sig['channel_id']}, age: {sig['age_minutes']:.1f}min)")
+    
+    return closed_count
 
 
 def normalize_timestamp(value: Any, field_name: str = "timestamp") -> float:
@@ -882,16 +1122,32 @@ def load_channel_last_signal_times() -> Dict:
     return {}
 
 
-def save_channel_last_signal_time(channel_id: str) -> None:
-    """Save current time as last signal time for channel with random wait time (50-80 minutes)
+def get_channel_constraint_interval(channel_id: str, asset_type: str = "DEFAULT") -> float:
+    """Get channel constraint interval based on asset type
     
-    Saves structure: {channel_id: {"last_time": timestamp, "wait_time": random_wait_seconds}}
+    Args:
+        channel_id: Channel ID (for logging)
+        asset_type: Asset type (FOREX, CRYPTO, INDEX, GOLD)
+    
+    Returns:
+        Constraint interval in seconds
+    """
+    return CHANNEL_CONSTRAINT_INTERVALS.get(asset_type, CHANNEL_CONSTRAINT_INTERVALS["DEFAULT"])
+
+
+def save_channel_last_signal_time(channel_id: str, asset_type: str = "DEFAULT") -> None:
+    """Save current time as last signal time for channel with configured wait time
+    
+    Args:
+        channel_id: Channel ID
+        asset_type: Asset type (FOREX, CRYPTO, INDEX, GOLD) to determine wait time
+    
+    Saves structure: {channel_id: {"last_time": timestamp, "wait_time": wait_seconds}}
     """
     try:
-        import random
         current_time = float(time.time())
-        # Generate random wait time between 50 and 80 minutes
-        wait_time = random.uniform(MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MIN, MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MAX)
+        # Use configured wait time based on asset type
+        wait_time = get_channel_constraint_interval(channel_id, asset_type)
         
         channel_times = load_channel_last_signal_times()
         channel_times[channel_id] = {
@@ -903,9 +1159,11 @@ def save_channel_last_signal_time(channel_id: str) -> None:
             json.dump(channel_times, f)
         
         wait_minutes = int(wait_time / 60)
-        print(f"[SAVE_STATE] ✅ Saved channel_last_signal_time for {channel_id}: wait_time={wait_minutes} minutes")
+        print(f"[SAVE_STATE] ✅ Saved channel_last_signal_time for {channel_id} (asset_type={asset_type}): wait_time={wait_minutes} minutes")
+        logger.info(f"[SAVE_STATE] Channel {channel_id}: last_time={current_time}, wait_time={wait_time}s ({wait_minutes} min)")
     except Exception as e:
         print(f"[SAVE_STATE] ⚠️ Error saving channel_last_signal_time: {e}")
+        logger.exception(f"[SAVE_STATE] Error saving channel_last_signal_time: {e}")
 
 
 def load_channel_pair_direction_last_signal_times() -> Dict:
@@ -1052,89 +1310,119 @@ def can_send_pair_direction_signal(channel_id: str, pair: str, direction: str) -
     return True, None
 
 
-def can_send_signal(channel_id: str) -> Tuple[bool, Optional[str]]:
+def can_send_signal(channel_id: str, asset_type: Optional[str] = None) -> Tuple[bool, Optional[str]]:
     """Check if we can send a signal (time constraints)
     
-    Uses random wait time (50-80 minutes) per channel that was saved when last signal was sent.
+    Args:
+        channel_id: Channel ID to check
+        asset_type: Asset type (FOREX, CRYPTO, INDEX, GOLD) to determine constraint interval
+    
+    Returns:
+        Tuple of (can_send: bool, reason: Optional[str])
     """
     current_time = time.time()
     
-    # Check global time constraint (5 minutes)
+    # Check global time constraint (5 minutes) - only if last signal was actually sent
     last_signal_times = load_last_signal_times()
     last_global_time_raw = last_signal_times.get("last_signal_time", 0)
     last_global_time = normalize_timestamp(last_global_time_raw, "last_global_time")
     
-    if current_time - last_global_time < MIN_TIME_BETWEEN_SIGNALS:
-        remaining = MIN_TIME_BETWEEN_SIGNALS - (current_time - last_global_time)
-        return False, f"Wait {int(remaining/60)} minutes (global constraint)"
+    if last_global_time > 0:
+        elapsed = current_time - last_global_time
+        if elapsed < MIN_TIME_BETWEEN_SIGNALS:
+            remaining = MIN_TIME_BETWEEN_SIGNALS - elapsed
+            remaining_minutes = max(0, int(remaining / 60))
+            remaining_seconds = max(0, int(remaining % 60))
+            logger.debug(f"[CONSTRAINT] Global: last={last_global_time:.0f}, now={current_time:.0f}, elapsed={elapsed/60:.1f}min, required={MIN_TIME_BETWEEN_SIGNALS/60}min, remaining={remaining_minutes}m{remaining_seconds}s")
+            if remaining > 0:
+                return False, f"Wait {remaining_minutes} minutes (global constraint: {int(MIN_TIME_BETWEEN_SIGNALS/60)} min interval)"
     
-    # Check channel-specific time constraint (random 50-80 minutes)
+    # Check channel-specific time constraint (configurable per asset type)
     channel_times = load_channel_last_signal_times()
     channel_data = channel_times.get(channel_id)
     
     if channel_data is None:
         # No previous signal for this channel - allow sending
+        logger.debug(f"[CONSTRAINT] Channel {channel_id}: No previous signal, allowing")
         return True, None
+    
+    # Determine constraint interval based on asset type
+    if asset_type and asset_type in CHANNEL_CONSTRAINT_INTERVALS:
+        required_interval = CHANNEL_CONSTRAINT_INTERVALS[asset_type]
+    else:
+        required_interval = CHANNEL_CONSTRAINT_INTERVALS["DEFAULT"]
     
     # Handle both new format (dict) and legacy format (float)
     if isinstance(channel_data, dict):
         # New format: {"last_time": timestamp, "wait_time": wait_seconds}
         last_channel_time_raw = channel_data.get("last_time", 0)
-        wait_time = channel_data.get("wait_time", MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MIN)
+        # Use configured interval instead of saved wait_time
+        wait_time = required_interval
     else:
-        # Legacy format: just a timestamp - use minimum wait time
+        # Legacy format: just a timestamp - use configured interval
         last_channel_time_raw = channel_data
-        wait_time = MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MIN
+        wait_time = required_interval
     
     last_channel_time = normalize_timestamp(last_channel_time_raw, f"last_channel_time[{channel_id}]")
     
     if last_channel_time > 0:
+        elapsed_minutes = (current_time - last_channel_time) / 60
         time_since_last = current_time - last_channel_time
         if time_since_last < wait_time:
             remaining = wait_time - time_since_last
-            remaining_minutes = int(remaining / 60)
-            return False, f"Wait {remaining_minutes} minutes (channel constraint: {int(wait_time/60)} min interval)"
+            remaining_minutes = max(0, int(remaining / 60))
+            remaining_seconds = max(0, int(remaining % 60))
+            logger.debug(f"[CONSTRAINT] Channel {channel_id}: last={last_channel_time:.0f}, now={current_time:.0f}, elapsed={elapsed_minutes:.1f}min, required={wait_time/60:.1f}min, remaining={remaining_minutes}m{remaining_seconds}s")
+            if remaining > 0:
+                return False, f"Wait {remaining_minutes} minutes (channel constraint: {int(wait_time/60)} min interval)"
     
+    logger.debug(f"[CONSTRAINT] Channel {channel_id}: All constraints passed")
     return True, None
 
 
 def get_today_channel_signals_count(channel_id: str) -> int:
-    """Count ALL signals sent to channel today (including closed/completed signals)
+    """Count ONLY published signals sent to channel today (including closed/completed signals)
     
     This ensures that if bot is restarted, it won't send more signals than daily limit.
+    Only signals that were successfully published to Telegram are counted.
     
     Args:
         channel_id: Channel ID to count signals for
     
     Returns:
-        Total count of signals sent to this channel today (regardless of status)
+        Total count of PUBLISHED signals sent to this channel today (regardless of status)
     """
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     active_signals = load_active_signals()
     
-    # Count ALL signals for this channel today (including closed/completed)
-    # This is important: if bot restarts, it should know how many signals were already sent
-    count = len([s for s in active_signals 
-                 if s.get("channel_id") == channel_id and s.get("date") == today])
+    # Count ONLY published signals for this channel today (including closed/completed)
+    # Backward compatibility: if publish_status is missing, assume it's published (old format)
+    published_signals = [
+        s for s in active_signals 
+        if s.get("channel_id") == channel_id 
+        and s.get("date") == today
+        and (s.get("publish_status") == "published" or s.get("publish_status") is None)  # None = old format, assume published
+    ]
+    count = len(published_signals)
     
     # Log for debugging
     if count > 0:
         # Count by status for detailed logging
-        active_count = len([s for s in active_signals 
-                           if s.get("channel_id") == channel_id 
-                           and s.get("date") == today 
-                           and s.get("status") == "active"])
+        active_count = len([s for s in published_signals if s.get("status") == "active"])
         closed_count = count - active_count
-        logger.info(f"[SIGNAL_COUNT] Channel {channel_id}: {count} total signals today ({active_count} active, {closed_count} closed)")
+        logger.info(f"[SIGNAL_COUNT] Channel {channel_id}: {count} published signals today ({active_count} active, {closed_count} closed)")
     
     return count
 
 
 def get_today_signals_count() -> int:
-    """Count signals generated today"""
+    """Count ONLY published signals generated today"""
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     active_signals = load_active_signals()
-    return sum(1 for s in active_signals if s.get("date") == today)
+    # Count only published signals (backward compatibility: None = published)
+    return sum(1 for s in active_signals 
+               if s.get("date") == today 
+               and (s.get("publish_status") == "published" or s.get("publish_status") is None))
 
 
 def get_active_pairs() -> List[str]:
@@ -1150,32 +1438,116 @@ def get_active_pairs() -> List[str]:
     return active_pairs
 
 
-def get_available_pairs(all_pairs: List[str], channel_id: Optional[str] = None) -> List[str]:
+def get_available_pairs(all_pairs: List[str], channel_id: Optional[str] = None, allow_multiple: bool = False) -> List[str]:
     """Get pairs that don't have active signals for the specified channel.
     
     Args:
         all_pairs: List of all pairs to check
         channel_id: If provided, only check for active signals in this channel.
                    If None, check globally (backward compatibility)
+        allow_multiple: If True, allow multiple active signals per symbol (for channels with 1-2 symbols)
+    
+    Returns:
+        List of available pairs (excluding pairs with active signals that are not expired)
     """
+    # CRITICAL: Close expired signals BEFORE checking available pairs
+    # This ensures expired signals are automatically closed and don't block generation
+    expired_count = close_expired_signals()
+    
     active_signals = load_active_signals()
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    current_time = time.time()
+    ttl_seconds = ACTIVE_SIGNAL_TTL_MINUTES * 60
     
     # Get active pairs for this channel (or globally if channel_id is None)
     active_pairs = []
+    expired_signals_found = 0
+    
+    # Track symbol counts if allow_multiple is True
+    symbol_counts = {} if allow_multiple else None
+    
     for signal in active_signals:
         if signal.get("status") == "active" and signal.get("date") == today:
+            # CRITICAL: Only consider published signals (backward compatibility: None = published)
+            publish_status = signal.get("publish_status")
+            if publish_status not in ("published", None):  # None = old format, assume published
+                continue  # Skip failed/skipped signals
+            
             signal_channel_id = signal.get("channel_id")
+            signal_symbol = signal.get("symbol")
+            
+            # Defensive check: if signal is expired (should have been closed by close_expired_signals)
+            signal_timestamp = signal.get("timestamp")
+            is_expired = False
+            if signal_timestamp:
+                try:
+                    # Parse ISO timestamp or Unix timestamp
+                    if isinstance(signal_timestamp, (int, float)):
+                        signal_time = float(signal_timestamp)
+                    else:
+                        # Try parsing ISO format
+                        signal_dt = datetime.fromisoformat(signal_timestamp.replace('Z', '+00:00'))
+                        signal_time = signal_dt.timestamp()
+                    
+                    age_seconds = current_time - signal_time
+                    age_minutes = age_seconds / 60
+                    if age_seconds > ttl_seconds:
+                        is_expired = True
+                        expired_signals_found += 1
+                        logger.debug(f"[AVAILABLE_PAIRS] Signal for {signal_symbol} expired (age: {age_minutes:.1f}min > {ACTIVE_SIGNAL_TTL_MINUTES}min)")
+                except Exception as e:
+                    logger.warning(f"[AVAILABLE_PAIRS] Failed to parse timestamp for {signal_symbol}: {e}")
+            
+            if is_expired:
+                continue
+            
+            # If allow_multiple=True, don't exclude pairs (for channels with 1-2 symbols)
+            if allow_multiple:
+                symbol_counts[signal_symbol] = symbol_counts.get(signal_symbol, 0) + 1
+                continue
+            
             # If channel_id is specified, only exclude pairs active in THIS channel
             # If channel_id is None, exclude pairs active in ANY channel (backward compatibility)
             if channel_id is None or signal_channel_id == channel_id:
-                active_pairs.append(signal.get("symbol"))
+                active_pairs.append(signal_symbol)
     
-    return [pair for pair in all_pairs if pair not in active_pairs]
+    # Log why pairs are excluded
+    if active_pairs:
+        logger.info(f"[AVAILABLE_PAIRS] Excluding {len(active_pairs)} pairs with active signals (channel_id={channel_id}, allow_multiple={allow_multiple})")
+    if expired_count > 0:
+        logger.info(f"[AVAILABLE_PAIRS] {expired_count} signals expired and closed (TTL={ACTIVE_SIGNAL_TTL_MINUTES}min), pairs available again")
+    if allow_multiple and symbol_counts:
+        logger.info(f"[AVAILABLE_PAIRS] Multiple active per symbol enabled - {len(symbol_counts)} symbols have active signals")
+    
+    available = [pair for pair in all_pairs if pair not in active_pairs]
+    return available
 
 
-def add_signal(symbol: str, signal_type: str, entry: float, sl: float, tp1: float, tp2: float = None, tp3: float = None, channel_id: str = None) -> None:
-    """Add new signal to tracking with 2 or 3 TPs"""
+def add_signal(symbol: str, signal_type: str, entry: float, sl: float, tp1: float, tp2: float = None, tp3: float = None, channel_id: str = None, publish_status: str = "published") -> None:
+    """
+    Add new signal to tracking with 2 or 3 TPs.
+    
+    Args:
+        symbol: Trading pair symbol
+        signal_type: BUY or SELL
+        entry: Entry price
+        sl: Stop loss price
+        tp1: Take profit 1 price
+        tp2: Optional take profit 2 price
+        tp3: Optional take profit 3 price
+        channel_id: Telegram channel ID
+        publish_status: "published" | "failed" | "skipped"
+                       Only signals with publish_status="published" are saved and counted.
+    
+    Note:
+        Signals are saved ONLY if publish_status="published".
+        Failed or skipped signals are NOT saved to prevent counting unpublished signals.
+    """
+    # CRITICAL: Only save signals that were successfully published to Telegram
+    if publish_status != "published":
+        logger.debug(f"[ADD_SIGNAL] Skipping save for {symbol} {signal_type} (publish_status={publish_status})")
+        return
+    
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     
     if tp3 is not None:
@@ -1191,7 +1563,8 @@ def add_signal(symbol: str, signal_type: str, entry: float, sl: float, tp1: floa
             "date": today,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "status": "active",  # active, hit_sl, hit_tp1, hit_tp2, hit_tp3
-            "channel_id": channel_id
+            "channel_id": channel_id,
+            "publish_status": "published"  # Explicitly mark as published
         }
     elif tp2 is not None:
         # Signals with 2 TPs (backward compatibility)
@@ -1205,7 +1578,8 @@ def add_signal(symbol: str, signal_type: str, entry: float, sl: float, tp1: floa
             "date": today,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "status": "active",  # active, hit_sl, hit_tp1, hit_tp2
-            "channel_id": channel_id
+            "channel_id": channel_id,
+            "publish_status": "published"
         }
     else:
         # Signals with 1 TP (backward compatibility)
@@ -1218,11 +1592,13 @@ def add_signal(symbol: str, signal_type: str, entry: float, sl: float, tp1: floa
             "date": today,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "status": "active",  # active, hit_sl, hit_tp
-            "channel_id": channel_id
+            "channel_id": channel_id,
+            "publish_status": "published"
         }
     active_signals = load_active_signals()
     active_signals.append(signal)
     save_active_signals(active_signals)
+    logger.info(f"[ADD_SIGNAL] ✅ Saved published signal: {symbol} {signal_type} (channel_id={channel_id})")
 
 
 def load_performance_data() -> Dict:
@@ -1715,9 +2091,12 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
         logger.info(f"[GENERATE_SIGNALS] {channel_name}: Will generate up to {signals_needed} more signals to reach daily limit of {max_signals}")
         
         # Get available pairs for this channel (check only this channel's active signals)
-        available_pairs = get_available_pairs(symbols, channel_id=channel_id)
+        # For channels with few symbols (GOLD/INDEXES), allow multiple active signals per symbol
+        allow_multiple = ALLOW_MULTIPLE_ACTIVE_PER_SYMBOL and len(symbols) <= 2
+        available_pairs = get_available_pairs(symbols, channel_id=channel_id, allow_multiple=allow_multiple)
         if not available_pairs:
             print(f"⚠️ {channel_name}: No available pairs (all pairs already have active signals in this channel)")
+            logger.warning(f"[GENERATE_SIGNALS] {channel_name}: No available pairs - all {len(symbols)} symbols have active signals")
             continue
         
         signals_generated = 0
@@ -1730,7 +2109,7 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
         
         while signals_generated < signals_needed and attempts < max_attempts:
             # Check time constraints BEFORE requesting price
-            can_send, reason = can_send_signal(channel_id)
+            can_send, reason = can_send_signal(channel_id, asset_type=asset_type)
             if not can_send:
                 # Log explicit reason for skipping ONCE and exit channel generation
                 logger.info(f"[GENERATE_SIGNALS] {channel_name}: Channel constraint active - {reason}, skipping channel generation")
@@ -2024,43 +2403,62 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
                 # Lingrid Forex has only 2 TPs, others have 3 TPs
                 msg = build_signal_message(sym, signal_type, entry, sl, tp1, tp2, tp3=tp3, is_crypto=is_crypto)
                 
-                # Try to send to Telegram (if bot available)
-                send_success = False
+                # CRITICAL: Determine publish status BEFORE attempting to send
+                # Order: 1) Generate draft, 2) Try to publish, 3) Save only if published
+                publish_status = "skipped"  # Default: skipped (will be updated based on result)
+                publish_reason = None
+                telegram_sent = False
+                
                 if bot is not None:
                     print(f"📤 {channel_name}: Sending signal to Telegram (channel_id={channel_id}): {msg}")
-                    logger.info(f"[GENERATE_SIGNALS] Attempting to send signal to {channel_name} (ID: {channel_id})")
-                    send_success = await safe_send_message(bot, chat_id=channel_id, text=msg, disable_web_page_preview=True)
-                    if send_success:
-                        print(f"✅ {channel_name}: Signal sent successfully to Telegram")
-                        logger.info(f"[GENERATE_SIGNALS] ✅ Signal sent successfully to {channel_name} (ID: {channel_id})")
-                    else:
-                        print(f"❌ {channel_name}: Failed to send signal to Telegram (check logs for details)")
-                        logger.warning(f"[GENERATE_SIGNALS] ❌ Failed to send signal to {channel_name} (ID: {channel_id}) via Telegram")
-                        # Skip saving if Telegram send failed (signal not actually published)
+                    logger.info(f"[PUBLISH] {channel_name}: Attempting to publish signal (channel_id={channel_id})")
+                    try:
+                        send_success = await safe_send_message(bot, chat_id=channel_id, text=msg, disable_web_page_preview=True)
+                        if send_success:
+                            publish_status = "published"
+                            publish_reason = "success"
+                            telegram_sent = True
+                            print(f"✅ {channel_name}: Signal published successfully to Telegram")
+                            logger.info(f"[PUBLISH] {channel_name}: status=published, reason=success")
+                        else:
+                            publish_status = "failed"
+                            publish_reason = "send_message_returned_false"
+                            print(f"❌ {channel_name}: Failed to publish signal to Telegram (send_message returned False)")
+                            logger.warning(f"[PUBLISH] {channel_name}: status=failed, reason={publish_reason}")
+                            # Skip saving if Telegram send failed (signal not actually published)
+                            continue
+                    except Exception as e:
+                        publish_status = "failed"
+                        publish_reason = f"exception_{type(e).__name__}"
+                        print(f"❌ {channel_name}: Exception while publishing signal: {type(e).__name__}: {e}")
+                        logger.error(f"[PUBLISH] {channel_name}: status=failed, reason={publish_reason}, error={e!r}")
+                        # Skip saving if exception occurred (signal not actually published)
                         continue
                 else:
-                    print(f"📝 {channel_name}: Generated signal (Telegram disabled): {msg}")
-                    logger.info(f"[GENERATE_SIGNALS] Signal generated for {channel_name} (local only, bot=None): {sym} {signal_type} @ {entry}")
-                    # If bot is None, we still save for local logging
-                    send_success = True
+                    publish_status = "skipped"
+                    publish_reason = "bot_is_none"
+                    print(f"📝 {channel_name}: Generated signal draft (Telegram disabled, bot=None): {msg}")
+                    logger.warning(f"[PUBLISH] {channel_name}: status=skipped, reason={publish_reason}")
+                    # Skip saving if bot is None (signal not actually published)
+                    continue
                 
-                # Only save signal if send was successful (or bot is None for local generation)
-                if send_success:
-                    # Save signal BEFORE updating counters to ensure it's counted
-                    # All signals now have 3 TPs (forex, crypto, index, gold)
-                    add_signal(sym, signal_type, entry, sl, tp1, tp2, tp3=tp3, channel_id=channel_id)
+                # CRITICAL: Save signal ONLY if successfully published (publish_status == "published")
+                if publish_status == "published":
+                    # Save signal with explicit publish_status
+                    add_signal(sym, signal_type, entry, sl, tp1, tp2, tp3=tp3, channel_id=channel_id, publish_status="published")
                     
                     # Verify signal was saved and counted
                     new_count = get_today_channel_signals_count(channel_id)
-                    logger.info(f"[GENERATE_SIGNALS] {channel_name}: Signal saved - total today: {new_count}/{max_signals}")
+                    logger.info(f"[GENERATE_SIGNALS] {channel_name}: Signal saved - total published today: {new_count}/{max_signals}")
                     
-                    # Update time constraints only after successful send
+                    # Update time constraints ONLY after successful publication
                     save_last_signal_time()
-                    save_channel_last_signal_time(channel_id)
+                    save_channel_last_signal_time(channel_id, asset_type=asset_type)
                     save_channel_pair_direction_last_signal_time(channel_id, clean_sym, signal_type)
+                    logger.info(f"[GENERATE_SIGNALS] {channel_name}: Constraints updated after successful publication")
                     
                     signals_generated += 1
-                    print(f"✅ {channel_name}: Generated signal {signals_generated}/{signals_needed}: {sym} {signal_type} (total today: {new_count}/{max_signals})")
+                    print(f"✅ {channel_name}: Published signal {signals_generated}/{signals_needed}: {sym} {signal_type} (total published today: {new_count}/{max_signals})")
                     
                     # Double-check: if we've reached the limit, stop generating for this channel
                     if new_count >= max_signals:
@@ -2068,10 +2466,11 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
                         logger.info(f"[GENERATE_SIGNALS] {channel_name}: Daily limit reached, stopping generation for this channel")
                         break
                 else:
-                    # Signal send failed - don't count it
-                    logger.warning(f"[GENERATE_SIGNALS] {channel_name}: Signal send failed for {sym}, not counting towards daily limit")
+                    # Signal was not published - log but don't save
+                    logger.warning(f"[GENERATE_SIGNALS] {channel_name}: Signal NOT saved (publish_status={publish_status}, reason={publish_reason})")
+                    print(f"⚠️ {channel_name}: Signal draft generated but NOT published (status={publish_status}, reason={publish_reason})")
                 
-                # Remove pair from available
+                # Remove pair from available (even if not published, to avoid retrying same pair immediately)
                 if sym in available_pairs:
                     available_pairs.remove(sym)
                 
@@ -2153,6 +2552,78 @@ def migrate_state_files() -> None:
     print("[MIGRATE_STATE] Migration completed")
 
 
+async def smoke_test(test_chat_id: Optional[str] = None) -> bool:
+    """
+    Smoke test: verify Telegram bot and signal generation.
+    
+    Args:
+        test_chat_id: Optional test chat ID to send test message
+    
+    Returns:
+        True if all tests passed, False otherwise
+    """
+    print("\n" + "="*60)
+    print("[SMOKE_TEST] Starting smoke test...")
+    print("="*60)
+    
+    # Test 1: Telegram bot initialization
+    print("\n[SMOKE_TEST] Test 1: Telegram bot initialization")
+    try:
+        bot = await create_telegram_bot_with_check()
+        if bot:
+            print("  ✅ Telegram bot initialized successfully")
+            telegram_enabled = True
+        else:
+            print("  ⚠️ Telegram bot is None (DRY_RUN mode or no token)")
+            telegram_enabled = False
+    except RuntimeError as e:
+        print(f"  ❌ Telegram bot initialization failed: {e}")
+        telegram_enabled = False
+    
+    # Test 2: Send test message (if test_chat_id provided)
+    if telegram_enabled and test_chat_id:
+        print(f"\n[SMOKE_TEST] Test 2: Sending test message to {test_chat_id}")
+        try:
+            test_msg = "🧪 Smoke test message from signalsbot"
+            success = await safe_send_message(bot, chat_id=test_chat_id, text=test_msg)
+            if success:
+                print("  ✅ Test message sent successfully")
+            else:
+                print("  ❌ Failed to send test message")
+        except Exception as e:
+            print(f"  ❌ Error sending test message: {type(e).__name__}: {e}")
+    
+    # Test 3: Check active signals and TTL
+    print("\n[SMOKE_TEST] Test 3: Active signals TTL check")
+    active_signals = load_active_signals()
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today_signals = [s for s in active_signals if s.get("date") == today]
+    active_count = len([s for s in today_signals if s.get("status") == "active"])
+    expired_count = close_expired_signals()
+    print(f"  Total signals today: {len(today_signals)}")
+    print(f"  Active signals: {active_count}")
+    print(f"  Expired signals closed: {expired_count}")
+    print(f"  TTL: {ACTIVE_SIGNAL_TTL_MINUTES} minutes")
+    
+    # Test 4: Available pairs check
+    print("\n[SMOKE_TEST] Test 4: Available pairs check")
+    test_pairs = ["EURUSD", "GBPUSD", "USDJPY"]
+    available_before = get_available_pairs(test_pairs, channel_id=None, allow_multiple=False)
+    print(f"  Test pairs: {test_pairs}")
+    print(f"  Available pairs (before TTL): {len(available_before)} - {available_before}")
+    
+    # Close expired and check again
+    close_expired_signals()
+    available_after = get_available_pairs(test_pairs, channel_id=None, allow_multiple=False)
+    print(f"  Available pairs (after TTL): {len(available_after)} - {available_after}")
+    
+    print("\n" + "="*60)
+    print("[SMOKE_TEST] Smoke test completed")
+    print("="*60 + "\n")
+    
+    return telegram_enabled
+
+
 async def main_async():
     """
     Main async entrypoint - runs forever until interrupted (Ctrl+C)
@@ -2173,6 +2644,12 @@ async def main_async():
     # Migrate state files first (fix old format if needed)
     migrate_state_files()
     
+    # CRITICAL: Clear signals for today on bot startup to reset daily counters
+    # This ensures that when bot is restarted, it starts with fresh counters for the day
+    cleared_count = clear_today_signals()
+    if cleared_count > 0:
+        print(f"[STARTUP] Daily counters reset: {cleared_count} signals cleared for today")
+    
     # Initialize Twelve Data client for FOREX
     twelve_data_init_success = await startup_init()
     
@@ -2180,11 +2657,16 @@ async def main_async():
         print("⚠️ [MAIN] Twelve Data initialization failed - FOREX signals may be unavailable")
         print("   Bot will continue working, but FOREX pairs may fail")
     
-    # Create Telegram bot once
+    # Create Telegram bot once (with strict validation)
     bot = await create_telegram_bot_with_check()
     if not bot:
-        logger.warning("[MAIN] ❌ Failed to create Telegram bot - continuing without Telegram send")
-        logger.warning("[MAIN] Bot will generate signals but not send them to Telegram")
+        if DRY_RUN:
+            logger.warning("[MAIN] ⚠️ Telegram bot not available - DRY_RUN mode, continuing without Telegram send")
+        else:
+            # This should not happen if token is provided (create_telegram_bot_with_check exits on error)
+            logger.error("[MAIN] ❌ FATAL: Telegram bot is None but token was provided")
+            logger.error("[MAIN] This should not happen - bot creation should have failed earlier")
+            sys.exit(1)
     
     pairs = DEFAULT_PAIRS
     
@@ -2326,6 +2808,15 @@ async def ctrader_auth_test():
 
 
 if __name__ == "__main__":
+    # Check for smoke test mode
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "smoke_test":
+        # Run smoke test
+        test_chat_id = os.getenv("TEST_CHAT_ID")
+        asyncio.run(smoke_test(test_chat_id=test_chat_id))
+        sys.exit(0)
+    
+    # Run normal bot
     import sys
     if "--ctrader-auth-test" in sys.argv:
         # Run authentication test only
