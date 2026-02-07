@@ -598,18 +598,24 @@ MAX_DEGRAM_INDEX_SIGNALS = 5
 # Time constraints (in seconds) - CONFIGURABLE PER ASSET TYPE
 MIN_TIME_BETWEEN_SIGNALS = 5 * 60  # 5 minutes between any signals (global)
 
-# Channel constraints per asset type (in seconds) - CONFIGURABLE
+# Channel constraints: pause between signals WITHIN each channel (not between channels)
+# 1.5 to 2.5 hours random interval per channel
+CHANNEL_PAUSE_MIN_HOURS = 1.5
+CHANNEL_PAUSE_MAX_HOURS = 2.5
+CHANNEL_PAUSE_MIN_SECONDS = int(CHANNEL_PAUSE_MIN_HOURS * 3600)  # 5400
+CHANNEL_PAUSE_MAX_SECONDS = int(CHANNEL_PAUSE_MAX_HOURS * 3600)  # 9000
+
+# Legacy: kept for migration compatibility
 CHANNEL_CONSTRAINT_INTERVALS = {
-    "FOREX": 15 * 60,      # 15 minutes between signals in FOREX channels
-    "CRYPTO": 10 * 60,     # 10 minutes between signals in CRYPTO channels
-    "INDEX": 30 * 60,      # 30 minutes between signals in INDEX channels
-    "GOLD": 30 * 60,       # 30 minutes between signals in GOLD channels
-    "DEFAULT": 15 * 60     # Default: 15 minutes
+    "FOREX": 90 * 60,      # Fallback: 1.5 hours
+    "CRYPTO": 90 * 60,
+    "INDEX": 90 * 60,
+    "GOLD": 90 * 60,
+    "DEFAULT": 90 * 60
 }
 
-# Legacy support (will be replaced by CHANNEL_CONSTRAINT_CONFIG)
-MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MIN = 150 * 60  # Legacy: 2.5 hours (deprecated, use CHANNEL_CONSTRAINT_CONFIG)
-MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MAX = 180 * 60  # Legacy: 3 hours (deprecated, use CHANNEL_CONSTRAINT_CONFIG)
+MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MIN = CHANNEL_PAUSE_MIN_SECONDS  # 1.5 hours
+MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MAX = CHANNEL_PAUSE_MAX_SECONDS  # 2.5 hours
 MIN_TIME_BETWEEN_PAIR_DIRECTION_SIGNALS = 24 * 60 * 60  # 24 hours between same pair+direction in same channel
 
 # Active signal TTL configuration
@@ -1123,16 +1129,16 @@ def load_channel_last_signal_times() -> Dict:
 
 
 def get_channel_constraint_interval(channel_id: str, asset_type: str = "DEFAULT") -> float:
-    """Get channel constraint interval based on asset type
+    """Get random channel constraint interval: 1.5 to 2.5 hours between signals within the channel
     
     Args:
         channel_id: Channel ID (for logging)
-        asset_type: Asset type (FOREX, CRYPTO, INDEX, GOLD)
+        asset_type: Asset type (FOREX, CRYPTO, INDEX, GOLD) - not used, same interval for all
     
     Returns:
-        Constraint interval in seconds
+        Random constraint interval in seconds (5400-9000)
     """
-    return CHANNEL_CONSTRAINT_INTERVALS.get(asset_type, CHANNEL_CONSTRAINT_INTERVALS["DEFAULT"])
+    return random.uniform(CHANNEL_PAUSE_MIN_SECONDS, CHANNEL_PAUSE_MAX_SECONDS)
 
 
 def save_channel_last_signal_time(channel_id: str, asset_type: str = "DEFAULT") -> None:
@@ -1346,22 +1352,20 @@ def can_send_signal(channel_id: str, asset_type: Optional[str] = None) -> Tuple[
         logger.debug(f"[CONSTRAINT] Channel {channel_id}: No previous signal, allowing")
         return True, None
     
-    # Determine constraint interval based on asset type
-    if asset_type and asset_type in CHANNEL_CONSTRAINT_INTERVALS:
-        required_interval = CHANNEL_CONSTRAINT_INTERVALS[asset_type]
-    else:
-        required_interval = CHANNEL_CONSTRAINT_INTERVALS["DEFAULT"]
-    
     # Handle both new format (dict) and legacy format (float)
     if isinstance(channel_data, dict):
         # New format: {"last_time": timestamp, "wait_time": wait_seconds}
         last_channel_time_raw = channel_data.get("last_time", 0)
-        # Use configured interval instead of saved wait_time
-        wait_time = required_interval
+        # Use saved wait_time (was 1.5-2.5h when signal was sent)
+        saved_wait = channel_data.get("wait_time")
+        if isinstance(saved_wait, (int, float)) and saved_wait > 0:
+            wait_time = float(saved_wait)
+        else:
+            wait_time = random.uniform(CHANNEL_PAUSE_MIN_SECONDS, CHANNEL_PAUSE_MAX_SECONDS)
     else:
-        # Legacy format: just a timestamp - use configured interval
+        # Legacy format: just a timestamp - use 1.5-2.5h interval
         last_channel_time_raw = channel_data
-        wait_time = required_interval
+        wait_time = random.uniform(CHANNEL_PAUSE_MIN_SECONDS, CHANNEL_PAUSE_MAX_SECONDS)
     
     last_channel_time = normalize_timestamp(last_channel_time_raw, f"last_channel_time[{channel_id}]")
     
