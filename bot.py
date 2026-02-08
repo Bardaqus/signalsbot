@@ -599,23 +599,23 @@ MAX_DEGRAM_INDEX_SIGNALS = 5
 MIN_TIME_BETWEEN_SIGNALS = 5 * 60  # 5 minutes between any signals (global)
 
 # Channel constraints: pause between signals WITHIN each channel (not between channels)
-# 1.5 to 2.5 hours random interval per channel
-CHANNEL_PAUSE_MIN_HOURS = 1.5
-CHANNEL_PAUSE_MAX_HOURS = 2.5
-CHANNEL_PAUSE_MIN_SECONDS = int(CHANNEL_PAUSE_MIN_HOURS * 3600)  # 5400
-CHANNEL_PAUSE_MAX_SECONDS = int(CHANNEL_PAUSE_MAX_HOURS * 3600)  # 9000
+# 2.5 to 3.5 hours random interval per channel - STRICT, no shorter
+CHANNEL_PAUSE_MIN_HOURS = 2.5
+CHANNEL_PAUSE_MAX_HOURS = 3.5
+CHANNEL_PAUSE_MIN_SECONDS = int(CHANNEL_PAUSE_MIN_HOURS * 3600)  # 9000
+CHANNEL_PAUSE_MAX_SECONDS = int(CHANNEL_PAUSE_MAX_HOURS * 3600)  # 12600
 
 # Legacy: kept for migration compatibility
 CHANNEL_CONSTRAINT_INTERVALS = {
-    "FOREX": 90 * 60,      # Fallback: 1.5 hours
-    "CRYPTO": 90 * 60,
-    "INDEX": 90 * 60,
-    "GOLD": 90 * 60,
-    "DEFAULT": 90 * 60
+    "FOREX": 150 * 60,     # Fallback: 2.5 hours
+    "CRYPTO": 150 * 60,
+    "INDEX": 150 * 60,
+    "GOLD": 150 * 60,
+    "DEFAULT": 150 * 60
 }
 
-MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MIN = CHANNEL_PAUSE_MIN_SECONDS  # 1.5 hours
-MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MAX = CHANNEL_PAUSE_MAX_SECONDS  # 2.5 hours
+MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MIN = CHANNEL_PAUSE_MIN_SECONDS  # 2.5 hours
+MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MAX = CHANNEL_PAUSE_MAX_SECONDS  # 3.5 hours
 MIN_TIME_BETWEEN_PAIR_DIRECTION_SIGNALS = 24 * 60 * 60  # 24 hours between same pair+direction in same channel
 
 # Active signal TTL configuration
@@ -1129,14 +1129,14 @@ def load_channel_last_signal_times() -> Dict:
 
 
 def get_channel_constraint_interval(channel_id: str, asset_type: str = "DEFAULT") -> float:
-    """Get random channel constraint interval: 1.5 to 2.5 hours between signals within the channel
+    """Get random channel constraint interval: 2.5 to 3.5 hours between signals within the channel
     
     Args:
         channel_id: Channel ID (for logging)
         asset_type: Asset type (FOREX, CRYPTO, INDEX, GOLD) - not used, same interval for all
     
     Returns:
-        Random constraint interval in seconds (5400-9000)
+        Random constraint interval in seconds (9000-12600)
     """
     return random.uniform(CHANNEL_PAUSE_MIN_SECONDS, CHANNEL_PAUSE_MAX_SECONDS)
 
@@ -1348,6 +1348,26 @@ def can_send_signal(channel_id: str, asset_type: Optional[str] = None) -> Tuple[
     channel_data = channel_times.get(channel_id)
     
     if channel_data is None:
+        # Fallback: check active_signals for recent published signals (in case channel_last_signal_time.json is missing/corrupted)
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        active_signals = load_active_signals()
+        channel_signals = [s for s in active_signals if s.get("channel_id") == channel_id and s.get("date") == today and (s.get("publish_status") or "published") == "published"]
+        if channel_signals:
+            ts_values = [s.get("timestamp") for s in channel_signals if s.get("timestamp")]
+            latest_ts_str = max(ts_values) if ts_values else None
+            if latest_ts_str:
+                try:
+                    latest_dt = datetime.fromisoformat(latest_ts_str.replace("Z", "+00:00"))
+                    last_channel_time = latest_dt.timestamp()
+                    time_since = current_time - last_channel_time
+                    if time_since < CHANNEL_PAUSE_MIN_SECONDS:
+                        remaining = CHANNEL_PAUSE_MIN_SECONDS - time_since
+                        remaining_minutes = max(0, int(remaining / 60))
+                        remaining_seconds = max(0, int(remaining % 60))
+                        logger.info(f"[CONSTRAINT] Channel {channel_id}: Fallback from active_signals - last signal {time_since/60:.1f}min ago, need {CHANNEL_PAUSE_MIN_SECONDS/60:.0f}min")
+                        return False, f"Wait {remaining_minutes}m {remaining_seconds}s (channel constraint 2.5h min)"
+                except (ValueError, TypeError):
+                    pass
         # No previous signal for this channel - allow sending
         logger.debug(f"[CONSTRAINT] Channel {channel_id}: No previous signal, allowing")
         return True, None
@@ -1356,14 +1376,14 @@ def can_send_signal(channel_id: str, asset_type: Optional[str] = None) -> Tuple[
     if isinstance(channel_data, dict):
         # New format: {"last_time": timestamp, "wait_time": wait_seconds}
         last_channel_time_raw = channel_data.get("last_time", 0)
-        # Use saved wait_time (was 1.5-2.5h when signal was sent)
+        # Use saved wait_time; enforce minimum 2.5h (old data may have smaller values)
         saved_wait = channel_data.get("wait_time")
         if isinstance(saved_wait, (int, float)) and saved_wait > 0:
-            wait_time = float(saved_wait)
+            wait_time = max(float(saved_wait), CHANNEL_PAUSE_MIN_SECONDS)
         else:
             wait_time = random.uniform(CHANNEL_PAUSE_MIN_SECONDS, CHANNEL_PAUSE_MAX_SECONDS)
     else:
-        # Legacy format: just a timestamp - use 1.5-2.5h interval
+        # Legacy format: just a timestamp - use 2.5-3.5h interval
         last_channel_time_raw = channel_data
         wait_time = random.uniform(CHANNEL_PAUSE_MIN_SECONDS, CHANNEL_PAUSE_MAX_SECONDS)
     
