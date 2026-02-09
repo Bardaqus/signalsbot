@@ -544,16 +544,23 @@ def send_telegram_message(channel_id: str, text: str, bot: Optional[Bot] = None)
 
 # Forex pairs (without .FOREX suffix - will be handled by router)
 # NOTE: XAUUSD is GOLD (Yahoo Finance), NOT FOREX - removed from this list
-DEFAULT_PAIRS = [
+
+# Main 10 forex pairs for Lingrid & Degram channels (random selection = different signals)
+FOREX_MAJOR_PAIRS = [
     "EURUSD",
-    "GBPUSD", 
+    "GBPUSD",
     "USDJPY",
+    "USDCHF",
     "AUDUSD",
     "USDCAD",
-    "USDCHF",
-    "GBPCAD",
-    "GBPNZD",
+    "NZDUSD",
+    "EURJPY",
+    "GBPJPY",
+    "EURGBP",
 ]
+
+# Legacy / fallback (used if FOREX_MAJOR_PAIRS not specified)
+DEFAULT_PAIRS = FOREX_MAJOR_PAIRS
 
 # Crypto pairs (for crypto channels)
 CRYPTO_PAIRS = [
@@ -616,7 +623,9 @@ CHANNEL_CONSTRAINT_INTERVALS = {
 
 MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MIN = CHANNEL_PAUSE_MIN_SECONDS  # 2.5 hours
 MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MAX = CHANNEL_PAUSE_MAX_SECONDS  # 3.5 hours
-MIN_TIME_BETWEEN_PAIR_DIRECTION_SIGNALS = 24 * 60 * 60  # 24 hours between same pair+direction in same channel
+MIN_TIME_BETWEEN_PAIR_DIRECTION_SIGNALS = 24 * 60 * 60  # 24 hours between same pair+direction (non-FOREX)
+FOREX_PAIR_PAUSE_HOURS = 40
+FOREX_PAIR_PAUSE_SECONDS = FOREX_PAIR_PAUSE_HOURS * 3600  # 40h between same pair in FOREX channels (any direction)
 
 # Active signal TTL configuration
 ACTIVE_SIGNAL_TTL_MINUTES = int(os.getenv("ACTIVE_SIGNAL_TTL_MINUTES", "180"))  # 180 minutes (3 hours) default TTL
@@ -1255,13 +1264,17 @@ def save_channel_pair_direction_last_signal_time(channel_id: str, pair: str, dir
         print(f"[SAVE_STATE] ⚠️ Error saving channel_pair_direction_last_signal_time: {e}")
 
 
-def can_send_pair_direction_signal(channel_id: str, pair: str, direction: str) -> Tuple[bool, Optional[str]]:
-    """Check if we can send a signal for this pair+direction in this channel (24 hour rule)
+def can_send_pair_direction_signal(channel_id: str, pair: str, direction: str, asset_type: str = "DEFAULT") -> Tuple[bool, Optional[str]]:
+    """Check if we can send a signal for this pair (+direction) in this channel.
+    
+    FOREX channels: 40h pause for same pair (any direction) - EURUSD BUY blocks EURUSD SELL too.
+    Other channels: 24h pause per pair+direction.
     
     Args:
         channel_id: Channel ID
         pair: Trading pair (e.g., "EURUSD", "XAUUSD")
         direction: Signal direction ("BUY" or "SELL")
+        asset_type: FOREX, CRYPTO, INDEX, GOLD - FOREX uses 40h per-pair rule
     
     Returns:
         Tuple of (can_send: bool, reason: Optional[str])
@@ -1304,14 +1317,26 @@ def can_send_pair_direction_signal(channel_id: str, pair: str, direction: str) -
             pair_data = {}
             channel_data[pair] = pair_data
     
-    last_time_raw = pair_data.get(direction, 0)
-    last_time = normalize_timestamp(last_time_raw, f"channel_pair_direction[{channel_id}][{pair}][{direction}]")
+    is_forex = asset_type == "FOREX"
+    if is_forex:
+        # FOREX: 40h pause for same pair regardless of direction
+        # Use max(BUY_ts, SELL_ts) = most recent signal on this pair
+        dir_timestamps = [normalize_timestamp(pair_data.get(d, 0), f"channel_pair_direction[{channel_id}][{pair}][{d}]") for d in ("BUY", "SELL")]
+        last_time = max(dir_timestamps) if dir_timestamps else 0
+        required_seconds = FOREX_PAIR_PAUSE_SECONDS
+        rule_name = "40h rule"
+    else:
+        # Non-FOREX: 24h per pair+direction
+        last_time_raw = pair_data.get(direction, 0)
+        last_time = normalize_timestamp(last_time_raw, f"channel_pair_direction[{channel_id}][{pair}][{direction}]")
+        required_seconds = MIN_TIME_BETWEEN_PAIR_DIRECTION_SIGNALS
+        rule_name = "24h rule"
     
     if last_time > 0:
         time_since_last = current_time - last_time
-        if time_since_last < MIN_TIME_BETWEEN_PAIR_DIRECTION_SIGNALS:
-            remaining_hours = (MIN_TIME_BETWEEN_PAIR_DIRECTION_SIGNALS - time_since_last) / 3600
-            return False, f"Pair {pair} {direction} already sent to this channel {remaining_hours:.1f}h ago (24h rule)"
+        if time_since_last < required_seconds:
+            remaining_hours = (required_seconds - time_since_last) / 3600
+            return False, f"Pair {pair} already sent to this channel {remaining_hours:.1f}h ago ({rule_name})"
     
     return True, None
 
@@ -2033,7 +2058,7 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
         {
             "name": "FOREX_DEGRAM",
             "channel_id": CHANNEL_DEGRAM,
-            "symbols": pairs,  # ONLY Forex pairs
+            "symbols": FOREX_MAJOR_PAIRS,  # Main 10 forex pairs
             "max_signals": MAX_FOREX_SIGNALS_PER_CHANNEL,
             "has_tp2": True,
             "asset_type": "FOREX"
@@ -2041,7 +2066,7 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
         {
             "name": "FOREX_LINGRID",
             "channel_id": CHANNEL_LINGRID_FOREX,
-            "symbols": pairs,  # ONLY Forex pairs
+            "symbols": FOREX_MAJOR_PAIRS,  # Main 10 forex pairs
             "max_signals": MAX_FOREX_SIGNALS_PER_CHANNEL,
             "has_tp2": True,
             "has_tp3": False,  # Special: only 2 TPs for Lingrid forex
@@ -2075,6 +2100,8 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
     
     # Track if FOREX source is unavailable (circuit breaker open)
     forex_unavailable = False
+    # Track pairs sent to FOREX channels this run - avoid same pair in Lingrid and Degram
+    forex_pairs_used_this_run: set = set()
     
     for config in channel_configs:
         channel_id = config["channel_id"]
@@ -2122,6 +2149,17 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
             print(f"⚠️ {channel_name}: No available pairs (all pairs already have active signals in this channel)")
             logger.warning(f"[GENERATE_SIGNALS] {channel_name}: No available pairs - all {len(symbols)} symbols have active signals")
             continue
+        
+        # FOREX: exclude pairs already sent to other forex channels this run + shuffle for random order
+        if asset_type == "FOREX":
+            available_pairs = [p for p in available_pairs if p.replace(".FOREX", "") not in forex_pairs_used_this_run]
+            if not available_pairs:
+                print(f"⚠️ {channel_name}: No available pairs (all excluded - already used by other forex channel this run)")
+                logger.info(f"[GENERATE_SIGNALS] {channel_name}: Skipping - pairs {forex_pairs_used_this_run} already sent to other forex channel")
+                continue
+            import random
+            random.shuffle(available_pairs)
+            logger.info(f"[GENERATE_SIGNALS] {channel_name}: Shuffled {len(available_pairs)} pairs, excluding {forex_pairs_used_this_run}")
         
         signals_generated = 0
         attempts = 0
@@ -2258,17 +2296,18 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
                     print(f"  Failed to get price for {sym}: {e}")
                     continue
                 
-                # Generate signal direction - check 24h rule first
+                # Generate signal direction - check pair rule first (40h for FOREX, 24h for others)
                 import random
                 clean_sym = sym.replace(".FOREX", "")
+                ch_asset_type = config.get("asset_type", "FOREX")
                 
-                # Try both directions, checking 24h rule
+                # Try both directions, checking pair rule
                 directions = ["BUY", "SELL"]
                 random.shuffle(directions)  # Randomize order
                 
                 signal_type = None
                 for direction in directions:
-                    can_send_pair_dir, reason_pair_dir = can_send_pair_direction_signal(channel_id, clean_sym, direction)
+                    can_send_pair_dir, reason_pair_dir = can_send_pair_direction_signal(channel_id, clean_sym, direction, asset_type=ch_asset_type)
                     if can_send_pair_dir:
                         signal_type = direction
                         break
@@ -2277,7 +2316,8 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
                 
                 # If both directions are blocked, skip this pair
                 if signal_type is None:
-                    reason_msg = f"Cannot send {clean_sym} - both BUY and SELL blocked by 24h rule"
+                    rule_hint = "40h rule" if ch_asset_type == "FOREX" else "24h rule"
+                    reason_msg = f"Cannot send {clean_sym} - both BUY and SELL blocked by {rule_hint}"
                     print(f"  ⏸️ {channel_name}: Skipping {clean_sym} - reason=active_signal, {reason_msg}")
                     logger.info(f"[GENERATE_SIGNALS] {channel_name}: Skipping {clean_sym} - reason=active_signal, {reason_msg}")
                     continue
@@ -2470,6 +2510,10 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
                 if publish_status == "published":
                     # Save signal with explicit publish_status
                     add_signal(sym, signal_type, entry, sl, tp1, tp2, tp3=tp3, channel_id=channel_id, publish_status="published")
+                    
+                    # FOREX: track pair so other forex channels won't use same pair this run
+                    if asset_type == "FOREX":
+                        forex_pairs_used_this_run.add(clean_sym)
                     
                     # Verify signal was saved and counted
                     new_count = get_today_channel_signals_count(channel_id)
