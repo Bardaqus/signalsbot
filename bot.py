@@ -8,6 +8,7 @@ import re
 import time
 import asyncio
 import json
+import random
 import logging
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
@@ -55,6 +56,9 @@ _telegram_send_enabled = True
 _price_cache: Dict[str, Tuple[float, float]] = {}  # symbol -> (price, timestamp)
 _PRICE_CACHE_TTL = 20.0  # 20 seconds TTL
 
+# Forex daily block logging (for TwelveData daily exhaustion)
+_forex_block_log_until = 0.0
+
 
 def classify_telegram_error(e: Exception) -> str:
     """
@@ -92,6 +96,17 @@ def classify_telegram_error(e: Exception) -> str:
     return "OTHER"
 
 
+def get_forex_block_until() -> float:
+    """Get TwelveData daily block timestamp (UTC epoch)."""
+    global _twelve_data_client
+    if _twelve_data_client and hasattr(_twelve_data_client, "get_daily_block_until"):
+        try:
+            return float(_twelve_data_client.get_daily_block_until() or 0.0)
+        except Exception:
+            return 0.0
+    return 0.0
+
+
 class PriceStatus(Enum):
     """Status of price retrieval result"""
     OK = "OK"  # price != None
@@ -113,8 +128,9 @@ class PriceResult:
         if price is not None:
             status = PriceStatus.OK
         elif reason and reason in {
-            "twelve_data_cooldown", "circuit_breaker_open", "quota_exceeded", 
-            "rate_limited", "twelve_data_circuit_breaker_open", "cooldown"
+            "twelve_data_cooldown", "circuit_breaker_open", "quota_exceeded",
+            "rate_limited", "twelve_data_circuit_breaker_open", "cooldown",
+            "rate_limit_429_daily_exhausted"
         }:
             status = PriceStatus.SKIPPED
         else:
@@ -597,7 +613,8 @@ CHANNEL_DEGRAM_INDEX = "-1001453338906"  # DeGRAM index
 
 # Signal limits per channel per day
 MAX_GOLD_SIGNALS = 3  # Updated to 3 per user request
-MAX_FOREX_SIGNALS_PER_CHANNEL = 5  # Per Degram and Lingrid Forex
+MAX_FOREX_SIGNALS_PER_CHANNEL = 4  # Per Degram and Lingrid Forex
+MAX_TOTAL_FOREX_SIGNALS_PER_DAY = 8  # Total across all Forex channels (2 * 4)
 MAX_GAINMUSE_CRYPTO_SIGNALS = 5
 MAX_INDEX_SIGNALS = 5
 MAX_DEGRAM_INDEX_SIGNALS = 5
@@ -640,6 +657,14 @@ LAST_SIGNAL_TIME_FILE = "last_signal_time.json"  # Global last signal time
 CHANNEL_LAST_SIGNAL_FILE = "channel_last_signal_time.json"  # Last signal time per channel
 CHANNEL_PAIR_LAST_SIGNAL_FILE = "channel_pair_last_signal_time.json"  # Last signal time per pair per channel
 CHANNEL_PAIR_DIRECTION_LAST_SIGNAL_FILE = "channel_pair_direction_last_signal_time.json"  # Last signal time per pair+direction per channel
+
+# Forex scheduling (persistent) - gates BEFORE any TwelveData request
+STATE_DIR = "state"
+FOREX_CHANNEL_NEXT_ALLOWED_FILE = os.path.join(STATE_DIR, "forex_channel_next_allowed.json")  # {channel_id: unix_ts}
+GLOBAL_NEXT_ALLOWED_PUBLISH_FILE = os.path.join(STATE_DIR, "global_next_allowed_publish.json")  # {"ts": unix_ts}
+FOREX_LONG_PAUSE_MIN_SECONDS = int(2.5 * 3600)   # 2.5 hours
+FOREX_LONG_PAUSE_MAX_SECONDS = int(4.0 * 3600)    # 4 hours
+GLOBAL_SHORT_PAUSE_SECONDS = 5 * 60              # 5 minutes between any two publications
 
 
 def format_price(pair: str, price: float) -> str:
@@ -1179,6 +1204,66 @@ def save_channel_last_signal_time(channel_id: str, asset_type: str = "DEFAULT") 
     except Exception as e:
         print(f"[SAVE_STATE] ⚠️ Error saving channel_last_signal_time: {e}")
         logger.exception(f"[SAVE_STATE] Error saving channel_last_signal_time: {e}")
+        # Safety fallback: do not break main loop if state save fails
+        return
+
+
+def _ensure_state_dir() -> None:
+    """Create state directory if it does not exist."""
+    if STATE_DIR and not os.path.exists(STATE_DIR):
+        os.makedirs(STATE_DIR, exist_ok=True)
+
+
+def load_forex_channel_next_allowed() -> Dict[str, float]:
+    """Load per-channel next-allowed timestamps for FOREX. {channel_id: unix_ts}. Default 0 if missing."""
+    try:
+        _ensure_state_dir()
+        path = FOREX_CHANNEL_NEXT_ALLOWED_FILE
+        if os.path.exists(path):
+            with open(path, 'r') as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return {k: float(v) for k, v in data.items() if v is not None}
+    except Exception as e:
+        logger.warning(f"[LOAD_STATE] Error loading forex_channel_next_allowed: {e}")
+    return {}
+
+
+def save_forex_channel_next_allowed(data: Dict[str, float]) -> None:
+    """Save per-channel next-allowed timestamps. Atomic write."""
+    try:
+        _ensure_state_dir()
+        path = FOREX_CHANNEL_NEXT_ALLOWED_FILE
+        with open(path, 'w') as f:
+            json.dump(data, f)
+    except Exception as e:
+        logger.warning(f"[SAVE_STATE] Error saving forex_channel_next_allowed: {e}")
+
+
+def load_global_next_allowed_publish() -> float:
+    """Load global next-allowed publish timestamp. 0 if missing."""
+    try:
+        _ensure_state_dir()
+        path = GLOBAL_NEXT_ALLOWED_PUBLISH_FILE
+        if os.path.exists(path):
+            with open(path, 'r') as f:
+                data = json.load(f)
+            if isinstance(data, dict) and "ts" in data:
+                return float(data["ts"])
+    except Exception as e:
+        logger.warning(f"[LOAD_STATE] Error loading global_next_allowed_publish: {e}")
+    return 0.0
+
+
+def save_global_next_allowed_publish(ts: float) -> None:
+    """Save global next-allowed publish timestamp. Atomic write."""
+    try:
+        _ensure_state_dir()
+        path = GLOBAL_NEXT_ALLOWED_PUBLISH_FILE
+        with open(path, 'w') as f:
+            json.dump({"ts": ts}, f)
+    except Exception as e:
+        logger.warning(f"[SAVE_STATE] Error saving global_next_allowed_publish: {e}")
 
 
 def load_channel_pair_direction_last_signal_times() -> Dict:
@@ -1344,16 +1429,31 @@ def can_send_pair_direction_signal(channel_id: str, pair: str, direction: str, a
 def can_send_signal(channel_id: str, asset_type: Optional[str] = None) -> Tuple[bool, Optional[str]]:
     """Check if we can send a signal (time constraints)
     
-    Args:
-        channel_id: Channel ID to check
-        asset_type: Asset type (FOREX, CRYPTO, INDEX, GOLD) to determine constraint interval
+    For FOREX: uses persistent forex_channel_next_allowed + global_next_allowed_publish (single source of truth).
+    For others: uses last_signal_time + channel_last_signal_time.
     
     Returns:
         Tuple of (can_send: bool, reason: Optional[str])
     """
     current_time = time.time()
     
-    # Check global time constraint (5 minutes) - only if last signal was actually sent
+    # FOREX: use persistent next-allowed timestamps (single source of truth)
+    if asset_type == "FOREX":
+        global_next = load_global_next_allowed_publish()
+        if global_next > 0 and current_time < global_next:
+            remaining = global_next - current_time
+            remaining_min = max(0, int(remaining / 60))
+            logger.debug(f"[CONSTRAINT] FOREX global: skip, {remaining_min} min until next publish allowed")
+            return False, f"Wait {remaining_min} min (cross-channel 5min pause)"
+        forex_next = load_forex_channel_next_allowed().get(channel_id, 0)
+        if forex_next > 0 and current_time < forex_next:
+            remaining = forex_next - current_time
+            remaining_min = max(0, int(remaining / 60))
+            logger.debug(f"[CONSTRAINT] FOREX channel {channel_id}: skip, {remaining_min} min until long pause elapsed")
+            return False, f"Wait {remaining_min} min (Forex long pause 2.5-4h)"
+        return True, None
+    
+    # Non-FOREX: legacy global + channel constraint
     last_signal_times = load_last_signal_times()
     last_global_time_raw = last_signal_times.get("last_signal_time", 0)
     last_global_time = normalize_timestamp(last_global_time_raw, "last_global_time")
@@ -1368,7 +1468,6 @@ def can_send_signal(channel_id: str, asset_type: Optional[str] = None) -> Tuple[
             if remaining > 0:
                 return False, f"Wait {remaining_minutes} minutes (global constraint: {int(MIN_TIME_BETWEEN_SIGNALS/60)} min interval)"
     
-    # Check channel-specific time constraint (configurable per asset type)
     channel_times = load_channel_last_signal_times()
     channel_data = channel_times.get(channel_id)
     
@@ -1462,6 +1561,20 @@ def get_today_channel_signals_count(channel_id: str) -> int:
         logger.info(f"[SIGNAL_COUNT] Channel {channel_id}: {count} published signals today ({active_count} active, {closed_count} closed)")
     
     return count
+
+
+def get_today_forex_signals_count() -> int:
+    """Count ONLY published FOREX signals sent today across all Forex channels."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    active_signals = load_active_signals()
+    forex_channels = {CHANNEL_DEGRAM, CHANNEL_LINGRID_FOREX}
+    return sum(
+        1
+        for s in active_signals
+        if s.get("channel_id") in forex_channels
+        and s.get("date") == today
+        and (s.get("publish_status") == "published" or s.get("publish_status") is None)
+    )
 
 
 def get_today_signals_count() -> int:
@@ -1975,33 +2088,28 @@ async def startup_init():
         
         _twelve_data_client = TwelveDataClient(**filtered_kwargs)
         
-        # Test connection with a simple price request (single-shot: max_retries=0 -> 1 HTTP request)
-        print("[STARTUP] Testing Twelve Data connection (single-shot mode: 1 HTTP request expected)...")
-        test_price, test_reason = await _twelve_data_client.get_price("EURUSD", max_retries_override=0)
-        if test_price:
-            print(f"[STARTUP] ✅ Twelve Data connection test successful (EURUSD={test_price:.5f}, single-shot: 1 HTTP request made)")
-        else:
-            print(f"[STARTUP] ⚠️ Twelve Data connection test failed (reason={test_reason}), but client initialized (will retry on demand)")
-        
         # Create DataRouter with injected Twelve Data client
         from data_router import DataRouter, set_data_router
         data_router = DataRouter(twelve_data_client=_twelve_data_client)
         set_data_router(data_router)
         print("[STARTUP] ✅ DataRouter initialized with Twelve Data client")
         
-        # Self-check: verify router can get price (use async version since we're in async context)
-        # This uses max_retries=0 (single-shot) -> should make exactly 1 HTTP request
-        print("[STARTUP] Self-check: testing DataRouter.get_price_async('EURUSD') with single-shot mode (1 HTTP request expected)...")
-        try:
-            check_price, check_reason, check_source = await data_router.get_price_async("EURUSD")
-            if check_price:
-                print(f"[STARTUP] ✅ Self-check passed: EURUSD={check_price:.5f} (source={check_source}, single-shot: 1 HTTP request made)")
-            else:
-                print(f"[STARTUP] ⚠️ Self-check warning: EURUSD=None (reason={check_reason}, source={check_source})")
-        except Exception as e:
-            print(f"[STARTUP] ⚠️ Self-check error: {type(e).__name__}: {e}")
-            import traceback
-            print(traceback.format_exc())
+        # Optional startup test (disabled by default to avoid consuming credits)
+        test_enabled = os.getenv("TWELVE_DATA_STARTUP_TEST", "0").strip().lower() in ("1", "true", "yes", "on")
+        if test_enabled:
+            print("[STARTUP] Self-check: testing DataRouter.get_price_async('EURUSD') (single-shot: 1 HTTP request expected)...")
+            try:
+                check_price, check_reason, check_source = await data_router.get_price_async("EURUSD")
+                if check_price:
+                    print(f"[STARTUP] ✅ Self-check passed: EURUSD={check_price:.5f} (source={check_source}, single-shot: 1 HTTP request made)")
+                else:
+                    print(f"[STARTUP] ⚠️ Self-check warning: EURUSD=None (reason={check_reason}, source={check_source})")
+            except Exception as e:
+                print(f"[STARTUP] ⚠️ Self-check error: {type(e).__name__}: {e}")
+                import traceback
+                print(traceback.format_exc())
+        else:
+            print("[STARTUP] Twelve Data startup test disabled (TWELVE_DATA_STARTUP_TEST=0)")
         
         print("[STARTUP] ✅ Twelve Data client initialized - FOREX signals enabled")
         return True
@@ -2098,8 +2206,6 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
         }
     ]
     
-    # Track if FOREX source is unavailable (circuit breaker open)
-    forex_unavailable = False
     # Track pairs sent to FOREX channels this run - avoid same pair in Lingrid and Degram
     forex_pairs_used_this_run: set = set()
     
@@ -2120,11 +2226,52 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
             logger.info(f"[GENERATE_SIGNALS] {channel_name}: Skipping - weekend (asset_type={asset_type})")
             continue
         
-        # Skip FOREX channels if FOREX source is unavailable (circuit breaker)
-        if asset_type == "FOREX" and forex_unavailable:
-            print(f"⏸️ {channel_name}: Skipping - TwelveData cooldown active (FOREX source unavailable)")
-            logger.info(f"[GENERATE_SIGNALS] {channel_name}: Skipping - TwelveData cooldown active")
-            continue
+        # Skip FOREX channels if TwelveData daily block is active
+        if asset_type == "FOREX":
+            block_until = get_forex_block_until()
+            if block_until > time.time():
+                global _forex_block_log_until
+                if _forex_block_log_until != block_until:
+                    _forex_block_log_until = block_until
+                    until_str = datetime.fromtimestamp(block_until, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+                    msg = f"TwelveData daily credits exhausted; Forex disabled until {until_str}"
+                    print(f"⏸️ {channel_name}: {msg}")
+                    logger.warning(f"[GENERATE_SIGNALS] {channel_name}: {msg}")
+                continue
+            total_forex_today = get_today_forex_signals_count()
+            if total_forex_today >= MAX_TOTAL_FOREX_SIGNALS_PER_DAY:
+                print(f"✅ {channel_name}: Forex daily limit reached - {total_forex_today}/{MAX_TOTAL_FOREX_SIGNALS_PER_DAY}")
+                logger.info(f"[GENERATE_SIGNALS] {channel_name}: Forex daily limit reached ({total_forex_today}/{MAX_TOTAL_FOREX_SIGNALS_PER_DAY})")
+                continue
+            
+            # Gate BEFORE any TwelveData: global 5-min cross-channel pause
+            global_next = load_global_next_allowed_publish()
+            if global_next > 0 and time.time() < global_next:
+                remaining = global_next - time.time()
+                remaining_min = max(0, int(remaining / 60))
+                print(f"⏸️ {channel_name}: Skip (cross-channel pause) - {remaining_min} min until next publish allowed")
+                logger.info(f"[GENERATE_SIGNALS] {channel_name}: Skipping - global cross-channel 5min pause, {remaining_min} min remaining")
+                continue
+            
+            # Gate BEFORE any TwelveData: per-channel long pause (2.5-4h)
+            forex_next_map = load_forex_channel_next_allowed()
+            forex_next_ts = forex_next_map.get(channel_id, 0)
+            if forex_next_ts > 0 and time.time() < forex_next_ts:
+                remaining = forex_next_ts - time.time()
+                remaining_min = max(0, int(remaining / 60))
+                print(f"⏸️ {channel_name}: Skip (Forex long pause) - {remaining_min} min until next signal allowed")
+                logger.info(f"[GENERATE_SIGNALS] {channel_name}: Skipping - Forex long pause 2.5-4h, {remaining_min} min remaining")
+                continue
+        
+        # For non-FOREX: gate by global 5-min pause (all channels)
+        if asset_type != "FOREX":
+            global_next = load_global_next_allowed_publish()
+            if global_next > 0 and time.time() < global_next:
+                remaining = global_next - time.time()
+                remaining_min = max(0, int(remaining / 60))
+                print(f"⏸️ {channel_name}: Skip (cross-channel pause) - {remaining_min} min until next publish allowed")
+                logger.info(f"[GENERATE_SIGNALS] {channel_name}: Skipping - global cross-channel 5min pause, {remaining_min} min remaining")
+                continue
         
         # Check channel limit - CRITICAL: count ALL signals sent today (including closed)
         # This prevents bot from sending more than daily limit if restarted
@@ -2223,8 +2370,8 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
                             price_result = PriceResult.create(rt_price, reason, source)
                             
                             # Update global request counter ONLY if we got a price (HTTP request succeeded)
-                            # For TwelveData, increment only if price is not None (successful HTTP request)
-                            if price_result.status == PriceStatus.OK and source == "TWELVE_DATA":
+                            # Do NOT count cached responses
+                            if price_result.status == PriceStatus.OK and source == "TWELVE_DATA" and reason != "cached":
                                 if request_counter_ref is not None:
                                     request_counter_ref["count"] = request_counter_ref.get("count", 0) + 1
                                     logger.debug(f"[GENERATE_SIGNALS] Request counter updated: {request_counter_ref['count']} (after successful HTTP request)")
@@ -2238,24 +2385,16 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
                         reason_msg = f"Price skipped: {price_result.reason}"
                         if price_result.reason in {"twelve_data_cooldown", "circuit_breaker_open", "twelve_data_circuit_breaker_open", "cooldown"}:
                             reason_msg = f"Circuit breaker/cooldown active - TwelveData temporarily disabled"
-                            # For FOREX channels: mark as unavailable and break from channel loop
-                            if asset_type == "FOREX":
-                                forex_unavailable = True
-                                print(f"  ⏸️ {channel_name}: TwelveData cooldown active, skipping channel (will skip remaining FOREX channels)")
-                                logger.info(f"[GENERATE_SIGNALS] {channel_name}: TwelveData cooldown active, stopping channel generation")
-                                break  # Break from while loop for this channel
                         elif price_result.reason in {"rate_limit_429", "quota_exceeded", "rate_limited"}:
                             reason_msg = f"Rate limit/quota exceeded - TwelveData temporarily unavailable"
-                            # For FOREX channels: mark as unavailable and break from channel loop
-                            if asset_type == "FOREX":
-                                forex_unavailable = True
-                                print(f"  ⏸️ {channel_name}: TwelveData rate limited, skipping channel (will skip remaining FOREX channels)")
-                                logger.info(f"[GENERATE_SIGNALS] {channel_name}: TwelveData rate limited, stopping channel generation")
-                                break  # Break from while loop for this channel
+                        elif price_result.reason == "rate_limit_429_daily_exhausted":
+                            reason_msg = "TwelveData daily credits exhausted - skipping Forex until next day"
                         
                         # Log skip (not error) and continue to next symbol
                         print(f"  ⏸️ {channel_name}: Skipping {sym} - {reason_msg}")
                         logger.info(f"[GENERATE_SIGNALS] {channel_name}: Skipping {sym} - status=SKIPPED, reason={price_result.reason}")
+                        if price_result.reason == "rate_limit_429_daily_exhausted" and asset_type == "FOREX":
+                            break
                         continue
                     
                     elif price_result.status == PriceStatus.FAILED:
@@ -2263,12 +2402,6 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
                         reason_msg = f"Price unavailable: {price_result.reason}"
                         if price_result.reason == "twelve_data_unavailable":
                             reason_msg = f"TwelveData unavailable (error)"
-                            # For FOREX channels: mark as unavailable and break from channel loop
-                            if asset_type == "FOREX":
-                                forex_unavailable = True
-                                print(f"  ⏸️ {channel_name}: TwelveData unavailable, skipping channel (will skip remaining FOREX channels)")
-                                logger.warning(f"[GENERATE_SIGNALS] {channel_name}: TwelveData unavailable, stopping channel generation")
-                                break  # Break from while loop for this channel
                         elif price_result.reason == "binance_unavailable":
                             reason_msg = f"Binance unavailable"
                         elif price_result.reason == "yahoo_unavailable":
@@ -2288,7 +2421,7 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
                     
                     entry = rt_price
                     # Determine request count for logging (only for successful HTTP requests)
-                    request_count_for_log = 1 if (price_result.status == PriceStatus.OK and source == "TWELVE_DATA" and not is_crypto_channel) else 0
+                    request_count_for_log = 1 if (price_result.status == PriceStatus.OK and source == "TWELVE_DATA" and not is_crypto_channel and reason != "cached") else 0
                     logger.info(f"[GENERATE_SIGNALS] {channel_name}: {sym} price={entry:.5f} (source={source}, status={price_result.status.value}, requests={request_count_for_log})")
                     print(f"  Real-time entry price: {entry} (source: {source}, status: {price_result.status.value})")
                 except Exception as e:
@@ -2515,15 +2648,30 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
                     if asset_type == "FOREX":
                         forex_pairs_used_this_run.add(clean_sym)
                     
+                    # Update persistent scheduling timers (gates BEFORE any TwelveData)
+                    now_ts = time.time()
+                    save_global_next_allowed_publish(now_ts + GLOBAL_SHORT_PAUSE_SECONDS)
+                    until_global = datetime.fromtimestamp(now_ts + GLOBAL_SHORT_PAUSE_SECONDS, tz=timezone.utc).strftime("%H:%M UTC")
+                    logger.info(f"[GENERATE_SIGNALS] {channel_name}: Next global publish allowed at {until_global} (5min cross-channel)")
+                    
+                    if asset_type == "FOREX":
+                        pause_sec = random.uniform(FOREX_LONG_PAUSE_MIN_SECONDS, FOREX_LONG_PAUSE_MAX_SECONDS)
+                        next_allowed_ts = now_ts + pause_sec
+                        forex_map = load_forex_channel_next_allowed()
+                        forex_map[channel_id] = next_allowed_ts
+                        save_forex_channel_next_allowed(forex_map)
+                        until_str = datetime.fromtimestamp(next_allowed_ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+                        print(f"[GENERATE_SIGNALS] {channel_name}: Next Forex signal allowed at {until_str} (long pause {int(pause_sec/3600)}h)")
+                        logger.info(f"[GENERATE_SIGNALS] {channel_name}: Next Forex allowed at {until_str} (long pause {int(pause_sec/3600)}h)")
+                    else:
+                        save_last_signal_time()
+                        save_channel_last_signal_time(channel_id, asset_type=asset_type)
+                    
                     # Verify signal was saved and counted
                     new_count = get_today_channel_signals_count(channel_id)
                     logger.info(f"[GENERATE_SIGNALS] {channel_name}: Signal saved - total published today: {new_count}/{max_signals}")
                     
-                    # Update time constraints ONLY after successful publication
-                    save_last_signal_time()
-                    save_channel_last_signal_time(channel_id, asset_type=asset_type)
                     save_channel_pair_direction_last_signal_time(channel_id, clean_sym, signal_type)
-                    logger.info(f"[GENERATE_SIGNALS] {channel_name}: Constraints updated after successful publication")
                     
                     signals_generated += 1
                     print(f"✅ {channel_name}: Published signal {signals_generated}/{signals_needed}: {sym} {signal_type} (total published today: {new_count}/{max_signals})")

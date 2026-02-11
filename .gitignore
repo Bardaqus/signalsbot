@@ -40,6 +40,7 @@ Thumbs.db
 
 # Bot specific
 active_signals.json
+state/
 *.log
 
 # API Keys (if stored in files)

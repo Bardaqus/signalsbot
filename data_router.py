@@ -11,9 +11,9 @@ import time
 # Global DataRouter instance (set via Dependency Injection)
 _data_router_instance: Optional['DataRouter'] = None
 
-# Price cache with TTL (15-30 seconds)
+# Price cache with TTL (60-120 seconds)
 _price_cache: Dict[str, Tuple[float, float]] = {}  # symbol -> (price, timestamp)
-_PRICE_CACHE_TTL = 20.0  # 20 seconds TTL
+_PRICE_CACHE_TTL = 90.0  # 90 seconds TTL
 
 
 class AssetClass(Enum):
@@ -423,7 +423,7 @@ class DataRouter:
                 if cached_price is not None:
                     latency_ms = int((time.time() - start_time) * 1000)
                     print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA (cached), price={cached_price:.5f}, latency={latency_ms}ms, requests=0")
-                    return cached_price, None, "TWELVE_DATA"
+                    return cached_price, "cached", "TWELVE_DATA"
                 
                 # Direct async call - no loop creation needed
                 # Use max_retries=0 for signal generation (single-shot, no retries)
@@ -444,6 +444,8 @@ class DataRouter:
                         final_reason = "twelve_data_cooldown"
                     elif final_reason == "rate_limit_429":
                         final_reason = "rate_limit_429"
+                    elif final_reason == "rate_limit_429_daily_exhausted":
+                        final_reason = "rate_limit_429_daily_exhausted"
                     elif final_reason in ["timeout", "network_error", "parse_error", "invalid_api_key"]:
                         # Keep detailed reasons as-is
                         pass

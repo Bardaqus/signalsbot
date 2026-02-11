@@ -6,6 +6,7 @@ import asyncio
 import httpx
 from typing import Optional, List, Dict, Any, Tuple
 import time
+from datetime import datetime, timezone, timedelta
 import json
 import random
 
@@ -75,6 +76,9 @@ class TwelveDataClient:
         self._circuit_breaker_cooldown_max = 900.0  # Max cooldown: 900 seconds (15 minutes)
         self._circuit_breaker_threshold = 3  # Open after 3 consecutive errors
         self._circuit_breaker_last_log_time = 0.0  # Last time we logged breaker status (to avoid spam)
+        
+        # Daily block for exhausted credits (UTC midnight + buffer)
+        self._daily_blocked_until = 0.0  # Timestamp when daily block ends (0 = not blocked)
         
         # HTTP client (reused for connection pooling)
         # Created lazily in _ensure_started() to avoid event loop issues
@@ -148,6 +152,33 @@ class TwelveDataClient:
         if self._circuit_breaker_open_until == 0.0:
             return False
         return time.time() < self._circuit_breaker_open_until
+
+    def _is_daily_blocked(self) -> bool:
+        """Check if daily block (credits exhausted) is active"""
+        if self._daily_blocked_until == 0.0:
+            return False
+        return time.time() < self._daily_blocked_until
+
+    def get_daily_block_until(self) -> float:
+        """Expose daily block end timestamp for diagnostics."""
+        return self._daily_blocked_until
+
+    def _get_next_utc_midnight(self) -> float:
+        """Get next UTC midnight timestamp."""
+        now = datetime.now(timezone.utc)
+        next_day = now.date() + timedelta(days=1)
+        next_midnight = datetime.combine(next_day, datetime.min.time(), tzinfo=timezone.utc)
+        return next_midnight.timestamp()
+
+    def _set_daily_block(self, reason: str, response_preview: Optional[str] = None) -> None:
+        """Block TwelveData requests until next UTC midnight + 5 minutes."""
+        block_until = self._get_next_utc_midnight() + 300  # 5 min buffer
+        self._daily_blocked_until = block_until
+        # Also open circuit breaker until the same time
+        self._circuit_breaker_open_until = max(self._circuit_breaker_open_until, block_until)
+        until_str = datetime.fromtimestamp(block_until, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        preview = f" | response={response_preview}" if response_preview else ""
+        print(f"[TWELVE_DATA] [DAILY_BLOCK] 🔴 Daily credits exhausted - blocking until {until_str} (reason={reason}){preview}")
     
     def before_request(self) -> bool:
         """
@@ -346,7 +377,11 @@ class TwelveDataClient:
             Tuple of (JSON response dict or None, reason: str or None)
             reason can be: "cooldown", "http_error_429", "timeout", "network_error", "parse_error", "unknown_exception", etc.
         """
-        # Check circuit breaker first (before any network calls)
+        # Check daily block first (before any network calls)
+        if self._is_daily_blocked():
+            return None, "rate_limit_429_daily_exhausted"
+
+        # Check circuit breaker (before any network calls)
         if self._is_circuit_breaker_open():
             self._log_circuit_breaker_status()
             return None, "cooldown"
@@ -405,20 +440,10 @@ class TwelveDataClient:
                                 
                                 # Check if it's a rate limit error in JSON
                                 if self._is_rate_limit_error(response):
-                                    # Record error for circuit breaker
-                                    self.on_failure(reason="rate_limit_json")
-                                    # Check if we can retry (attempt is 0-based, so attempt < max_retries means we can retry)
-                                    if attempt < max_retries:
-                                        backoff_time = self._calculate_backoff(attempt)
-                                        print(f"[TWELVE_DATA] ⚠️ Rate limit detected (JSON error), waiting {backoff_time:.2f}s before retry {attempt + 1}/{attempts}")
-                                        await asyncio.sleep(backoff_time)
-                                        continue
-                                    else:
-                                        # Log response details for diagnostics
-                                        response_preview = response.text[:200] if hasattr(response, 'text') else str(response)[:200]
-                                        print(f"[TWELVE_DATA] ❌ Rate limit after {attempts} attempt(s): code={error_code}, message={error_message}")
-                                        print(f"[TWELVE_DATA] Response preview: {response_preview}")
-                                        return None, "rate_limit_429"
+                                    # Treat 429 as daily credits exhausted: block until next UTC midnight
+                                    response_preview = response.text[:300] if hasattr(response, 'text') else str(response)[:300]
+                                    self._set_daily_block("rate_limit_429_json", response_preview)
+                                    return None, "rate_limit_429_daily_exhausted"
                                 
                                 # Check if it's a permanent error
                                 if self._is_permanent_error(response):
@@ -447,14 +472,10 @@ class TwelveDataClient:
                             return None, "parse_error"
                     
                     elif self._is_rate_limit_error(response):
-                        # Rate limit (429) - record error and activate cooldown
-                        self.on_failure(reason="rate_limit_429")
-                        import random
-                        cooldown_seconds = random.uniform(60, 90)  # 60-90 seconds cooldown
-                        self._rate_limit_cooldown_until = time.time() + cooldown_seconds
-                        print(f"[TWELVE_DATA] ⚠️ Rate limit (429) detected - activating cooldown for {cooldown_seconds:.1f}s")
-                        print(f"[TWELVE_DATA] Skipping symbol (will resume after cooldown)")
-                        return None, "http_error_429"
+                        # Rate limit (429) - treat as daily credits exhausted
+                        response_preview = response.text[:300] if hasattr(response, 'text') else str(response)[:300]
+                        self._set_daily_block("rate_limit_429_http", response_preview)
+                        return None, "rate_limit_429_daily_exhausted"
                     
                     elif 500 <= response.status_code < 600:
                         # Server error - record error and retry with backoff
@@ -592,6 +613,10 @@ class TwelveDataClient:
             Tuple of (price: float or None, reason: str or None)
             reason will be "twelve_data_cooldown" if circuit breaker is open
         """
+        # Check daily block FIRST (before any logging or network calls)
+        if self._is_daily_blocked():
+            return None, "rate_limit_429_daily_exhausted"
+
         # Check circuit breaker FIRST (before any logging or network calls)
         if not self.before_request():
             self._log_circuit_breaker_status()
@@ -654,6 +679,8 @@ class TwelveDataClient:
             # Map internal reasons to external reason codes
             if detailed_reason == "cooldown":
                 return None, "cooldown"
+            elif detailed_reason == "rate_limit_429_daily_exhausted":
+                return None, "rate_limit_429_daily_exhausted"
             elif detailed_reason == "http_error_429":
                 return None, "rate_limit_429"
             elif detailed_reason == "timeout":
