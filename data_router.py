@@ -2,7 +2,7 @@
 Unified Data Router - Strict source policy enforcement
 FOREX -> Twelve Data only
 CRYPTO -> Binance only  
-GOLD/INDEXES -> Yahoo Finance only
+GOLD -> Twelve Data only; INDEXES -> Yahoo Finance
 """
 from typing import Optional, Dict, List, Tuple, Any
 from enum import Enum
@@ -172,8 +172,8 @@ class DataRouter:
         
         start_time = time.time()
         
-        if asset_class == AssetClass.FOREX:
-            # FOREX: Twelve Data only
+        if asset_class in [AssetClass.FOREX, AssetClass.GOLD]:
+            # FOREX and GOLD: Twelve Data only
             if not self.twelve_data_client:
                 latency_ms = int((time.time() - start_time) * 1000)
                 print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=TWELVE_DATA, price=None, reason=twelve_data_client_not_initialized, latency={latency_ms}ms")
@@ -233,8 +233,8 @@ class DataRouter:
             except ImportError:
                 raise ForbiddenDataSourceError(f"CRYPTO symbol {symbol} must use Binance API")
         
-        elif asset_class in [AssetClass.GOLD, AssetClass.INDEX]:
-            # GOLD/INDEX: Yahoo Finance only
+        elif asset_class == AssetClass.INDEX:
+            # INDEX: Yahoo Finance only (GOLD uses TwelveData)
             try:
                 # Use synchronous wrapper for async functions
                 # This avoids event loop conflicts
@@ -278,13 +278,7 @@ class DataRouter:
                     if price <= 0:
                         return False, f"yahoo_invalid_price: {price:.2f} is not positive"
                     
-                    if asset_class == AssetClass.GOLD:
-                        # Gold: wide sanity range 50-20000 USD/oz (allows for extreme market conditions)
-                        # Note: For Yahoo futures (GC=F), price can be higher than spot, so range is wide
-                        if price < 50 or price > 20000:
-                            return False, f"yahoo_invalid_price: {price:.2f} outside sanity range [50, 20000]"
-                        return True, None
-                    elif asset_class == AssetClass.INDEX:
+                    if asset_class == AssetClass.INDEX:
                         # Indexes: reasonable range depends on symbol
                         if symbol.upper() in ["BRENT", "USOIL"]:
                             # Oil: wide sanity range 1-1000 USD/barrel
@@ -297,75 +291,28 @@ class DataRouter:
                         return True, None
                     return True, None
                 
-                if asset_class == AssetClass.GOLD:
-                    # Gold: use Yahoo Finance with validation
-                    try:
-                        from working_combined_bot import get_gold_price_from_yahoo
-                    except ImportError as e:
-                        # yfinance not installed or import failed
-                        latency_ms = int((time.time() - start_time) * 1000)
-                        print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO, price=None, reason=yfinance_not_installed, latency={latency_ms}ms")
-                        return None, "yfinance_not_installed", "YAHOO"
-                    
-                    yahoo_data = _run_async(get_gold_price_from_yahoo())
-                    
+                # Index: use Yahoo Finance with validation
+                try:
+                    from working_combined_bot import get_index_price_yahoo
+                except ImportError as e:
                     latency_ms = int((time.time() - start_time) * 1000)
-                    if yahoo_data and isinstance(yahoo_data, dict) and yahoo_data.get("price"):
-                        try:
-                            # Normalize price first (handles tuple/list/str/etc)
-                            raw_price = yahoo_data["price"]
-                            price = normalize_price(raw_price)
-                            
-                            if price is None:
-                                print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO, price=None, reason=yahoo_price_normalize_failed (raw={raw_price!r}), latency={latency_ms}ms")
-                                return None, "yahoo_price_normalize_failed", "YAHOO"
-                            
-                            source_type = yahoo_data.get("source", "yahoo")
-                            ticker = yahoo_data.get("meta", {}).get("ticker", "unknown")
-                            
-                            # Validate price (sanity check)
-                            is_valid, validation_reason = _validate_price(symbol, price, asset_class)
-                            if not is_valid:
-                                print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO ({source_type}), ticker={ticker}, price={price:.2f}, valid=False, reason={validation_reason}, latency={latency_ms}ms")
-                                return None, validation_reason, f"YAHOO_{source_type.upper()}"
-                            
-                            print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO ({source_type}), ticker={ticker}, price={price:.2f}, valid=True, latency={latency_ms}ms")
-                            return price, None, f"YAHOO_{source_type.upper()}"
-                        except (ValueError, TypeError, KeyError) as e:
-                            print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO, price=None, reason=yahoo_parse_error ({type(e).__name__}: {e}), latency={latency_ms}ms")
-                            return None, f"yahoo_parse_error: {type(e).__name__}", "YAHOO"
-                    else:
-                        print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO, price=None, reason=yahoo_unavailable, latency={latency_ms}ms")
-                        return None, "yahoo_unavailable", "YAHOO"
+                    print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO, price=None, reason=yfinance_not_installed, latency={latency_ms}ms")
+                    return None, "yfinance_not_installed", "YAHOO"
+                
+                raw_price = _run_async(get_index_price_yahoo(symbol))
+                latency_ms = int((time.time() - start_time) * 1000)
+                price = normalize_price(raw_price)
+                
+                if price is not None:
+                    is_valid, validation_reason = _validate_price(symbol, price, asset_class)
+                    if not is_valid:
+                        print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO, price={price:.2f if price else None}, valid=False, reason={validation_reason}, latency={latency_ms}ms")
+                        return None, validation_reason, "YAHOO"
+                    print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO, price={price:.2f}, valid=True, latency={latency_ms}ms")
+                    return price, None, "YAHOO"
                 else:
-                    # Index: use Yahoo Finance with validation
-                    try:
-                        from working_combined_bot import get_index_price_yahoo
-                    except ImportError as e:
-                        # yfinance not installed or import failed
-                        latency_ms = int((time.time() - start_time) * 1000)
-                        print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO, price=None, reason=yfinance_not_installed, latency={latency_ms}ms")
-                        return None, "yfinance_not_installed", "YAHOO"
-                    
-                    raw_price = _run_async(get_index_price_yahoo(symbol))
-                    
-                    latency_ms = int((time.time() - start_time) * 1000)
-                    
-                    # Normalize price first (handles tuple/list/str/etc)
-                    price = normalize_price(raw_price)
-                    
-                    if price is not None:
-                        # Validate price (handles None internally, but double-check here)
-                        is_valid, validation_reason = _validate_price(symbol, price, asset_class)
-                        if not is_valid:
-                            print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO, price={price:.2f if price else None}, valid=False, reason={validation_reason}, latency={latency_ms}ms")
-                            return None, validation_reason, "YAHOO"
-                        
-                        print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO, price={price:.2f}, valid=True, latency={latency_ms}ms")
-                        return price, None, "YAHOO"
-                    else:
-                        print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO, price=None, reason=yahoo_unavailable, latency={latency_ms}ms")
-                        return None, "yahoo_unavailable", "YAHOO"
+                    print(f"[DATA_ROUTER] {symbol}: SOURCE_USED=YAHOO, price=None, reason=yahoo_unavailable, latency={latency_ms}ms")
+                    return None, "yahoo_unavailable", "YAHOO"
             except ImportError:
                 raise ForbiddenDataSourceError(f"{asset_class.value} symbol {symbol} must use Yahoo Finance")
             except Exception as e:
@@ -409,8 +356,8 @@ class DataRouter:
         
         start_time = time.time()
         
-        if asset_class == AssetClass.FOREX:
-            # FOREX: Twelve Data only
+        if asset_class in [AssetClass.FOREX, AssetClass.GOLD]:
+            # FOREX and GOLD: Twelve Data only (XAUUSD -> XAU/USD supported)
             # CRITICAL: For signal generation, use max_retries=0 (single-shot, no retries)
             if not self.twelve_data_client:
                 latency_ms = int((time.time() - start_time) * 1000)
@@ -572,7 +519,7 @@ class DataRouter:
             return None, "candles_not_implemented", "BINANCE"
         
         elif asset_class in [AssetClass.GOLD, AssetClass.INDEX]:
-            # GOLD/INDEX: Yahoo Finance only (candles not implemented yet)
+            # GOLD/INDEX: candles not implemented (GOLD uses TwelveData for price)
             print(f"[DATA_ROUTER] {symbol}: CANDLES requested from YAHOO (not implemented yet)")
             return None, "candles_not_implemented", "YAHOO"
         

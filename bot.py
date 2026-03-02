@@ -2226,8 +2226,8 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
             logger.info(f"[GENERATE_SIGNALS] {channel_name}: Skipping - weekend (asset_type={asset_type})")
             continue
         
-        # Skip FOREX channels if TwelveData daily block is active
-        if asset_type == "FOREX":
+        # Skip FOREX and GOLD channels if TwelveData daily block is active (both use TwelveData)
+        if asset_type in ["FOREX", "GOLD"]:
             block_until = get_forex_block_until()
             if block_until > time.time():
                 global _forex_block_log_until
@@ -2388,12 +2388,12 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
                         elif price_result.reason in {"rate_limit_429", "quota_exceeded", "rate_limited"}:
                             reason_msg = f"Rate limit/quota exceeded - TwelveData temporarily unavailable"
                         elif price_result.reason == "rate_limit_429_daily_exhausted":
-                            reason_msg = "TwelveData daily credits exhausted - skipping Forex until next day"
+                            reason_msg = "TwelveData daily credits exhausted - skipping Forex/Gold until next day"
                         
                         # Log skip (not error) and continue to next symbol
                         print(f"  ⏸️ {channel_name}: Skipping {sym} - {reason_msg}")
                         logger.info(f"[GENERATE_SIGNALS] {channel_name}: Skipping {sym} - status=SKIPPED, reason={price_result.reason}")
-                        if price_result.reason == "rate_limit_429_daily_exhausted" and asset_type == "FOREX":
+                        if price_result.reason == "rate_limit_429_daily_exhausted" and asset_type in ["FOREX", "GOLD"]:
                             break
                         continue
                     
