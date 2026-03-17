@@ -596,6 +596,11 @@ CRYPTO_PAIRS = [
 INDEX_PAIRS = [
     "BRENT",
     "USOIL",
+    "SPX",
+    "NDX",
+    "DJI",
+    "DAX",
+    "NATGAS",
 ]
 
 SIGNALS_FILE = "active_signals.json"
@@ -2220,9 +2225,9 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
         # Log channel configuration for debugging
         logger.info(f"[GENERATE_SIGNALS] Processing channel: {channel_name} (ID: {channel_id}, Type: {asset_type}, Symbols: {len(symbols)} pairs)")
         
-        # Skip Forex and Index channels on weekends (Saturday and Sunday)
-        if is_weekend and asset_type in ["FOREX", "INDEX"]:
-            print(f"🏖️ {channel_name}: Skipping signal generation - weekend (Forex/Index markets closed)")
+        # Skip Forex, Index, and Gold channels on weekends (Saturday and Sunday)
+        if is_weekend and asset_type in ["FOREX", "INDEX", "GOLD"]:
+            print(f"🏖️ {channel_name}: Skipping signal generation - weekend (Forex/Index/Gold markets closed)")
             logger.info(f"[GENERATE_SIGNALS] {channel_name}: Skipping - weekend (asset_type={asset_type})")
             continue
         
@@ -2462,8 +2467,8 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
                 # Special handling for Lingrid Forex channel: only 2 TPs with random values
                 is_lingrid_forex = channel_id == CHANNEL_LINGRID_FOREX
                 
-                # Check if it's an index (BRENT, USOIL), gold, or crypto
-                is_index = clean_sym in ["BRENT", "USOIL"]
+                # Check if it's an index (BRENT, USOIL, SPX, NDX, DJI, DAX, NATGAS), gold, or crypto
+                is_index = clean_sym in ["BRENT", "USOIL", "SPX", "NDX", "DJI", "DAX", "NATGAS"]
                 is_gold = clean_sym == "XAUUSD"
                 is_crypto = asset_type == "CRYPTO" or clean_sym.endswith("USDT")
                 
