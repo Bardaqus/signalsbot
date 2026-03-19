@@ -611,7 +611,8 @@ PERFORMANCE_USER_ID = 615348532  # Telegram user ID for performance reports
 # Channel definitions
 CHANNEL_DEGRAM = "-1001220540048"  # PREMIUM Signals DeGRAM (Forex)
 CHANNEL_LINGRID_FOREX = "-1001286609636"  # Lingrid private signals (Forex)
-CHANNEL_GAINMUSE_CRYPTO = "-1001411205299"  # GainMuse Crypto Signals / Lingrid Crypto signals
+CHANNEL_LINGRID_CRYPTO = "-1001411205299"   # Lingrid Crypto signals
+CHANNEL_GAINMUSE_CRYPTO = "-1002978318746"  # GainMuse Crypto signals
 CHANNEL_LINGRID_INDEXES = "-1001247341118"  # Lingrid private Indexes
 CHANNEL_GOLD_PRIVATE = "-1003506500177"  # GOLD Private
 CHANNEL_DEGRAM_INDEX = "-1001453338906"  # DeGRAM index
@@ -2153,6 +2154,7 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
     logger.info(f"  GOLD_PRIVATE: {CHANNEL_GOLD_PRIVATE}")
     logger.info(f"  DEGRAM (Forex): {CHANNEL_DEGRAM}")
     logger.info(f"  LINGRID_FOREX: {CHANNEL_LINGRID_FOREX}")
+    logger.info(f"  LINGRID_CRYPTO: {CHANNEL_LINGRID_CRYPTO}")
     logger.info(f"  GAINMUSE_CRYPTO: {CHANNEL_GAINMUSE_CRYPTO}")
     logger.info(f"  LINGRID_INDEXES: {CHANNEL_LINGRID_INDEXES}")
     logger.info(f"  DEGRAM_INDEX: {CHANNEL_DEGRAM_INDEX}")
@@ -2184,6 +2186,14 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
             "has_tp2": True,
             "has_tp3": False,  # Special: only 2 TPs for Lingrid forex
             "asset_type": "FOREX"
+        },
+        {
+            "name": "LINGRID_CRYPTO",
+            "channel_id": CHANNEL_LINGRID_CRYPTO,
+            "symbols": CRYPTO_PAIRS,  # ONLY Crypto pairs
+            "max_signals": MAX_GAINMUSE_CRYPTO_SIGNALS,
+            "has_tp2": True,
+            "asset_type": "CRYPTO"
         },
         {
             "name": "GAINMUSE_CRYPTO",
