@@ -37,8 +37,6 @@ YAHOO_TICKER_MAP = {
     "SPX": ["^GSPC"],  # S&P 500
     "NDX": ["^NDX"],   # NASDAQ 100
     "DJI": ["^DJI"],   # Dow Jones
-    "DAX": ["^GDAXI"],  # German DAX
-    "NATGAS": ["NG=F"],  # Natural Gas futures
 }
 
 
@@ -94,7 +92,7 @@ def _detect_asset_class(symbol: str) -> AssetClass:
         return AssetClass.GOLD
     
     # Indexes
-    if symbol_upper in ["BRENT", "USOIL", "SPX", "NDX", "DJI", "US500", "NAS100", "DOW", "DAX", "NATGAS"]:
+    if symbol_upper in ["BRENT", "USOIL", "SPX", "NDX", "DJI", "US500", "NAS100", "DOW"]:
         return AssetClass.INDEX
     
     # Crypto (common patterns)
