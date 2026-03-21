@@ -5376,83 +5376,18 @@ def automatic_signal_loop():
                 print(f"[INIT] Config error: {e}")
                 print(f"[INIT] cTrader initialization skipped")
             
-            # Send 1 gold signal to GOLD Private channel (WITH throttle exception for startup)
-            # Gold uses Yahoo Finance, no connection check needed
-            print("\n🥇 [INIT] Attempting to send initial gold signal to GOLD Private channel...")
-            if is_market_closed():
-                print("📅 [INIT] Market closed (weekend/buffer) - skipping initial gold signal")
-                gold_success = False
-                gold_reason = None
-                gold_details = {}
-            else:
-                print("   → Throttle rules EXEMPTED for startup initial signal")
-                print("   → Using Yahoo Finance as price source")
-                gold_success, gold_reason, gold_details = await send_gold_signal(return_reason=True, skip_throttle=True)
-            
-            if gold_success:
-                print("✅ [INIT] Initial gold signal sent successfully")
-            else:
-                if gold_reason:
-                    # Detailed reason logging with exact reason code
-                    reason = gold_reason.value
-                    print(f"❌ [INIT] Could not send initial gold signal")
-                    print(f"   Reason Code: {reason}")
-                    
-                    # Log specific reason details
-                    if reason == SignalRejectReason.DAILY_LIMIT.value:
-                        gold_count = gold_details.get("gold_count", 0)
-                        max_signals = gold_details.get("max_gold_signals", MAX_GOLD_SIGNALS)
-                        print(f"   → DAILY_LIMIT: Already sent {gold_count}/{max_signals} gold signals today")
-                    
-                    elif reason == SignalRejectReason.RULE_36H.value:
-                        pair_details = gold_details.get("pair_36h_check", {})
-                        wait_hours = pair_details.get("remaining_hours", 0)
-                        pair_last_time = pair_details.get("pair_last_time", "N/A")
-                        print(f"   → RULE_36H: 36-hour interval not met for XAUUSD in this channel")
-                        print(f"   → Last signal sent at: {pair_last_time}")
-                        print(f"   → Need to wait {wait_hours:.2f} more hours")
-                    
-                    elif reason == SignalRejectReason.GENERATION_FAILED.value:
-                        print(f"   → GENERATION_FAILED: Could not generate gold signal")
-                        print(f"   → Possible causes:")
-                        print(f"      - Price unavailable (check cTrader connection and symbol resolution)")
-                        print(f"      - External APIs failed")
-                    
-                    elif reason == SignalRejectReason.PRICE_UNAVAILABLE.value:
-                        print(f"   → PRICE_UNAVAILABLE: Could not get gold price from any source")
-                    elif reason == SignalRejectReason.PRICE_UNAVAILABLE_CTRADER_ONLY.value:
-                        print(f"   → PRICE_UNAVAILABLE_CTRADER_ONLY: cTrader price not available (GOLD_CTRADER_ONLY=true)")
-                        print(f"   → Check:")
-                        print(f"      - cTrader connection status")
-                        print(f"      - Symbol resolution (use /debug_gold to check)")
-                        print(f"      - External API availability")
-                    
-                    elif reason == SignalRejectReason.SYMBOL_NOT_FOUND.value:
-                        print(f"   → SYMBOL_NOT_FOUND: Gold symbol not found in cTrader")
-                        print(f"   → Check available symbols and symbol name")
-                    
-                    elif reason == SignalRejectReason.NO_SPOT_SUBSCRIPTION.value:
-                        print(f"   → NO_SPOT_SUBSCRIPTION: Not subscribed to spot quotes")
-                        print(f"   → Check subscription status")
-                    
-                    elif reason == SignalRejectReason.INVALID_TICK.value:
-                        print(f"   → INVALID_TICK: Received invalid tick (bid=0 or ask=0)")
-                        print(f"   → Check quote data quality")
-                    
-                    elif reason == SignalRejectReason.EXCEPTION.value:
-                        exception_msg = gold_details.get("exception", "Unknown")
-                        print(f"   → EXCEPTION: {exception_msg}")
-                        traceback_str = gold_details.get("traceback", "")
-                        if traceback_str:
-                            print(f"   → Traceback:\n{traceback_str}")
-                    
-                    else:
-                        print(f"   → Unknown reason: {reason}")
-                    
-                    # Always print full details for debugging
-                    print(f"\n   Full details:")
-                    print(json.dumps(gold_details, indent=4, default=str))
-            
+            # Send 1 crypto signal to each crypto channel on startup (respects 30h cooldown)
+            print("\n🪙 [INIT] Sending initial crypto signals on startup...")
+            for crypto_ch in ["lingrid", "gainmuse"]:
+                ch_name = "Lingrid Crypto" if crypto_ch == "lingrid" else "GainMuse"
+                print(f"   → Attempting {ch_name}...")
+                crypto_success = await send_crypto_signal(channel=crypto_ch)
+                if crypto_success:
+                    print(f"✅ [INIT] Initial crypto signal sent to {ch_name}")
+                else:
+                    print(f"⚠️ [INIT] Could not send initial crypto signal to {ch_name} (cooldown or limit reached)")
+                await asyncio.sleep(5)  # small gap between the two channels
+
             # Send 1 index signal
             print("\n📊 [INIT] Sending initial index signal on startup...")
             index_success = await send_index_signal()
