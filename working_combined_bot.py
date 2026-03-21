@@ -5379,9 +5379,15 @@ def automatic_signal_loop():
             # Send 1 gold signal to GOLD Private channel (WITH throttle exception for startup)
             # Gold uses Yahoo Finance, no connection check needed
             print("\n🥇 [INIT] Attempting to send initial gold signal to GOLD Private channel...")
-            print("   → Throttle rules EXEMPTED for startup initial signal")
-            print("   → Using Yahoo Finance as price source")
-            gold_success, gold_reason, gold_details = await send_gold_signal(return_reason=True, skip_throttle=True)
+            if is_market_closed():
+                print("📅 [INIT] Market closed (weekend/buffer) - skipping initial gold signal")
+                gold_success = False
+                gold_reason = None
+                gold_details = {}
+            else:
+                print("   → Throttle rules EXEMPTED for startup initial signal")
+                print("   → Using Yahoo Finance as price source")
+                gold_success, gold_reason, gold_details = await send_gold_signal(return_reason=True, skip_throttle=True)
             
             if gold_success:
                 print("✅ [INIT] Initial gold signal sent successfully")
