@@ -2919,6 +2919,22 @@ def is_weekend():
     return weekday >= 5  # Saturday (5) or Sunday (6)
 
 
+def is_market_closed():
+    """Check if market is closed: full weekend + 5h buffer before/after.
+    Closed window: Friday 19:00 UTC → Monday 05:00 UTC."""
+    now = datetime.now(timezone.utc)
+    weekday = now.weekday()  # Monday=0, Tuesday=1, ..., Friday=4, Saturday=5, Sunday=6
+    hour = now.hour
+
+    if weekday == 5 or weekday == 6:  # Saturday or Sunday - always closed
+        return True
+    if weekday == 4 and hour >= 19:   # Friday from 19:00 UTC
+        return True
+    if weekday == 0 and hour < 5:     # Monday before 05:00 UTC
+        return True
+    return False
+
+
 def get_next_interval():
     """Get next interval in seconds (3-5 hours)"""
     return random.randint(MIN_INTERVAL * 3600, MAX_INTERVAL * 3600)
@@ -2927,9 +2943,9 @@ def get_next_interval():
 async def send_forex_signal():
     """Send a forex signal"""
     try:
-        # Check if weekend - don't send forex signals on weekends
-        if is_weekend():
-            print("📅 Weekend detected - skipping forex signal")
+        # Check if market is closed (weekends + 5h buffer before/after)
+        if is_market_closed():
+            print("📅 Market closed (weekend/buffer) - skipping forex signal")
             return False
 
             # Check if enough time has passed since last signal (5 min between channels, 2h for same channel)
@@ -3002,9 +3018,9 @@ async def send_forex_signal():
 async def send_forex_additional_signal():
     """Send a forex signal to additional channel with different parameters"""
     try:
-        # Check if weekend - don't send forex signals on weekends
-        if is_weekend():
-            print("📅 Weekend detected - skipping forex additional signal")
+        # Check if market is closed (weekends + 5h buffer before/after)
+        if is_market_closed():
+            print("📅 Market closed (weekend/buffer) - skipping forex additional signal")
             return False
 
             # Check if enough time has passed since last signal (5 min between channels, 2h for same channel)
@@ -3073,9 +3089,9 @@ async def send_forex_additional_signal():
 async def send_forex_3tp_signal():
     """Send a forex signal with 3 TPs"""
     try:
-        # Check if weekend - don't send forex signals on weekends
-        if is_weekend():
-            print("📅 Weekend detected - skipping forex 3TP signal")
+        # Check if market is closed (weekends + 5h buffer before/after)
+        if is_market_closed():
+            print("📅 Market closed (weekend/buffer) - skipping forex 3TP signal")
             return False
 
             # Check if enough time has passed since last signal (5 min between channels, 2h for same channel)
@@ -3543,6 +3559,14 @@ async def send_gold_signal(return_reason=False, skip_throttle=False):
     }
     
     try:
+        # Check if market is closed (weekends + 5h buffer before/after)
+        if is_market_closed():
+            print("📅 Market closed (weekend/buffer) - skipping gold signal")
+            details["reject_reason"] = "MARKET_CLOSED"
+            if return_reason:
+                return False, SignalRejectReason.EXCEPTION, details
+            return False
+
         # Check throttle: 5 min between channels, 2h for same channel (unless skipped for startup)
         if not skip_throttle:
             can_send, throttle_reason, throttle_details = can_send_signal_now(CHANNEL_GOLD_PRIVATE, return_reason=True)
@@ -3698,9 +3722,9 @@ async def send_gold_signal(return_reason=False, skip_throttle=False):
 async def send_index_signal(signal_data=None):
     """Send an index/gold signal to the indexes channel"""
     try:
-        # Check if weekend - don't send index signals on weekends
-        if is_weekend():
-            print("📅 Weekend detected - skipping index signal")
+        # Check if market is closed (weekends + 5h buffer before/after)
+        if is_market_closed():
+            print("📅 Market closed (weekend/buffer) - skipping index signal")
             return False
 
             # Check if enough time has passed since last signal (only for automatic signals)
@@ -5497,7 +5521,7 @@ def automatic_signal_loop():
                     success = await send_forex_signal()
                     if success:
                         signals_sent = 1
-                    elif not success and not is_weekend():
+                    elif not success and not is_market_closed():
                         print("⚠️ Could not send forex signal (all pairs may be active or waiting for interval)")
                 
                 # Send forex 3TP signal if needed
@@ -5505,7 +5529,7 @@ def automatic_signal_loop():
                     success = await send_forex_3tp_signal()
                     if success:
                         signals_sent = 1
-                    elif not success and not is_weekend():
+                    elif not success and not is_market_closed():
                         print("⚠️ Could not send forex 3TP signal (all pairs may be active or waiting for interval)")
                 
                 # Send forex additional signal if needed
@@ -5513,7 +5537,7 @@ def automatic_signal_loop():
                     success = await send_forex_additional_signal()
                     if success:
                         signals_sent = 1
-                    elif not success and not is_weekend():
+                    elif not success and not is_market_closed():
                         print("⚠️ Could not send forex additional signal (all pairs may be active or waiting for interval)")
 
                         # Send crypto signal to Lingrid if needed
@@ -5559,7 +5583,7 @@ def automatic_signal_loop():
                     success = await send_index_signal()
                     if success:
                         signals_sent = 1
-                    elif not success and not is_weekend():
+                    elif not success and not is_market_closed():
                         print("⚠️ Could not send index signal (all pairs may be active, used in other channels, or waiting for interval)")
 
                 if signals_sent == 0:
@@ -5620,7 +5644,7 @@ def main():
     print("📈 Weekly summaries: Friday 14:30 GMT")
     print("🔐 Authorized users:", ALLOWED_USERS)
     print("📊 Signal limits: 5 forex per channel, 5 crypto per channel")
-    print("📅 Forex signals: No signals on weekends")
+    print("📅 Non-crypto signals: blocked on weekends + 5h buffer (Fri 19:00–Mon 05:00 UTC)")
     print("=" * 60)
     
     # Create application for interactive features FIRST
