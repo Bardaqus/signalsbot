@@ -105,7 +105,7 @@ SIGNALS_FILE = "working_combined_signals.json"
 PERFORMANCE_FILE = "working_combined_performance.json"
 LAST_SIGNAL_TIME_FILE = "last_signal_time.json"  # Track last signal time for spacing (global - 5 min between channels)
 CHANNEL_LAST_SIGNAL_FILE = "channel_last_signal_time.json"  # Track last signal time per channel (2h between same channel)
-CHANNEL_PAIR_LAST_SIGNAL_FILE = "channel_pair_last_signal_time.json"  # Track last signal time per pair per channel (36h between same pair in same channel)
+CHANNEL_PAIR_LAST_SIGNAL_FILE = "channel_pair_last_signal_time.json"  # Track last signal time per pair per channel (30h for forex/crypto, 36h for gold/indexes)
 
 # Channel definitions
 CHANNEL_DEGRAM = "-1001220540048"  # DeGRAM
@@ -114,6 +114,13 @@ CHANNEL_LINGRID_FOREX = "-1001286609636"  # Lingrid Forex
 CHANNEL_GAINMUSE = "-1002978318746"  # GainMuse
 CHANNEL_LINGRID_INDEXES = "-1001247341118"  # Lingrid Indexes
 CHANNEL_GOLD_PRIVATE = "-1003506500177"  # GOLD Private
+
+# Forex and crypto channels use 30h per-pair cooldown (others use 36h)
+FOREX_CRYPTO_CHANNELS_30H = {
+    CHANNEL_LINGRID_FOREX, CHANNEL_DEGRAM, CHANNEL_LINGRID_CRYPTO, CHANNEL_GAINMUSE,
+    FOREX_CHANNEL, FOREX_CHANNEL_3TP, FOREX_CHANNEL_ADDITIONAL,
+    CRYPTO_CHANNEL_LINGRID, CRYPTO_CHANNEL_GAINMUSE,
+}
 
 # Channel result files - one file per channel
 # Maps all channel IDs (both old constants and new) to result files
@@ -1209,7 +1216,8 @@ def save_channel_pair_last_signal_time(channel_id, pair):
 
 
 def can_send_pair_signal_to_channel(channel_id, pair, return_reason=False):
-    """Check if 36 hours have passed since last signal for this pair in this channel
+    """Check if enough hours have passed since last signal for this pair in this channel.
+    Forex and crypto channels: 30h cooldown. Gold/indexes: 36h cooldown.
     
     Args:
         channel_id: Channel ID
@@ -1235,18 +1243,19 @@ def can_send_pair_signal_to_channel(channel_id, pair, return_reason=False):
     if pair_last_time is not None:
         time_diff = (current_time - pair_last_time).total_seconds()
         details["time_diff_seconds"] = time_diff
-        min_pair_interval_seconds = 36 * 60 * 60  # 36 hours minimum between same pair in same channel
+        min_pair_interval_hours = 30 if channel_id in FOREX_CRYPTO_CHANNELS_30H else 36
+        min_pair_interval_seconds = min_pair_interval_hours * 60 * 60
 
         if time_diff < min_pair_interval_seconds:
             remaining_seconds = min_pair_interval_seconds - time_diff
             remaining_hours = remaining_seconds / 3600
             details["required_wait_seconds"] = remaining_seconds
             details["remaining_hours"] = remaining_hours
-            
+
             if return_reason:
                 return False, SignalRejectReason.RULE_36H, details
-            
-            print(f"⏰ Cannot send signal for {pair} to channel {channel_id}: 36-hour interval not met. Wait {remaining_hours:.2f} more hours.")
+
+            print(f"⏰ Cannot send signal for {pair} to channel {channel_id}: {min_pair_interval_hours}-hour interval not met. Wait {remaining_hours:.2f} more hours.")
             return False
     
     if return_reason:
@@ -2948,21 +2957,21 @@ async def send_forex_signal():
                 print("❌ Could not generate forex signal")
                 return False
             
-            # Check 36-hour rule for this pair in this channel
+            # Check 30-hour rule for this pair in this channel
             if can_send_pair_signal_to_channel(CHANNEL_LINGRID_FOREX, signal['pair']):
                 break
             else:
                 # Remove this pair from available pairs temporarily to try another one
                 attempts += 1
                 if attempts >= max_attempts:
-                    print(f"⚠️ All forex pairs have been sent in last 36 hours for channel {CHANNEL_LINGRID_FOREX}")
+                    print(f"⚠️ All forex pairs have been sent in last 30 hours for channel {CHANNEL_LINGRID_FOREX}")
                     return False
                 signal = None
                 # Note: generate_forex_signal will pick a different pair on next call
                 continue
-        
+
         if signal is None:
-            print("❌ Could not find available forex pair (all pairs sent in last 36h)")
+            print("❌ Could not find available forex pair (all pairs sent in last 30h)")
             return False
         
         signals["forex"].append(signal)
@@ -3024,19 +3033,19 @@ async def send_forex_additional_signal():
                 print("❌ Could not generate forex additional signal")
                 return False
             
-            # Check 36-hour rule for this pair in this channel
+            # Check 30-hour rule for this pair in this channel
             if can_send_pair_signal_to_channel(FOREX_CHANNEL_ADDITIONAL, signal['pair']):
                 break
             else:
                 attempts += 1
                 if attempts >= max_attempts:
-                    print(f"⚠️ All forex pairs have been sent in last 36 hours for channel {FOREX_CHANNEL_ADDITIONAL}")
+                    print(f"⚠️ All forex pairs have been sent in last 30 hours for channel {FOREX_CHANNEL_ADDITIONAL}")
                     return False
                 signal = None
                 continue
-        
+
         if signal is None:
-            print("❌ Could not find available forex pair (all pairs sent in last 36h)")
+            print("❌ Could not find available forex pair (all pairs sent in last 30h)")
             return False
         
         signals["forex_additional"].append(signal)
@@ -3094,19 +3103,19 @@ async def send_forex_3tp_signal():
                 print("❌ Could not generate forex 3TP signal")
                 return False
             
-            # Check 36-hour rule for this pair in this channel
+            # Check 30-hour rule for this pair in this channel
             if can_send_pair_signal_to_channel(CHANNEL_DEGRAM, signal['pair']):
                 break
             else:
                 attempts += 1
                 if attempts >= max_attempts:
-                    print(f"⚠️ All forex pairs have been sent in last 36 hours for channel {CHANNEL_DEGRAM}")
+                    print(f"⚠️ All forex pairs have been sent in last 30 hours for channel {CHANNEL_DEGRAM}")
                     return False
                 signal = None
                 continue
-        
+
         if signal is None:
-            print("❌ Could not find available forex pair (all pairs sent in last 36h)")
+            print("❌ Could not find available forex pair (all pairs sent in last 30h)")
             return False
         
         signals["forex_3tp"].append(signal)
@@ -3181,19 +3190,19 @@ async def send_crypto_signal(channel="lingrid"):
                 print(f"❌ Could not generate crypto signal for {channel_name}")
                 return False
             
-            # Check 36-hour rule for this pair in this channel
+            # Check 30-hour rule for this pair in this channel
             if can_send_pair_signal_to_channel(channel_id, signal['pair']):
                 break
             else:
                 attempts += 1
                 if attempts >= max_attempts:
-                    print(f"⚠️ All crypto pairs have been sent in last 36 hours for channel {channel_id}")
+                    print(f"⚠️ All crypto pairs have been sent in last 30 hours for channel {channel_id}")
                     return False
                 signal = None
                 continue
-        
+
         if signal is None:
-            print(f"❌ Could not find available crypto pair (all pairs sent in last 36h) for {channel_name}")
+            print(f"❌ Could not find available crypto pair (all pairs sent in last 30h) for {channel_name}")
             return False
         
             # Add to appropriate channel array
@@ -4391,7 +4400,7 @@ async def handle_crypto_signal_for_channel(query, context: ContextTypes.DEFAULT_
                 )
                 return
             
-            # Check 36-hour rule for this pair in this channel
+            # Check 30-hour rule for this pair in this channel
             if can_send_pair_signal_to_channel(channel_id, signal['pair']):
                 break
             else:
@@ -4399,17 +4408,17 @@ async def handle_crypto_signal_for_channel(query, context: ContextTypes.DEFAULT_
                 if attempts >= max_attempts:
                     await query.edit_message_text(
                         f"⚠️ **Cannot send signal**\n\n"
-                        f"All crypto pairs have been sent in last 36 hours for this channel.",
+                        f"All crypto pairs have been sent in last 30 hours for this channel.",
                         parse_mode='Markdown'
                     )
                     return
                 signal = None
                 continue
-        
+
         if signal is None:
             await query.edit_message_text(
                 f"❌ **Error generating crypto signal**\n\n"
-                f"Could not find available pair (all pairs sent in last 36h)",
+                f"Could not find available pair (all pairs sent in last 30h)",
                 parse_mode='Markdown'
             )
             return
@@ -4486,7 +4495,7 @@ async def handle_forex_signal(query, context: ContextTypes.DEFAULT_TYPE) -> None
                 )
                 return
             
-            # Check 36-hour rule for this pair in this channel
+            # Check 30-hour rule for this pair in this channel
             if can_send_pair_signal_to_channel(CHANNEL_LINGRID_FOREX, signal['pair']):
                 break
             else:
@@ -4494,21 +4503,21 @@ async def handle_forex_signal(query, context: ContextTypes.DEFAULT_TYPE) -> None
                 if attempts >= max_attempts:
                     await query.edit_message_text(
                         f"⚠️ **Cannot send signal**\n\n"
-                        f"All forex pairs have been sent in last 36 hours for this channel.",
+                        f"All forex pairs have been sent in last 30 hours for this channel.",
                         parse_mode='Markdown'
                     )
                     return
                 signal = None
                 continue
-        
+
         if signal is None:
             await query.edit_message_text(
                 f"❌ **Error generating forex signal**\n\n"
-                f"Could not find available pair (all pairs sent in last 36h)",
+                f"Could not find available pair (all pairs sent in last 30h)",
                 parse_mode='Markdown'
             )
             return
-        
+
         signals["forex"].append(signal)
         save_signals(signals)
         
@@ -4571,7 +4580,7 @@ async def handle_forex_3tp_signal(query, context: ContextTypes.DEFAULT_TYPE) -> 
                 )
                 return
             
-            # Check 36-hour rule for this pair in this channel
+            # Check 30-hour rule for this pair in this channel
             if can_send_pair_signal_to_channel(CHANNEL_DEGRAM, signal['pair']):
                 break
             else:
@@ -4579,17 +4588,17 @@ async def handle_forex_3tp_signal(query, context: ContextTypes.DEFAULT_TYPE) -> 
                 if attempts >= max_attempts:
                     await query.edit_message_text(
                         f"⚠️ **Cannot send signal**\n\n"
-                        f"All forex pairs have been sent in last 36 hours for this channel.",
+                        f"All forex pairs have been sent in last 30 hours for this channel.",
                         parse_mode='Markdown'
                     )
                     return
                 signal = None
                 continue
-        
+
         if signal is None:
             await query.edit_message_text(
                 f"❌ **Could not generate forex 3TP signal**\n\n"
-                f"Could not find available pair (all pairs sent in last 36h)",
+                f"Could not find available pair (all pairs sent in last 30h)",
                 parse_mode='Markdown'
             )
             return
