@@ -641,7 +641,7 @@ CHANNEL_CONSTRAINT_INTERVALS = {
 
 MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MIN = CHANNEL_PAUSE_MIN_SECONDS  # 2.5 hours
 MIN_TIME_BETWEEN_CHANNEL_SIGNALS_MAX = CHANNEL_PAUSE_MAX_SECONDS  # 3.5 hours
-MIN_TIME_BETWEEN_PAIR_DIRECTION_SIGNALS = 24 * 60 * 60  # 24 hours between same pair+direction (non-FOREX)
+MIN_TIME_BETWEEN_PAIR_DIRECTION_SIGNALS = 30 * 60 * 60  # 30 hours between same pair (non-FOREX, any direction)
 FOREX_PAIR_PAUSE_HOURS = 40
 FOREX_PAIR_PAUSE_SECONDS = FOREX_PAIR_PAUSE_HOURS * 3600  # 40h between same pair in FOREX channels (any direction)
 
@@ -1351,17 +1351,17 @@ def save_channel_pair_direction_last_signal_time(channel_id: str, pair: str, dir
 
 
 def can_send_pair_direction_signal(channel_id: str, pair: str, direction: str, asset_type: str = "DEFAULT") -> Tuple[bool, Optional[str]]:
-    """Check if we can send a signal for this pair (+direction) in this channel.
-    
+    """Check if we can send a signal for this pair in this channel.
+
     FOREX channels: 40h pause for same pair (any direction) - EURUSD BUY blocks EURUSD SELL too.
-    Other channels: 24h pause per pair+direction.
-    
+    Other channels (CRYPTO, INDEX, GOLD): 30h pause per pair (any direction) - same rule.
+
     Args:
         channel_id: Channel ID
-        pair: Trading pair (e.g., "EURUSD", "XAUUSD")
+        pair: Trading pair (e.g., "EURUSD", "BTCUSDT")
         direction: Signal direction ("BUY" or "SELL")
-        asset_type: FOREX, CRYPTO, INDEX, GOLD - FOREX uses 40h per-pair rule
-    
+        asset_type: FOREX, CRYPTO, INDEX, GOLD - FOREX uses 40h, others use 30h (all per-pair, any direction)
+
     Returns:
         Tuple of (can_send: bool, reason: Optional[str])
     """
@@ -1406,17 +1406,16 @@ def can_send_pair_direction_signal(channel_id: str, pair: str, direction: str, a
     is_forex = asset_type == "FOREX"
     if is_forex:
         # FOREX: 40h pause for same pair regardless of direction
-        # Use max(BUY_ts, SELL_ts) = most recent signal on this pair
-        dir_timestamps = [normalize_timestamp(pair_data.get(d, 0), f"channel_pair_direction[{channel_id}][{pair}][{d}]") for d in ("BUY", "SELL")]
-        last_time = max(dir_timestamps) if dir_timestamps else 0
         required_seconds = FOREX_PAIR_PAUSE_SECONDS
         rule_name = "40h rule"
     else:
-        # Non-FOREX: 24h per pair+direction
-        last_time_raw = pair_data.get(direction, 0)
-        last_time = normalize_timestamp(last_time_raw, f"channel_pair_direction[{channel_id}][{pair}][{direction}]")
+        # CRYPTO / INDEX / GOLD: 30h pause for same pair regardless of direction
         required_seconds = MIN_TIME_BETWEEN_PAIR_DIRECTION_SIGNALS
-        rule_name = "24h rule"
+        rule_name = "30h rule"
+
+    # Use max(BUY_ts, SELL_ts): any signal on this pair blocks the pair
+    dir_timestamps = [normalize_timestamp(pair_data.get(d, 0), f"channel_pair_direction[{channel_id}][{pair}][{d}]") for d in ("BUY", "SELL")]
+    last_time = max(dir_timestamps) if dir_timestamps else 0
     
     if last_time > 0:
         time_since_last = current_time - last_time
@@ -2136,13 +2135,26 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
     if bot is None:
         logger.warning("[GENERATE_SIGNALS] Bot is None - signals will be generated and logged locally, but NOT sent to Telegram")
     
-    # Check if it's weekend (Saturday or Sunday)
+    # Check if it's within the weekend restriction window:
+    # Saturday 00:00 UTC, Sunday 00:00 UTC → always restricted
+    # Friday >= 19:00 UTC → 5h buffer BEFORE weekend (Sat 00:00)
+    # Monday < 05:00 UTC → 5h buffer AFTER weekend (Sun 24:00)
     now = datetime.now(timezone.utc)
-    weekday = now.weekday()  # 0=Monday, 5=Saturday, 6=Sunday
-    is_weekend = weekday >= 5  # Saturday (5) or Sunday (6)
-    
-    if is_weekend:
-        logger.info(f"[GENERATE_SIGNALS] Weekend detected (weekday={weekday}) - Forex and Index markets are closed")
+    weekday = now.weekday()  # 0=Monday, 4=Friday, 5=Saturday, 6=Sunday
+    hour = now.hour
+
+    is_weekend_restricted = (
+        weekday >= 5  # Saturday or Sunday
+        or (weekday == 4 and hour >= 19)  # Friday after 19:00 UTC (5h before Sat midnight)
+        or (weekday == 0 and hour < 5)    # Monday before 05:00 UTC (5h after Sun midnight)
+    )
+    is_weekend = weekday >= 5  # kept for logging
+
+    if is_weekend_restricted:
+        logger.info(
+            f"[GENERATE_SIGNALS] Weekend restriction active (weekday={weekday}, hour={hour} UTC) "
+            f"- Forex/Index/Gold markets closed or in 5h buffer"
+        )
     
     # Define channel configurations
     logger.info("[GENERATE_SIGNALS] Channel configuration:")
@@ -2230,10 +2242,11 @@ async def generate_channel_signals(bot: Optional[Bot], pairs: List[str], request
         # Log channel configuration for debugging
         logger.info(f"[GENERATE_SIGNALS] Processing channel: {channel_name} (ID: {channel_id}, Type: {asset_type}, Symbols: {len(symbols)} pairs)")
         
-        # Skip Forex and Index channels on weekends (Saturday and Sunday)
-        if is_weekend and asset_type in ["FOREX", "INDEX"]:
-            print(f"🏖️ {channel_name}: Skipping signal generation - weekend (Forex/Index markets closed)")
-            logger.info(f"[GENERATE_SIGNALS] {channel_name}: Skipping - weekend (asset_type={asset_type})")
+        # Hard block: Forex, Index and Gold channels are off during weekends + 5h buffers
+        # (Friday >= 19:00 UTC  →  Monday < 05:00 UTC)
+        if is_weekend_restricted and asset_type in ["FOREX", "INDEX", "GOLD"]:
+            print(f"🚫 {channel_name}: Blocked - weekend restriction active (Forex/Index/Gold markets closed or in 5h buffer)")
+            logger.info(f"[GENERATE_SIGNALS] {channel_name}: Hard-blocked - weekend restriction (asset_type={asset_type}, weekday={weekday}, hour={hour} UTC)")
             continue
         
         # Skip FOREX and GOLD channels if TwelveData daily block is active (both use TwelveData)
